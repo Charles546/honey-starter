@@ -8,6 +8,13 @@ Single-command starter to spin up a [Honeydipper](https://github.com/honeydipper
 > config in `bootstrap/` can already be used to boot a daemon by pointing
 > `REPO` at it.
 
+## Requirements
+
+- **Docker** — for running the daemon image (configcheck, and later deployment)
+- **htpasswd** (from `apache2-utils`) — for generating and validating bcrypt
+  token hashes (required by the `auth-simple` driver)
+- **bash**, **openssl** — basic scripting and key generation
+
 ## What It Ships
 
 The starter composes a trimmed-down Honeydipper deployment on top of
@@ -27,17 +34,19 @@ Both Phase 1 validation contracts run with one command:
 make validate   # = check-bcrypt + check-config
 ```
 
-### B1 — bcrypt token contract
+### B1 — bcrypt token contract (htpasswd)
 
 ```bash
 bash test/check-bcrypt.sh
 ```
 
 Confirms that `htpasswd -bnBC 12` output (`$2y$` prefix) is accepted by
-`bcrypt.CompareHashAndPassword` (the exact path used by the `auth-simple`
-driver with x/crypto v0.48.0).
+`htpasswd -vb` round-trip. This validates the same hash format that the
+`auth-simple` driver's `bcrypt.CompareHashAndPassword` call accepts.
 
-### B2 — configcheck contract
+Requires: `htpasswd` (from `apache2-utils`).
+
+### B2 — configcheck contract (docker)
 
 ```bash
 bash test/check-config.sh
@@ -45,9 +54,12 @@ bash test/check-config.sh
 
 Assembles the bootstrap config (essentials v4-rc + starter overrides),
 substitutes the `<ns>`/`<user>` placeholders, and runs
-`honeydipper configcheck` with `CHECK_REMOTE=1`, asserting a clean exit. This
-validates workflows, contexts, driver references, and the casbin authorization
-tests in `bootstrap/tests/api_auth_tests.yaml`.
+`honeydipper configcheck` inside the published Docker image with
+`CHECK_REMOTE=1`, asserting a clean exit. This validates workflows,
+contexts, driver references, and the casbin authorization tests in
+`bootstrap/tests/api_auth_tests.yaml`.
+
+Requires: docker.
 
 ## Bootstrap Config
 

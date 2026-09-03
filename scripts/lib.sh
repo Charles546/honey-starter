@@ -16,9 +16,8 @@ if [ -f "${HONEY_STARTER_DIR}/.env" ]; then
   set +a
 fi
 
-# Docker image tag for the daemon (must match the HEAD of the v4 branch you
-# intend to use). When running configcheck outside docker, the binary at
-# /tmp/honeydipper is used.
+# Docker image tag for the daemon. This is the published image on Docker Hub.
+# Override with HONEYDIPPER_IMAGE env var if needed.
 HONEYDIPPER_IMAGE="${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:4.0.0-alpha4-53-g897242b}"
 
 # Default values
@@ -39,7 +38,7 @@ require_cmd() {
 }
 
 # Soft preflight: print [ok]/[missing] without failing. Used for tools that
-# this phase of the project can operate without (docker, shellcheck, ...).
+# this phase of the project can operate without (shellcheck, ...).
 check_cmd() {
   if command -v "$1" &>/dev/null; then
     echo "  [ok]      $1"

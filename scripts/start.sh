@@ -9,9 +9,13 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 echo "=== honey-starter: environment check ==="
-for cmd in docker docker-compose bash openssl htpasswd shellcheck; do
-  check_cmd "${cmd}"
-done
+# htpasswd is required for bcrypt token generation (used in Vault seeding)
+check_cmd htpasswd
+# docker is required for running configcheck and Phase 2 deployment
+check_cmd docker
+check_cmd bash
+check_cmd openssl
+check_cmd shellcheck
 
 echo ""
 echo "=== honey-starter: validating bootstrap config ==="
