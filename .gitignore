@@ -15,3 +15,6 @@ Thumbs.db
 deploy/.env
 deploy/docker-compose.override.yml
 tmp/
+
+# Generated runtime state (rendered config, AppRole identity files)
+.honey-starter/

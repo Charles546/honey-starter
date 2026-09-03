@@ -1,17 +1,19 @@
 # AI engine definitions for the model drivers.
 #
-# Contract: every engine always emits `api_key`, `base_url` and `model` so the
-# model driver never has to guess defaults. Secret material falls back to a
-# Vault LOOKUP using the <ns> namespace prefix when the environment variable is
-# not set.
+# Secret material contract: engine `api_key` values are ALWAYS read from Vault
+# (`LOOKUP[vault,/secrets/data/<ns>/daemon#...]`, resolved at config-load time
+# by the vault driver). Keep API keys out of environment variables, config
+# files and docker-compose. Only non-secret model routing knobs (base_url,
+# model) are environment-tunable through HD_AI_BASE_URL / HD_AI_MODEL.
+# See deploy/README.md "Vault" for the seeding procedure.
 drivers:
   openai:
     engines:
       default:
-        api_key: '{% with .env.OPENAI_API_KEY %}{% . %}{% else %}LOOKUP[vault,/secrets/data/<ns>/daemon#openai_api_key]{% end %}'
+        api_key: 'LOOKUP[vault,/secrets/data/<ns>/daemon#openai_api_key]'
         base_url: '{% default "https://api.openai.com/v1" .env.AI_BASE_URL %}'
         model: '{% default "gpt-5.4-mini" .env.AI_MODEL %}'
       openrouter:
-        api_key: '{% with .env.OPENROUTER_API_KEY %}{% . %}{% else %}LOOKUP[vault,/secrets/data/<ns>/daemon#openrouter_api_key]{% end %}'
+        api_key: 'LOOKUP[vault,/secrets/data/<ns>/daemon#openrouter_api_key]'
         base_url: https://openrouter.ai/api/v1
         model: '{% default "qwen/qwen3.5-9b" .env.AI_MODEL %}'
