@@ -1,0 +1,31 @@
+# Compatibility stubs required by honeydipper-config-essentials when the
+# GitHub/Slack/Kubernetes integrations are disabled (options without_*).
+#
+# Why these exist:
+#   * essentials contexts.yaml always references a `notify` workflow, but that
+#     workflow is only generated when Slack is enabled.
+#   * the AI `get_files` tool calls the `github_getContent` workflow, which is
+#     only defined when GitHub is enabled.
+#   * the AI `curl` tool calls driver `web.request`; essentials only declares
+#     the web driver meta, so a (possibly empty) driver data block is required
+#     for configcheck to consider the driver defined.
+#
+# These no-ops are never triggered while the corresponding integrations stay
+# disabled. If you enable Slack or GitHub in init.yaml, remove this include and
+# the file.
+workflows:
+  notify:
+    description: no-op chat notification stub when no chat system is configured.
+    on_error: exit
+    on_failure: exit
+    with:
+      notify+: []
+      notify_on_error+: []
+  github_getContent:
+    description: no-op file fetching stub when the GitHub integration is disabled.
+    call_driver: redispubsub.send
+    parameters:
+      broadcastSubject: unused
+
+drivers:
+  web: {}

@@ -1,0 +1,17 @@
+# AI engine definitions for the model drivers.
+#
+# Contract: every engine always emits `api_key`, `base_url` and `model` so the
+# model driver never has to guess defaults. Secret material falls back to a
+# Vault LOOKUP using the <ns> namespace prefix when the environment variable is
+# not set.
+drivers:
+  openai:
+    engines:
+      default:
+        api_key: '{% with .env.OPENAI_API_KEY %}{% . %}{% else %}LOOKUP[vault,/secrets/data/<ns>/daemon#openai_api_key]{% end %}'
+        base_url: '{% default "https://api.openai.com/v1" .env.AI_BASE_URL %}'
+        model: '{% default "gpt-5.4-mini" .env.AI_MODEL %}'
+      openrouter:
+        api_key: '{% with .env.OPENROUTER_API_KEY %}{% . %}{% else %}LOOKUP[vault,/secrets/data/<ns>/daemon#openrouter_api_key]{% end %}'
+        base_url: https://openrouter.ai/api/v1
+        model: '{% default "qwen/qwen3.5-9b" .env.AI_MODEL %}'

@@ -1,0 +1,32 @@
+# Honeydipper Starter bootstrap configuration.
+#
+# This directory is the Honeydipper bootstrap config repo. To boot a daemon
+# point the REPO environment variable at this directory (or at a git clone URL
+# of this repository). Core plumbing (Valkey/Redis eventbus, API, Vault-backed
+# secrets and AI model access) is composed on top of
+# honeydipper-config-essentials@v4-rc.
+#
+# Options below disable integrations that are not part of the "core" starter
+# stack (GitHub, Slack, Kubernetes). Vault and AI are enabled by default.
+#
+# If you later enable Slack or GitHub (remove the matching `without_*` option),
+# also remove the corresponding compatibility stubs from the `includes` list:
+#   - stubs/compat.yaml provides no-op stand-ins for workflows/drivers that
+#     only exist when Slack/GitHub are enabled (notify, github_getContent, web).
+repos:
+  - repo: https://github.com/honeydipper/honeydipper-config-essentials.git
+    branch: v4-rc
+    options:
+      without_github: "1"
+      without_slack: "1"
+      without_kubernetes: "1"
+      vault: "1"
+      ai: "1"
+
+includes:
+  - daemon.yaml
+  - auth.yaml
+  - engines.yaml
+  - agents.yaml
+  - contexts.yaml
+  - stubs/compat.yaml

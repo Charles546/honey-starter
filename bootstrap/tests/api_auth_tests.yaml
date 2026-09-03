@@ -1,0 +1,37 @@
+# Authorization contract tests executed by `honeydipper configcheck`.
+#
+# They mirror the casbin policies from auth.yaml (subject <user> bound to the
+# editor role) and the editor semantics defined in
+# honeydipper-config-essentials/api_auth.yaml:
+#   p, editor, everything, write, auth-simple
+#
+# Note: the essentials casbin model contains "write implies read" rules, so an
+# editor may read everything as well. `mallory` is not bound to any role and is
+# denied.
+models: []
+policies: []
+tests:
+  - name: editor can write everything
+    subject: <user>
+    object: everything
+    action: PUT
+    provider: auth-simple
+    result: true
+  - name: editor can read everything
+    subject: <user>
+    object: everything
+    action: GET
+    provider: auth-simple
+    result: true
+  - name: anonymous write denied
+    subject: mallory
+    object: everything
+    action: PUT
+    provider: auth-simple
+    result: false
+  - name: anonymous read denied
+    subject: mallory
+    object: everything
+    action: GET
+    provider: auth-simple
+    result: false
