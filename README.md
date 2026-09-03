@@ -45,6 +45,11 @@ The starter composes a trimmed-down Honeydipper deployment on top of
   compose file references them as `hd-secret-file://identity/...`, which the
   image entrypoint materializes before exec — the values never appear in the
   compose file.
+- Optional process env secrets (e.g. `HD_JWT_SIGNING_KEY`, read via
+  `os.Getenv`) can be kept inside Vault too by setting them as
+  `hd-lookup:vault:/secrets/data/<ns>/daemon#<key>` values — the
+  `HD_SECURE_LOADER` exec-mode resolves them before the daemon process starts
+  (see `deploy/README.md` → `HD_JWT_SIGNING_KEY`).
 
 See `deploy/README.md` → *Vault* for the full mechanism and the three
 environment namespaces (`HD_*` template-fed, plain env, `hd-secret-file://`).
@@ -56,16 +61,20 @@ Bring-up is two-phase because Vault starts sealed and the daemon resolves
 Vault secrets at boot:
 
 ```bash
-# 1) render config + seed Vault (see deploy/README.md; Phase 3 automates this)
+# 1) render config (see deploy/README.md; Phase 3 automates this)
 # 2) infrastructure
 docker compose -f deploy/docker-compose.yaml up -d valkey vault
-# 3) initialize/unseal vault + seed secrets (start.sh in Phase 3)
+# 3) initialize/unseal vault + seed secrets
+#    Vault is unreachable from the host by network design — every step uses
+#    `docker compose exec vault vault ...` (helpers in scripts/lib.sh).
+#    Phase 3 (scripts/start.sh) automates this.
 # 4) application
 docker compose -f deploy/docker-compose.yaml up -d daemon ui
 ```
 
 Then open `http://localhost:8090` for the UI and `http://localhost:9000/healthz`
-for the daemon health check.
+for the daemon health check. See `deploy/README.md` → *Vault reachability
+contract* for the host→Vault access model.
 
 ## Validation
 
@@ -142,9 +151,11 @@ bash test/smoke-stack.sh
 
 Boots the whole compose stack in a throwaway project: initializes and unseals
 Vault, enables KV v2 + AppRole with a read-only path-scoped policy, seeds the
-namespace secrets, boots daemon + ui, and asserts the trust chain end to end:
-`/healthz` 200, admin bearer-token auth, anonymous denial, AppRole write/scope
-denial, and UI 200. See `deploy/README.md` → *Validation* for details.
+namespace secrets **plus a decoy secret outside the AppRole scope**, boots
+daemon + ui, and asserts the trust chain end to end: `/healthz` 200, admin
+bearer-token auth, anonymous denial, AppRole write denial and a genuine
+permission-denied (not a vacuous 404) on an out-of-scope read, and UI 200.
+See `deploy/README.md` → *Validation* for details.
 
 Docker-gated (skips cleanly when docker is unavailable), so re-run on a
 docker-enabled host before merge.
@@ -178,14 +189,26 @@ binaries and are **not** visible to templates. See `deploy/README.md` →
 
 ### Config reload behavior
 
-The daemon runs a `Watch()` loop that, every `configCheckInterval`
-(default `1m`, tunable via `HD_CONFIG_CHECK_INTERVAL` in the compose
-deployment), calls `Refresh()` and then, if the config changed, re-assembles
-and triggers `OnChange()`. For a **local-dir init repo** (the `REPO` points at
-a local directory and `BRANCH` is unset) `refreshRepo()` always reloads and
-returns "changed", so the config is **re-assembled and reloaded
-unconditionally every interval** — even if the files are byte-identical. Two
-practical consequences:
+The daemon runs a `Watch()` loop that, every `configCheckInterval`,
+calls `Refresh()` and then, if the config changed, re-assembles and triggers
+`OnChange()`. The bare (non-compose) default is `1m`; **the compose deployment
+defaults `HD_CONFIG_CHECK_INTERVAL` to `30m`** (see below for why).
+
+For a **local-dir init repo** (the `REPO` points at a local directory and
+`BRANCH` is unset — exactly the compose deployment) `refreshRepo()` always
+reloads and returns "changed", so the config is **re-assembled and reloaded
+unconditionally every interval** — even if the files are byte-identical.
+Because every reload re-resolves every Vault `LOOKUP` with a fresh AppRole
+login, a `1m` interval would mean **per-minute AppRole churn**, and while
+Vault is down, a **reload storm** (`/healthz` flaps to 500 until Vault
+returns). `30m` is the shipped compose default as a deliberate tradeoff:
+config/secret changes may take up to the interval to apply, in exchange for
+bounded churn and reload-storm behavior. The interval stays env-tunable, and
+once upstream gains fsnotify-backed reloads the per-minute default becomes
+safe again. See `deploy/README.md` → *Config reload behavior* for the full
+rationale and the **Vault outage behavior** description.
+
+Practical consequences:
 
 - **Prefer atomic writes when editing a live config:** write to a temp file
   and `mv` it into place. If the daemon re-assembles mid-write (partial
@@ -193,8 +216,9 @@ practical consequences:
   running config** (`Config.RollBack()`); an atomic `mv` avoids the partial
   read entirely.
 - **To opt out of periodic reloads entirely**, set
-  `daemon.watchConfig: false` in `bootstrap/daemon.yaml`. The default is
-  `true` (watch enabled).
+  `daemon.watchConfig: false` in `bootstrap/daemon.yaml`; config/secret
+  changes then require `docker compose restart daemon`. The default is `true`
+  (watch enabled).
 
 ### Supply chain and network
 
@@ -206,6 +230,11 @@ different places:
   `git` during config load/`configcheck`). The workflow/context/agent
   definitions, the essentials API-auth model, and the AI *engines* (model,
   base URL) all come from these git config repos.
+  `v4-rc` is a **moving branch**, and the honeydipper repo schema supports
+  branch references only (no commit-hash pin field), so an upstream change to
+  `v4-rc` can alter what `configcheck`/a fresh daemon loads. If you need a
+  fully deterministic essentials config, fork the essentials repo (or vendor
+  a local copy) and point `bootstrap/init.yaml` at your fork/branch.
 - **Driver binary registry (HTTPS):** the `openai` **driver binary** is
   downloaded from the remote driver registry
   `https://charles546.github.io/honeydipper-registry`, pinned to the
@@ -221,7 +250,7 @@ configured engine points at (e.g. `https://api.openai.com/v1`, or your
 `AI_BASE_URL`). The `channel: stable` pin means the driver binary only
 changes when the registry's stable channel is updated deliberately. In the
 compose deployment these egress requirements belong to the `edge` network
-(`daemon` and `ui`); the `data` network is internal.
+(`daemon` and `ui`); the backend `data-vault` / `data-valkey` networks are internal and reachable only from the daemon (see `deploy/README.md`).
 
 ### Enabling/disabling integrations
 

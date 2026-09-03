@@ -12,6 +12,11 @@
 #   # 3) application (depends_on waits for vault healthy == unsealed)
 #   docker compose -f deploy/docker-compose.yaml up -d daemon ui
 #
+# Vault is unreachable from the host by network design (see networks below);
+# all init/unseal/policy/seeding operations are performed with
+# `docker compose exec vault ...` (the vault_exec / vault_exec_token helpers
+# in scripts/lib.sh). Do not publish port 8200.
+#
 # Relative host paths below are anchored at this file's directory (deploy/),
 # so e.g. `../vault/vault.hcl` means <repo>/vault/vault.hcl.
 #
@@ -31,11 +36,13 @@ services:
     image: ${VALKEY_IMAGE:-valkey/valkey:8.1.0}
     restart: unless-stopped
     networks:
-      - data
+      - data-valkey
     volumes:
       - valkey-data:/data
-    # --protected-mode no is safe here: the data network is internal and
-    # valkey publishes no host port. The daemon reaches it through LOCALREDIS.
+    # --protected-mode no is safe here: valkey is on the internal data-valkey
+    # network only, publishes no host port, and cannot be reached by Vault
+    # (vault is on the separate data-vault network). The daemon reaches it
+    # through LOCALREDIS.
     command: ["valkey-server", "--protected-mode", "no", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -48,22 +55,29 @@ services:
     image: ${VAULT_IMAGE:-hashicorp/vault:1.21.1}
     restart: unless-stopped
     networks:
-      - data
+      - data-vault
     # Vault wants to mlock its memory (disable_mlock=false in vault.hcl) and
     # the official image setcaps the binary before dropping to the vault user,
     # so we keep the image's base capabilities and add exactly IPC_LOCK.
     cap_add:
       - IPC_LOCK
     environment:
-      # used by the vault CLI / status healthcheck inside the container
+      # used by the vault CLI / status healthcheck inside the container.
+      # NEVER set VAULT_DEV_ROOT_TOKEN_ID or VAULT_DEV_LISTEN_ADDRESS here:
+      # the official image entrypoint injects both into `vault server` args
+      # whenever the subcommand is "server", and if dev mode were ever
+      # activated they would take effect (see M4 note in vault/vault.hcl).
       VAULT_ADDR: http://127.0.0.1:8200
     volumes:
       - ../vault/vault.hcl:/vault/config/vault.hcl:ro
       - vault-file:/vault/file
     # Override the image default CMD ["server","-dev"]: run a real server from
     # /vault/config (file backend, sealed on first start). The official
-    # entrypoint also injects -dev-* flags; outside dev mode the server ignores
-    # them (with a warning) and uses the file config above.
+    # entrypoint appends -dev-root-token-id= / -dev-listen-address=... to the
+    # args whenever the subcommand is "server"; Vault only consults those flags
+    # when dev mode is active (flagDev), and they do NOT by themselves enable
+    # dev mode, so a non-dev file-backed server runs here and no warning is
+    # emitted for the injected flags.
     command: ["server"]
     healthcheck:
       # exit 0 only when initialized AND unsealed
@@ -82,7 +96,8 @@ services:
       vault:
         condition: service_healthy
     networks:
-      - data
+      - data-valkey
+      - data-vault
       - edge
     ports:
       - "${HD_API_HOST_PORT:-9000}:${HD_API_PORT:-9000}"
@@ -104,9 +119,20 @@ services:
       # Template-fed daemon settings (HD_* -> .env.<suffix>).
       HD_API_PORT: ${HD_API_PORT:-9000}
       HD_UI_URL: ${HD_UI_URL:-http://localhost:8090}
-      HD_CONFIG_CHECK_INTERVAL: ${HD_CONFIG_CHECK_INTERVAL:-1m}
+      # Deliberately 30m (not 1m): every configCheckInterval tick re-assembles
+      # the local-dir init repo unconditionally (refreshRepo() treats a local
+      # path with no BRANCH as "uncommitted" and returns true every tick), and
+      # each reload re-resolves every Vault LOOKUP with a fresh AppRole login.
+      # 1m would mean per-minute AppRole churn and, while Vault is down, a
+      # reload storm with /healthz flapping (see deploy/README.md "Config
+      # reload behavior"). The interval stays env-tunable via
+      # HD_CONFIG_CHECK_INTERVAL; once fsnotify-backed reloads exist upstream,
+      # a per-minute (or instant) interval becomes safe again.
+      HD_CONFIG_CHECK_INTERVAL: ${HD_CONFIG_CHECK_INTERVAL:-30m}
       # Optional: JWT signing key for principal session tokens, read directly
-      # by the api service. auth-simple token auth works without it.
+      # by the api service. auth-simple token auth works without it. If set,
+      # prefer an hd-lookup:vault:... value (see deploy/README.md) so the key
+      # material stays inside Vault.
       HD_JWT_SIGNING_KEY: ${HD_JWT_SIGNING_KEY:-}
       # git / the remote-driver installer want a writable home + temp area.
       HOME: /tmp
@@ -147,10 +173,16 @@ services:
       - no-new-privileges:true
 
 networks:
-  # data carries valkey + vault only. It is internal (no external route) and
-  # neither service publishes a host port, so only other containers on this
-  # network can reach Vault. The daemon reaches them by service name.
-  data:
+  # data-vault carries vault + daemon only; data-valkey carries valkey + daemon
+  # only. Both are internal (no external route) and neither backend publishes a
+  # host port. Splitting keeps the unauthenticated valkey and Vault unable to
+  # reach each other (no lateral movement if either is compromised), and only
+  # the daemon bridges the two. Vault is therefore reachable only by the daemon
+  # (plus `docker compose exec`, which goes through the docker API, not the
+  # container network).
+  data-vault:
+    internal: true
+  data-valkey:
     internal: true
   # edge carries the daemon + ui and provides outbound internet (git config
   # repos, remote driver registry) and the published API/UI ports.

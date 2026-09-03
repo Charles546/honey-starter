@@ -16,6 +16,10 @@
 #   5. the AppRole policy denies writes and reads outside the scoped path.
 #   6. the UI serves HTTP 200 through the published port.
 #
+# Vault init/unseal/policy/seeding all happen through `docker compose exec
+# vault` (the vault_exec helpers in scripts/lib.sh): Vault publishes no host
+# port and is unreachable from the host by network design.
+#
 # Requires: docker (compose v2), network, curl, jq, openssl, htpasswd.
 # Skips gracefully (exit 0) when docker is unavailable.
 #
@@ -23,8 +27,6 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-DEPLOY_DIR="${HERE}/deploy"
-COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.yaml"
 
 # Namespace/user used for both the config placeholders and Vault seeding.
 : "${SMOKE_NS:=smoke}"
@@ -62,6 +64,33 @@ export HD_CONFIG_CHECK_INTERVAL="${HD_CONFIG_CHECK_INTERVAL:-30m}"
 HD_JWT_SIGNING_KEY="$(openssl rand -hex 32)"
 export HD_JWT_SIGNING_KEY
 
+# --port-preflight (best-effort): abort if a requested host port is already
+# serving HTTP on this host. Uses curl against 127.0.0.1 so both 127.0.0.1- and
+# 0.0.0.0-bound HTTP listeners are caught without needing root for an ss/bind
+# probe. This is best-effort: it cannot catch non-HTTP services on the port,
+# IPv6-only binds, or a firewall that drops the probe. The default smoke ports
+# (19000/19080) are high and normally free; if a port is occupied, override
+# HD_API_HOST_PORT/HD_UI_HOST_PORT.
+port_preflight() {
+  local port="$1"
+  local what="$2"
+  if curl -s -o /dev/null --connect-timeout 1 "http://127.0.0.1:${port}/" 2>/dev/null; then
+    echo "ERROR: ${what} host port ${port} is already in use; set" >&2
+    echo "       HD_API_HOST_PORT/HD_UI_HOST_PORT to free ports" >&2
+    exit 1
+  fi
+  echo "  [ok] host port ${port} free (${what})"
+}
+echo "--- host port preflight"
+port_preflight "${HD_API_HOST_PORT}" "daemon API"
+port_preflight "${HD_UI_HOST_PORT}" "UI"
+
+# Source the shared library AFTER setting smoke exports so it does not read a
+# host .env (HONEY_STARTER_NO_ENV=1) and picks up COMPOSE_FILE/COMPOSE_PROJECT_NAME.
+export HONEY_STARTER_NO_ENV=1
+# shellcheck source=../scripts/lib.sh
+source "${HERE}/scripts/lib.sh"
+
 COMPOSE=(docker compose -f "${COMPOSE_FILE}")
 
 cleanup() {
@@ -92,26 +121,6 @@ echo "--- admin token generated (bcrypt hash stored in Vault only)"
 # --- start infrastructure ---------------------------------------------------
 echo "--- starting valkey + vault"
 "${COMPOSE[@]}" up -d valkey vault
-
-# Run `vault <args>` inside the vault service container as the vault user.
-# `docker compose exec` syntax is: exec [OPTIONS] SERVICE COMMAND [ARGS...],
-# and it bypasses the image entrypoint (which normally drops root -> vault and
-# chowns /vault). Passing --user vault keeps init/unseal writes owned
-# consistently with the running server, which also runs as the vault user.
-# Note the service name ("vault") and the CLI binary ("vault") are distinct
-# positional tokens.
-vault_exec() {
-  local svc="vault"
-  "${COMPOSE[@]}" exec -i -T --user "${svc}" "${svc}" vault "$@"
-}
-
-# Same as vault_exec but with an explicit token in the container environment.
-vault_exec_token() {
-  local token="$1"
-  shift
-  local svc="vault"
-  "${COMPOSE[@]}" exec -i -T --user "${svc}" -e "VAULT_TOKEN=${token}" "${svc}" vault "$@"
-}
 
 echo "--- waiting for vault API"
 vault_out=""
@@ -178,9 +187,11 @@ SECRET_ID="$(vault_exec_token "${ROOT_TOKEN}" write -field=secret_id \
   auth/approle/role/daemon/secret-id)"
 
 # identity files are mounted read-only into the daemon at /var/hd-secrets/identity
+# (printf '%s' -> no trailing newline; chmod 600 keeps them host-user-only).
 printf '%s' "${ROLE_ID}" > "${STATE}/identity/role_id"
 printf '%s' "${SECRET_ID}" > "${STATE}/identity/secret_id"
-echo "--- AppRole identity files written"
+chmod 600 "${STATE}/identity/role_id" "${STATE}/identity/secret_id"
+echo "--- AppRole identity files written (chmod 600, no trailing newline)"
 
 # --- seed namespace secrets ---------------------------------------------------
 vault_exec_token "${ROOT_TOKEN}" kv put "secrets/${SMOKE_NS}/daemon" \
@@ -189,6 +200,16 @@ vault_exec_token "${ROOT_TOKEN}" kv put "secrets/${SMOKE_NS}/daemon" \
   openrouter_api_key=sk-smoke-openrouter \
   >/dev/null
 echo "--- seeded secrets/data/${SMOKE_NS}/daemon"
+
+# --- seed a decoy secret OUTSIDE the AppRole scope ----------------------------
+# M1: the "read outside scope denied" assertion below must distinguish a real
+# permission denial (403) from a vacuous 404 (path never existed). Seeding a
+# decoy first means the path exists, so a wide-open policy would succeed and
+# the test would catch it.
+vault_exec_token "${ROOT_TOKEN}" kv put secrets/other/secret \
+  decoy=value \
+  >/dev/null
+echo "--- seeded decoy secrets/data/other/secret (outside AppRole scope)"
 
 # --- start daemon + ui ---------------------------------------------------------
 echo "--- starting daemon + ui (daemon waits for vault healthy == unsealed)"
@@ -249,12 +270,25 @@ if vault_exec_token "${DAEMON_TOKEN}" kv put \
 fi
 echo "--- AppRole write denied"
 
-if vault_exec_token "${DAEMON_TOKEN}" read \
-  "secrets/data/other/secret" >/dev/null 2>&1; then
+# The decoy secret at secrets/data/other/secret EXISTS (seeded above), so a
+# denied read here must be a genuine permission-denied (HTTP 403), not a
+# vacuous 404. Vault's CLI prints the error to stderr and exits non-zero;
+# grep for the "permission denied" marker.
+set +e
+denied_out="$(vault_exec_token "${DAEMON_TOKEN}" read \
+  "secrets/data/other/secret" 2>&1)"
+denied_rc=$?
+set -e
+if [ "${denied_rc}" -eq 0 ]; then
   echo "FAIL: AppRole policy allowed reading outside the scoped path" >&2
   exit 1
 fi
-echo "--- AppRole read outside scope denied"
+if ! printf '%s' "${denied_out}" | grep -qi "permission denied"; then
+  echo "FAIL: expected 'permission denied' reading outside scope, got:" >&2
+  echo "${denied_out}" >&2
+  exit 1
+fi
+echo "--- AppRole read outside scope denied (permission denied, 403)"
 
 # --- UI check -------------------------------------------------------------------
 UI_URL="http://localhost:${HD_UI_HOST_PORT}"

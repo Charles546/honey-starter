@@ -9,16 +9,33 @@
 drivers:
   daemon:
     # How often the daemon's Watch() loop re-checks (and re-assembles) the
-    # bootstrap config before invoking OnChange. Upstream default is 1m; the
-    # docker deployment feeds HD_CONFIG_CHECK_INTERVAL through here.
+    # bootstrap config before invoking OnChange. The docker deployment feeds
+    # HD_CONFIG_CHECK_INTERVAL through here and defaults it to 30m; the bare
+    # default below (1m) applies only to a non-compose local daemon.
     #
-    # Note on local-dir init repos (BRANCH unset): refreshRepo() treats an
-    # existing local path with no branch as "uncommitted working dir" and
-    # therefore returns true on every tick, so the config is re-assembled and
-    # reloaded unconditionally each interval (see README "Config reload
-    # behavior"). To disable periodic reloads entirely, set:
+    # Deliberate tradeoff (docker deployment): a local-dir init repo
+    # (BRANCH unset) is treated by refreshRepo() as an "uncommitted working
+    # dir" that returns true on EVERY tick, so the config is re-assembled
+    # and reloaded unconditionally each interval — and every reload
+    # re-resolves every Vault LOOKUP with a fresh AppRole login. 1m would
+    # therefore mean per-minute AppRole churn and, while Vault is down, a
+    # reload storm (the failed reload rolls back to the last-good raw config
+    # which still holds undecrypted LOOKUP strings, so OnChange retries every
+    # tick until Vault returns; /healthz flaps meanwhile). 30m is the
+    # shipped default because it matches the smoke test and hd-home, and it
+    # bounds both effects; the interval stays env-tunable. Once upstream
+    # gains fsnotify-backed reloads, a per-minute (or instant) interval
+    # becomes safe again — until then, prefer atomic writes when editing a
+    # live config (see README "Config reload behavior").
+    #
+    # To disable periodic reloads entirely, set:
     #   daemon.watchConfig: false
+    # and restart the daemon to apply config/secret changes.
     configCheckInterval: '{% default "1m" .env.CONFIG_CHECK_INTERVAL %}'
+    # pod_id_signing_secret is intentionally ABSENT: it signs pod/agent
+    # identifiers for github/kubernetes/podman integrations, none of which the
+    # starter enables (init.yaml: without_github/kubernetes). Do not "fix" this
+    # by adding it without also enabling one of those integrations.
     services:
       api:
         listener:
