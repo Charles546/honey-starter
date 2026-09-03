@@ -1,32 +1,52 @@
 # Daemon-level control plane and core driver connection data.
 #
-# The connection settings for the core drivers point at a Valkey/Redis
-# instance and can be overridden through the environment at config-load time
-# (all values below are resolved when the config file is read).
+# Template environment contract: the config loader exposes ONLY environment
+# variables prefixed HD_ to the `{% .env.X %}` templates, with the prefix
+# stripped. So `{% .env.API_PORT %}` is fed by the real env var HD_API_PORT.
+# Plain (non-HD_) env vars such as LOCALREDIS and VAULT_* are consumed
+# directly by the daemon/driver processes and are NOT visible to templates.
+# See deploy/README.md "Environment namespaces".
 drivers:
   daemon:
     # How often the daemon's Watch() loop re-checks (and re-assembles) the
-    # bootstrap config before invoking OnChange. The upstream default is also
-    # 1m; we pin it explicitly here because the contract states it.
+    # bootstrap config before invoking OnChange. The docker deployment feeds
+    # HD_CONFIG_CHECK_INTERVAL through here and defaults it to 30m; the bare
+    # default below (1m) applies only to a non-compose local daemon.
     #
-    # Note on local-dir init repos (BRANCH unset): refreshRepo() treats an
-    # existing local path with no branch as "uncommitted working dir" and
-    # therefore returns true on every tick, so the config is re-assembled and
-    # reloaded unconditionally each interval (see README "Config reload
-    # behavior"). To disable periodic reloads entirely, set:
+    # Deliberate tradeoff (docker deployment): a local-dir init repo
+    # (BRANCH unset) is treated by refreshRepo() as an "uncommitted working
+    # dir" that returns true on EVERY tick, so the config is re-assembled
+    # and reloaded unconditionally each interval — and every reload
+    # re-resolves every Vault LOOKUP with a fresh AppRole login. 1m would
+    # therefore mean per-minute AppRole churn and, while Vault is down, a
+    # reload storm (the failed reload rolls back to the last-good raw config
+    # which still holds undecrypted LOOKUP strings, so OnChange retries every
+    # tick until Vault returns; /healthz flaps meanwhile). 30m is the
+    # shipped default because it matches the smoke test and hd-home, and it
+    # bounds both effects; the interval stays env-tunable. Once upstream
+    # gains fsnotify-backed reloads, a per-minute (or instant) interval
+    # becomes safe again — until then, prefer atomic writes when editing a
+    # live config (see README "Config reload behavior").
+    #
+    # To disable periodic reloads entirely, set:
     #   daemon.watchConfig: false
-    configCheckInterval: 1m
+    # and restart the daemon to apply config/secret changes.
+    configCheckInterval: '{% default "1m" .env.CONFIG_CHECK_INTERVAL %}'
+    # pod_id_signing_secret is intentionally ABSENT: it signs pod/agent
+    # identifiers for github/kubernetes/podman integrations, none of which the
+    # starter enables (init.yaml: without_github/kubernetes). Do not "fix" this
+    # by adding it without also enabling one of those integrations.
     services:
       api:
         listener:
-          addr: ':{% default "9000" .env.HD_API_PORT %}'
+          addr: ':{% default "9000" .env.API_PORT %}'
         # Base URL of the Honeydipper UI. The API *store* consumes this only
         # when building SAML/OAuth provider redirect URLs
         # (internal/api/store.go, uiBase + /auth/saml/callback); startAPIListener
         # itself reads only listener.addr, api_prefix and healthcheck_prefix.
-        # With auth-simple alone (Phase 1, no SAML/OAuth providers) this value
-        # is inert; it is retained for the Phase 2 UI and SAML wiring.
-        ui_url: '{% default "" .env.HD_UI_URL %}'
+        # With auth-simple alone (no SAML/OAuth providers) this value is inert;
+        # it matters once the UI is deployed (Phase 2). Fed by HD_UI_URL.
+        ui_url: '{% default "" .env.UI_URL %}'
         auth:
           entitlementCacheTTL: 5m
     registries:
@@ -49,9 +69,12 @@ drivers:
             - agent_driver
 
   # ---- core driver connection data (Valkey/Redis) --------------------------
-  # 127.0.0.1:6379 is correct for a local daemon (Phase 1). When deployed via
-  # docker-compose (Phase 2) this must be overridden to the valkey service
-  # host (e.g. valkey:6379) through .env VALKEY_ADDR.
+  # The defaults below target a local Valkey/Redis on 127.0.0.1:6379, correct
+  # for a bare local daemon. In the docker-compose deployment every redis-backed
+  # core driver (redisqueue, redispubsub, redislock, redis-cache, api-broadcast,
+  # redis-scheduler) is redirected at runtime through the LOCALREDIS env var,
+  # which overrides these connection blocks entirely, so the HD_VALKEY_*
+  # template values are inert there. See deploy/README.md.
   redisqueue:
     connection:
       Addr: '{% default "127.0.0.1:6379" .env.VALKEY_ADDR %}'
@@ -76,11 +99,11 @@ drivers:
       Password: '{% default "" .env.VALKEY_PASSWORD %}'
 
   # ---- Vault driver connection data ----------------------------------------
-  # The Vault driver reads `data.addr` and `data.token` from its driver data
-  # block; both can be overridden with VAULT_ADDR/VAULT_TOKEN environment
-  # variables. Secrets referenced from other drivers via
-  # `LOOKUP[vault,/secrets/data/<ns>/daemon#...]` resolve through this driver.
-  vault:
-    data:
-      addr: '{% default "http://localhost:8200" .env.VAULT_ADDR %}'
-      token: '{% default "" .env.VAULT_TOKEN %}'
+  # Intentionally EMPTY. The vault driver is configured entirely through plain
+  # environment variables (VAULT_ADDR plus AppRole VAULT_ROLE_ID /
+  # VAULT_SECRET_ID, the latter materialized from hd-secret-file:// values by
+  # the container entrypoint). Do not declare `addr`/`token`/`k8sRole` here:
+  # config values shadow the env fallback in the driver and the daemon must
+  # never hold the Vault root token. Never set VAULT_K8S_ROLE (kubernetes auth
+  # preempts AppRole in the driver). See deploy/README.md "Vault".
+  vault: {}

@@ -1,0 +1,194 @@
+# honey-starter docker deployment.
+#
+# Bring-up is intentionally two-phase so that Vault can be initialized,
+# unsealed and seeded *before* the daemon boots (the daemon resolves Vault
+# secrets at config-load time; see deploy/README.md):
+#
+#   # 1) infrastructure (valkey + vault; vault starts sealed)
+#   docker compose -f deploy/docker-compose.yaml up -d valkey vault
+#   # 2) initialize/unseal vault, enable KV v2 + AppRole, write identity
+#   #    files, seed secrets/data/<ns>/daemon
+#   #    (test/smoke-stack.sh automates all of this)
+#   # 3) application (depends_on waits for vault healthy == unsealed)
+#   docker compose -f deploy/docker-compose.yaml up -d daemon ui
+#
+# Vault is unreachable from the host by network design (see networks below);
+# all init/unseal/policy/seeding operations are performed with
+# `docker compose exec vault ...` (the vault_exec / vault_exec_token helpers
+# in scripts/lib.sh). Do not publish port 8200.
+#
+# Relative host paths below are anchored at this file's directory (deploy/),
+# so e.g. `../vault/vault.hcl` means <repo>/vault/vault.hcl.
+#
+# Host-visible state defaults to <repo>/.honey-starter (gitignored); override
+# with HD_STATE_DIR. Before `up -d daemon`, that directory must contain a
+# rendered config/ copy (placeholders replaced) and identity/ files.
+#
+# Environment namespaces (see deploy/README.md):
+#   * HD_*              template-fed daemon settings (.env.<suffix>)
+#   * plain env         consumed directly by processes (REPO, LOCALREDIS,
+#                       VAULT_*, HD_SECURE_LOADER, HD_JWT_SIGNING_KEY)
+#   * hd-secret-file:// values materialized by the docker entrypoint from
+#                       /var/hd-secrets/<name> before the process execs
+
+services:
+  valkey:
+    image: ${VALKEY_IMAGE:-valkey/valkey:8.1.0}
+    restart: unless-stopped
+    networks:
+      - data-valkey
+    volumes:
+      - valkey-data:/data
+    # --protected-mode no is safe here: valkey is on the internal data-valkey
+    # network only, publishes no host port, and cannot be reached by Vault
+    # (vault is on the separate data-vault network). The daemon reaches it
+    # through LOCALREDIS.
+    command: ["valkey-server", "--protected-mode", "no", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  vault:
+    image: ${VAULT_IMAGE:-hashicorp/vault:1.21.1}
+    restart: unless-stopped
+    networks:
+      - data-vault
+    # Vault wants to mlock its memory (disable_mlock=false in vault.hcl) and
+    # the official image setcaps the binary before dropping to the vault user,
+    # so we keep the image's base capabilities and add exactly IPC_LOCK.
+    cap_add:
+      - IPC_LOCK
+    environment:
+      # used by the vault CLI / status healthcheck inside the container.
+      # NEVER set VAULT_DEV_ROOT_TOKEN_ID or VAULT_DEV_LISTEN_ADDRESS here:
+      # the official image entrypoint injects both into `vault server` args
+      # whenever the subcommand is "server", and if dev mode were ever
+      # activated they would take effect (see M4 note in vault/vault.hcl).
+      VAULT_ADDR: http://127.0.0.1:8200
+    volumes:
+      - ../vault/vault.hcl:/vault/config/vault.hcl:ro
+      - vault-file:/vault/file
+    # Override the image default CMD ["server","-dev"]: run a real server from
+    # /vault/config (file backend, sealed on first start). The official
+    # entrypoint appends -dev-root-token-id= / -dev-listen-address=... to the
+    # args whenever the subcommand is "server"; Vault only consults those flags
+    # when dev mode is active (flagDev), and they do NOT by themselves enable
+    # dev mode, so a non-dev file-backed server runs here and no warning is
+    # emitted for the injected flags.
+    command: ["server"]
+    healthcheck:
+      # exit 0 only when initialized AND unsealed
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  daemon:
+    image: ${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:4.0.0-alpha4-53-g897242b}
+    restart: unless-stopped
+    depends_on:
+      valkey:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    networks:
+      - data-valkey
+      - data-vault
+      - edge
+    ports:
+      - "${HD_API_HOST_PORT:-9000}:${HD_API_PORT:-9000}"
+    environment:
+      # config repo (rendered copy of bootstrap/; read-only mount below)
+      REPO: /etc/honeydipper/config
+      # Redis-compatible event bus. LOCALREDIS overrides the connection data
+      # of every redis-backed core driver at runtime (see deploy/README.md).
+      LOCALREDIS: redis://valkey:6379
+      # Vault connection for the vault driver subprocess. Credentials are
+      # AppRole (role_id + secret_id), materialized by the entrypoint from
+      # /var/hd-secrets/identity/*. NO root token is ever given to the daemon.
+      VAULT_ADDR: http://vault:8200
+      VAULT_ROLE_ID: hd-secret-file://identity/role_id
+      VAULT_SECRET_ID: hd-secret-file://identity/secret_id
+      # Wrap the honeydipper process in the vault secure-loader so any env
+      # value of the form hd-lookup:... is resolved from Vault at start.
+      HD_SECURE_LOADER: ./hd-driver-vault
+      # Template-fed daemon settings (HD_* -> .env.<suffix>).
+      HD_API_PORT: ${HD_API_PORT:-9000}
+      HD_UI_URL: ${HD_UI_URL:-http://localhost:8090}
+      # Deliberately 30m (not 1m): every configCheckInterval tick re-assembles
+      # the local-dir init repo unconditionally (refreshRepo() treats a local
+      # path with no BRANCH as "uncommitted" and returns true every tick), and
+      # each reload re-resolves every Vault LOOKUP with a fresh AppRole login.
+      # 1m would mean per-minute AppRole churn and, while Vault is down, a
+      # reload storm with /healthz flapping (see deploy/README.md "Config
+      # reload behavior"). The interval stays env-tunable via
+      # HD_CONFIG_CHECK_INTERVAL; once fsnotify-backed reloads exist upstream,
+      # a per-minute (or instant) interval becomes safe again.
+      HD_CONFIG_CHECK_INTERVAL: ${HD_CONFIG_CHECK_INTERVAL:-30m}
+      # Optional: JWT signing key for principal session tokens, read directly
+      # by the api service. auth-simple token auth works without it. If set,
+      # prefer an hd-lookup:vault:... value (see deploy/README.md) so the key
+      # material stays inside Vault.
+      HD_JWT_SIGNING_KEY: ${HD_JWT_SIGNING_KEY:-}
+      # git / the remote-driver installer want a writable home + temp area.
+      HOME: /tmp
+    volumes:
+      - ${HD_STATE_DIR:-../.honey-starter}/config:/etc/honeydipper/config:ro
+      - ${HD_STATE_DIR:-../.honey-starter}/identity:/var/hd-secrets/identity:ro
+      - daemon-driver-cache:/opt/honeydipper/drivers/cache
+    tmpfs:
+      - /tmp
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  ui:
+    image: ${HD_UI_IMAGE:-honeydipper/hd-ui:0.1.0-alpha2-52-g0ea2fad}
+    restart: unless-stopped
+    depends_on:
+      daemon:
+        condition: service_started
+    networks:
+      - edge
+    ports:
+      - "${HD_UI_HOST_PORT:-8090}:8080"
+    environment:
+      # nginx proxies /api and /healthz to the daemon (no path rewrite)
+      HD_API_URL: "http://daemon:${HD_API_PORT:-9000}"
+      ENABLED_AUTH_METHODS: token
+    # Not read_only: hd-ui writes /usr/share/nginx/html/config.js at container
+    # start, and the stock nginx entrypoint needs to write its config dir. We
+    # keep the image's default capabilities so nginx can drop worker
+    # privileges, and tmpfs for its volatile runtime state.
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  # data-vault carries vault + daemon only; data-valkey carries valkey + daemon
+  # only. Both are internal (no external route) and neither backend publishes a
+  # host port. Splitting keeps the unauthenticated valkey and Vault unable to
+  # reach each other (no lateral movement if either is compromised), and only
+  # the daemon bridges the two. Vault is therefore reachable only by the daemon
+  # (plus `docker compose exec`, which goes through the docker API, not the
+  # container network).
+  data-vault:
+    internal: true
+  data-valkey:
+    internal: true
+  # edge carries the daemon + ui and provides outbound internet (git config
+  # repos, remote driver registry) and the published API/UI ports.
+  edge:
+
+volumes:
+  valkey-data:
+  vault-file:
+  daemon-driver-cache:

@@ -2,7 +2,9 @@
 # start.sh — single-command entry point for honey-starter.
 #
 # Phase 1: this script validates the environment and the bootstrap config.
-# Phase 2 will generate docker-compose and bring up valkey/vault/daemon/ui.
+# Phase 2 ships the docker-compose deployment in deploy/ (valkey/vault/daemon/ui)
+# and the smoke gate; Phase 3 will add the Vault seeding + compose orchestration
+# to this script.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -34,4 +36,4 @@ echo "=== honey-starter: validating bcrypt token contract ==="
 
 echo ""
 echo "Environment and config are valid."
-echo "The docker-compose deployment (valkey, vault, daemon, ui) ships in Phase 2."
+echo "The docker-compose deployment lives in deploy/ (see deploy/README.md)."
