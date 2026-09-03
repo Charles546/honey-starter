@@ -183,7 +183,9 @@ vault_exec_token "${ROOT_TOKEN}" write auth/approle/role/daemon \
   >/dev/null
 ROLE_ID="$(vault_exec_token "${ROOT_TOKEN}" read -field=role_id \
   auth/approle/role/daemon/role-id)"
-SECRET_ID="$(vault_exec_token "${ROOT_TOKEN}" write -field=secret_id \
+# secret-id endpoint takes no data; -force is required or the
+# CLI errors with "Must supply data or use -force".
+SECRET_ID="$(vault_exec_token "${ROOT_TOKEN}" write -force -field=secret_id \
   auth/approle/role/daemon/secret-id)"
 
 # identity files are mounted read-only into the daemon at /var/hd-secrets/identity
