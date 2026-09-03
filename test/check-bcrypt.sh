@@ -26,7 +26,7 @@ TEST_TOKEN="test-admin-token-$(date +%s)"
 HASH=$(htpasswd -bnBC 12 "" "${TEST_TOKEN}" | cut -d: -f2 | tr -d '\n')
 echo "Generated hash prefix: ${HASH:0:4}"
 
-if [ "${HASH:0:4}" != '$2y$' ]; then
+if [ "${HASH:0:4}" != "\$2y\$" ]; then
   echo "FAIL: expected \$2y\$ prefix, got ${HASH:0:4}"
   exit 1
 fi

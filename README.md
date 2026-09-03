@@ -14,6 +14,7 @@ Single-command starter to spin up a [Honeydipper](https://github.com/honeydipper
 - **htpasswd** (from `apache2-utils`) — **required**. Used to generate and
   validate bcrypt token hashes for the `auth-simple` driver and the B1
   validation contract. No Go toolchain is needed.
+- **shellcheck** — required by the `make lint` / `make validate` gate.
 - **bash**, **openssl** — basic scripting and key generation
 
 ## What It Ships
@@ -29,11 +30,29 @@ The starter composes a trimmed-down Honeydipper deployment on top of
 
 ## Validation
 
-Both Phase 1 validation contracts run with one command:
+The Phase 1 validation gate runs with one command:
 
 ```bash
-make validate   # = check-bcrypt + check-config
+make validate   # = lint + check-bcrypt + check-config
 ```
+
+`make all` runs the same set. The three gates map to the trust-critical
+contracts and their environment needs:
+
+| Gate | What it does | Needs |
+|------|--------------|-------|
+| `make lint` | shellcheck over `scripts/*.sh` and `test/*.sh` | none (no docker) |
+| `make check-bcrypt` | B1: bcrypt token-hash contract via htpasswd | htpasswd (no docker) |
+| `make check-config` | B2: `honeydipper configcheck` via docker image | docker + network |
+
+### lint — shellcheck gate (no docker)
+
+```bash
+make lint   # shellcheck -x -P SCRIPTDIR scripts/*.sh test/*.sh
+```
+
+All project bash scripts must pass shellcheck. Run it directly with
+`shellcheck -x -P SCRIPTDIR scripts/*.sh test/*.sh` from the repo root.
 
 ### B1 — bcrypt token contract (htpasswd)
 
@@ -60,7 +79,9 @@ substitutes the `<ns>`/`<user>` placeholders, and runs
 contexts, driver references, and the casbin authorization tests in
 `bootstrap/tests/api_auth_tests.yaml`.
 
-Requires: docker.
+Requires: docker + network. The check is docker-gated: it skips gracefully
+(exit 0) when docker is unavailable, so it should be re-run on a
+docker-enabled host before merge.
 
 ## Bootstrap Config
 
@@ -80,6 +101,50 @@ Key files:
 | `bootstrap/contexts.yaml` | Workflow contexts |
 | `bootstrap/stubs/compat.yaml` | Compatibility stubs for disabled integrations |
 | `bootstrap/tests/api_auth_tests.yaml` | Authorization contract tests |
+
+### Config reload behavior
+
+The daemon runs a `Watch()` loop that, every `configCheckInterval`
+(explicitly `1m` in `bootstrap/daemon.yaml`), calls `Refresh()` and then, if
+the config changed, re-assembles and triggers `OnChange()`. For a **local-dir
+init repo** (the `REPO` points at a local directory and `BRANCH` is unset)
+`refreshRepo()` always reloads and returns "changed", so the config is
+**re-assembled and reloaded unconditionally every interval** — even if the
+files are byte-identical. Two practical consequences:
+
+- **Prefer atomic writes when editing a live config:** write to a temp file
+  and `mv` it into place. If the daemon re-assembles mid-write (partial
+  YAML), the config load panics and the daemon **rolls back to the last
+  running config** (`Config.RollBack()`); an atomic `mv` avoids the partial
+  read entirely.
+- **To opt out of periodic reloads entirely**, set
+  `daemon.watchConfig: false` in `bootstrap/daemon.yaml`. The default is
+  `true` (watch enabled).
+
+### Supply chain and network
+
+There are two distinct kinds of upstream artifacts, and they come from
+different places:
+
+- **Config repos (git):** the init repo (`honey-starter` itself) and
+  `honeydipper-config-essentials` (pinned to branch `v4-rc`, fetched via
+  `git` during config load/`configcheck`). The workflow/context/agent
+  definitions, the essentials API-auth model, and the AI *engines* (model,
+  base URL) all come from these git config repos.
+- **Driver binary registry (HTTPS):** the `openai` **driver binary** is
+  downloaded from the remote driver registry
+  `https://charles546.github.io/honeydipper-registry`, pinned to the
+  `stable` channel (`daemon.registries.charles-gh-pages` +
+  `daemon.drivers.openai.handlerData.channel: stable` in
+  `bootstrap/daemon.yaml`).
+
+A first start therefore needs outbound HTTPS to **github.com /
+raw.githubusercontent.com** (config repos) **and**
+**charles546.github.io** (driver binary registry) — plus, once the AI agent
+actually makes model calls, outbound access to the **AI endpoint** the
+configured engine points at (e.g. `https://api.openai.com/v1`, or your
+`AI_BASE_URL`). The `channel: stable` pin means the driver binary only
+changes when the registry's stable channel is updated deliberately.
 
 ### Enabling/disabling integrations
 

@@ -12,12 +12,17 @@ echo "=== honey-starter: environment check ==="
 # htpasswd is REQUIRED: used for bcrypt token generation (Vault seeding) and
 # the B1 validation contract.
 require_cmd htpasswd
-# docker is required for Phase 2 and for configcheck; check-config.sh skips
+# The shellcheck tool is REQUIRED for the lint gate (contract: shellcheck, no docker).
+require_cmd shellcheck
+# docker is required for configcheck and for Phase 2; check-config.sh skips
 # gracefully if docker is absent, so we report it here without failing.
 check_cmd docker
 check_cmd bash
 check_cmd openssl
-check_cmd shellcheck
+
+echo ""
+echo "=== honey-starter: linting scripts (shellcheck) ==="
+(cd "${HONEY_STARTER_DIR}" && shellcheck -x -P SCRIPTDIR scripts/*.sh test/*.sh)
 
 echo ""
 echo "=== honey-starter: validating bootstrap config ==="
