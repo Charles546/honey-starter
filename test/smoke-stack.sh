@@ -256,7 +256,11 @@ fi
 echo "--- anonymous API call denied (${anon_code})"
 
 # --- assert the AppRole policy is exactly read-only + path-scoped --------------
-DAEMON_TOKEN="$(vault_exec_token "${ROOT_TOKEN}" write -field=client_token \
+# AppRole login returns an auth response, not KV data. The Vault CLI's
+# -field for auth responses is "token" (RawField maps it to
+# auth.client_token); "client_token" is NOT in that list and would fail
+# with Field "client_token" not present in secret.
+DAEMON_TOKEN="$(vault_exec_token "${ROOT_TOKEN}" write -field=token \
   auth/approle/login role_id="${ROLE_ID}" secret_id="${SECRET_ID}")"
 if ! vault_exec_token "${DAEMON_TOKEN}" read \
   "secrets/data/${SMOKE_NS}/daemon" >/dev/null 2>&1; then
