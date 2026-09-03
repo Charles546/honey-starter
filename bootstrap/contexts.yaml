@@ -1,0 +1,10 @@
+# Starter workflow contexts. Contexts are extra per-workflow data that agents
+# and workflow hooks can consume. Keys named `*` or `_events` are wildcard
+# entries and are ignored by configcheck; every other key must name a workflow
+# defined somewhere in the assembled config.
+contexts:
+  starter:
+    '*':
+      agent_contexts:
+        assistant_name: Starter Assistant
+        operator: <user>

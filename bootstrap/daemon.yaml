@@ -1,0 +1,63 @@
+# Daemon-level control plane and core driver connection data.
+#
+# The connection settings for the core drivers point at a Valkey/Redis
+# instance and can be overridden through the environment at config-load time
+# (all values below are resolved when the config file is read).
+drivers:
+  daemon:
+    services:
+      api:
+        listener:
+          addr: ':{% default "9000" .env.HD_API_PORT %}'
+        ui_url: '{% default "" .env.HD_UI_URL %}'
+        auth:
+          entitlementCacheTTL: 5m
+    registries:
+      # Registry backing the remote AI driver (see daemon.drivers.openai).
+      charles-gh-pages:
+        baseURL: https://charles546.github.io/honeydipper-registry
+    drivers:
+      openai:
+        name: openai
+        type: remote
+        handlerData:
+          registry: charles-gh-pages
+          channel: stable
+        description: OpenAI compatible model driver used by the starter agents.
+        meta:
+          labels:
+            - agent_driver
+
+  # ---- core driver connection data (Valkey/Redis) --------------------------
+  redisqueue:
+    connection:
+      Addr: '{% default "127.0.0.1:6379" .env.VALKEY_ADDR %}'
+      Password: '{% default "" .env.VALKEY_PASSWORD %}'
+  redispubsub:
+    connection:
+      Addr: '{% default "127.0.0.1:6379" .env.VALKEY_ADDR %}'
+      Password: '{% default "" .env.VALKEY_PASSWORD %}'
+  redislock:
+    connection:
+      Addr: '{% default "127.0.0.1:6379" .env.VALKEY_ADDR %}'
+      Password: '{% default "" .env.VALKEY_PASSWORD %}'
+  redis-cache:
+    connection:
+      Addr: '{% default "127.0.0.1:6379" .env.VALKEY_ADDR %}'
+      Password: '{% default "" .env.VALKEY_PASSWORD %}'
+  api-broadcast:
+    topic: honeydipper:api-broadcast
+    channel: api
+    connection:
+      Addr: '{% default "127.0.0.1:6379" .env.VALKEY_ADDR %}'
+      Password: '{% default "" .env.VALKEY_PASSWORD %}'
+
+  # ---- Vault driver connection data ----------------------------------------
+  # The Vault driver reads `data.addr` and `data.token` from its driver data
+  # block; both can be overridden with VAULT_ADDR/VAULT_TOKEN environment
+  # variables. Secrets referenced from other drivers via
+  # `LOOKUP[vault,/secrets/data/<ns>/daemon#...]` resolve through this driver.
+  vault:
+    data:
+      addr: '{% default "http://localhost:8200" .env.VAULT_ADDR %}'
+      token: '{% default "" .env.VAULT_TOKEN %}'

@@ -1,0 +1,24 @@
+# Starter agent definitions.
+#
+# Agents are loaded by the Honeydipper `agent` service. The starter ships one
+# general-purpose agent using the `openai` driver and its `default` engine,
+# with the `curl` workflow (provided by honeydipper-config-essentials when the
+# `ai` option is enabled) exposed as its first tool.
+agents:
+  starter:
+    name: starter
+    description: General purpose assistant for the starter Honeydipper instance.
+    driver: openai
+    engine: default
+    system_prompt: |
+      You are a helpful DevOps assistant running inside a Honeydipper
+      instance. You can make outbound web requests with the curl tool when you
+      need to gather information or drive HTTP APIs on the user's behalf.
+    tools:
+      - type: workflow
+        name: curl
+    should_emit_thoughts: true
+    should_stream: true
+    max_history_len: 20
+    turn_lock_timeout: 30s
+    driver_call_timeout: 2m

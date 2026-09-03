@@ -1,0 +1,31 @@
+# API authentication and authorization for the starter instance.
+#
+# Placeholders:
+#   <ns>   - Vault KV namespace prefix used in secret lookup paths. Replace it
+#            (e.g. with your team/tenant name) when you seed Vault for a real
+#            deployment.
+#   <user> - the administrator subject seeded into Vault. The bearer token that
+#            the admin uses maps to this subject.
+#
+# The casbin model/policies that define the `editor` role come from
+# honeydipper-config-essentials/api_auth.yaml. We only add the binding between
+# the seeded admin user and the editor role. Keep the two `<user>` markers
+# (this file and tests/api_auth_tests.yaml) in sync: `honeydipper configcheck`
+# asserts the casbin behavior through that fixture.
+drivers:
+  auth-simple:
+    schemes:
+      - token
+    tokens:
+      - token: 'LOOKUP[vault,/secrets/data/<ns>/daemon#admin_token_hash]'
+        subject: <user>
+
+  daemon:
+    services:
+      api:
+        auth:
+          casbin:
+            policies:
+              - |
+                # starter: bind the seeded admin user to the editor role
+                g, <user>, editor
