@@ -8,14 +8,15 @@
 # Our Vault seed command produces `$2y$` hashes via htpasswd, and we verify
 # round-trip correctness here using htpasswd itself.
 #
-# Requires: htpasswd (from apache2-utils)
+# REQUIRES: htpasswd (from apache2-utils). This is a hard dependency —
+# the project uses htpasswd to generate and verify bcrypt token hashes.
 #
 # Run: bash test/check-bcrypt.sh
 set -euo pipefail
 
 if ! command -v htpasswd &>/dev/null; then
-  echo "SKIP: htpasswd not found (install apache2-utils)"
-  exit 0
+  echo "ERROR: required command not found: htpasswd (install apache2-utils)" >&2
+  exit 1
 fi
 
 echo "=== Bcrypt hash validation ==="

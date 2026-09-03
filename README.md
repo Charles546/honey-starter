@@ -11,8 +11,9 @@ Single-command starter to spin up a [Honeydipper](https://github.com/honeydipper
 ## Requirements
 
 - **Docker** — for running the daemon image (configcheck, and later deployment)
-- **htpasswd** (from `apache2-utils`) — for generating and validating bcrypt
-  token hashes (required by the `auth-simple` driver)
+- **htpasswd** (from `apache2-utils`) — **required**. Used to generate and
+  validate bcrypt token hashes for the `auth-simple` driver and the B1
+  validation contract. No Go toolchain is needed.
 - **bash**, **openssl** — basic scripting and key generation
 
 ## What It Ships

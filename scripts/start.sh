@@ -9,9 +9,11 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 echo "=== honey-starter: environment check ==="
-# htpasswd is required for bcrypt token generation (used in Vault seeding)
-check_cmd htpasswd
-# docker is required for running configcheck and Phase 2 deployment
+# htpasswd is REQUIRED: used for bcrypt token generation (Vault seeding) and
+# the B1 validation contract.
+require_cmd htpasswd
+# docker is required for Phase 2 and for configcheck; check-config.sh skips
+# gracefully if docker is absent, so we report it here without failing.
 check_cmd docker
 check_cmd bash
 check_cmd openssl
