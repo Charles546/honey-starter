@@ -9,10 +9,9 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 echo "=== honey-starter: environment check ==="
-for cmd in docker docker-compose bash openssl htpasswd; do
-  require_cmd "${cmd}" || true
+for cmd in docker docker-compose bash openssl htpasswd shellcheck; do
+  check_cmd "${cmd}"
 done
-echo "Found: docker, docker-compose, bash, openssl, htpasswd"
 
 echo ""
 echo "=== honey-starter: validating bootstrap config ==="

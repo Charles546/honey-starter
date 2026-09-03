@@ -31,9 +31,19 @@ die() {
   exit 1
 }
 
-# Check that a command is available.
+# Hard requirement: exit if the command is missing.
 require_cmd() {
   if ! command -v "$1" &>/dev/null; then
     die "required command not found: $1"
+  fi
+}
+
+# Soft preflight: print [ok]/[missing] without failing. Used for tools that
+# this phase of the project can operate without (docker, shellcheck, ...).
+check_cmd() {
+  if command -v "$1" &>/dev/null; then
+    echo "  [ok]      $1"
+  else
+    echo "  [missing] $1"
   fi
 }
