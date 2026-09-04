@@ -8,10 +8,10 @@ HONEY_STARTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOTSTRAP_DIR="${HONEY_STARTER_DIR}/bootstrap"
 DEPLOY_DIR="${HONEY_STARTER_DIR}/deploy"
 # Exported: variables are consumed by scripts that source this library
-# (e.g. start.sh, and the Phase 2 deployment helpers).
+# (e.g. start.sh and the lifecycle/test helpers).
 export BOOTSTRAP_DIR DEPLOY_DIR
 
-# Load environment variables from .env if present. Test scripts (smoke, ...)
+# Load environment variables from .env if present. Test scripts (smoke, e2e, ...)
 # set HONEY_STARTER_NO_ENV=1 before sourcing to keep their environment hermetic
 # and avoid picking up a host .env.
 if [ -z "${HONEY_STARTER_NO_ENV:-}" ] && [ -f "${HONEY_STARTER_DIR}/.env" ]; then
@@ -53,10 +53,24 @@ check_cmd() {
 }
 
 # Compose file used by the compose helpers below. Override COMPOSE_FILE before
-# sourcing to point at a different compose project/file (a throwaway smoke
-# project still uses the same file; the project is selected through the
+# sourcing to point at a different compose project/file (a throwaway smoke /
+# e2e project still uses the same file; the project is selected through the
 # COMPOSE_PROJECT_NAME environment variable).
 : "${COMPOSE_FILE:=${DEPLOY_DIR}/docker-compose.yaml}"
+
+# Compose project name. Real deployments (start.sh and the lifecycle scripts)
+# default to "honey-starter" so `stop`/`down`/`status`/`logs` always address
+# the same stack start.sh brought up. Throwaway test projects (smoke, e2e)
+# override COMPOSE_PROJECT_NAME before sourcing this library.
+: "${COMPOSE_PROJECT_NAME:=honey-starter}"
+export COMPOSE_PROJECT_NAME
+
+# Run `docker compose -f "$COMPOSE_FILE" "$@"`. Every script goes through this
+# wrapper (plus vault_exec below) so the compose file and project cannot diverge
+# between start.sh, the lifecycle scripts and the tests.
+compose() {
+  docker compose -f "${COMPOSE_FILE}" "$@"
+}
 
 # Run `vault <args>` inside the vault service container as the vault user.
 #

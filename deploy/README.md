@@ -46,9 +46,9 @@ loopback. `docker compose exec` reaches the container through the docker API
 rather than the container network, which is exactly why administrative access
 still works.
 
-The shared helper functions live in `scripts/lib.sh` and are used by both the
-smoke test (`test/smoke-stack.sh`) and `scripts/start.sh` (Phase 3) so the two
-cannot diverge:
+The shared helper functions live in `scripts/lib.sh` and are used by the
+smoke test (`test/smoke-stack.sh`), the E2E test (`test/e2e.sh`) and
+`scripts/start.sh` so the three cannot diverge:
 
 ```bash
 vault_exec          # docker compose exec -i -T --user vault vault vault "$@"
@@ -57,8 +57,8 @@ vault_exec_token T  # same, with -e VAULT_TOKEN=$T in the container env
 
 A practical consequence and UX win: **end-users never need a vault binary
 installed on the docker host.** Every administrative action is a single
-`docker compose exec vault vault …` away, and `scripts/start.sh` (Phase 3)
-automates the whole bring-up.
+`docker compose exec vault vault …` away, and `scripts/start.sh` automates
+the whole bring-up.
 
 ## Runtime state
 
@@ -74,9 +74,110 @@ Override the base with `HD_STATE_DIR` (use an absolute path). Before
   `/var/hd-secrets/identity`.
 
 `.honey-starter/` is the most sensitive directory on the host: it holds the
-rendered config, the AppRole identity pair, and (during bring-up) the Vault
-root token and unseal key. Treat it like "the kingdom" (see "Hardening
-notes").
+rendered config, the AppRole identity pair, the plaintext admin token, and
+(during bring-up) the Vault root token and unseal key. Treat it like "the
+kingdom" (see "Hardening notes"). `scripts/start.sh` and the lifecycle
+scripts manage it for you — you normally never touch it by hand.
+
+## Single-command bring-up (scripts/start.sh)
+
+`scripts/start.sh` wraps the two-phase bring-up (below) into **one command**
+that is idempotent and safe to re-run:
+
+```bash
+make start          # or: bash scripts/start.sh
+```
+
+What it does, in order:
+
+1. **Preflight** — Linux-only guard; requires `docker` + compose v2, `curl`,
+   `jq`, `openssl`, `htpasswd`; `docker info` reachability; best-effort
+   host-port conflict check for the published API/UI ports (skipped while this
+   stack's daemon is already running).
+2. **Load `.env`** (repo root) if present, honoring the documented env
+   contract (`HD_*` template-fed, plain env direct, `HD_STATE_DIR`,
+   `COMPOSE_FILE`). The Makefile lifecycle targets all source the same
+   `scripts/lib.sh`, so they always address the same compose project/state
+   dir.
+3. **Render config** — `bootstrap/` is copied into `${HD_STATE_DIR}/config/`
+   with the `<ns>`/`<user>` placeholders substituted (`HONEY_NS`, default
+   `starter`; `HONEY_USER`, default `admin`). Rendered every run and compared;
+   when unchanged the bind mount is left untouched (no daemon disruption), and
+   when changed the config is refreshed in place and a running daemon is
+   restarted so the change applies immediately.
+4. **Infrastructure** — `docker compose up -d valkey vault`; wait for the
+   vault API (the same exit-code probing the smoke test uses: exit 1 / "not
+   initialized", exit 2 / "Sealed", or exit 0 / "Sealed" all mean the API
+   is up).
+5. **Vault (first run only)** — initialize with `HONEY_VAULT_KEY_SHARES` /
+   `HONEY_VAULT_KEY_THRESHOLD` (defaults 1/1; see below), persist the root
+   token + all unseal keys to `${HD_STATE_DIR}/root_token` and
+   `${HD_STATE_DIR}/unseal_key` (chmod 600, host-only, **never mounted**),
+   unseal, then enable KV v2 at `secrets/` + AppRole, write the read-only
+   `daemon-read` policy scoped **exactly** to `secrets/data/<ns>/daemon`,
+   create the AppRole role (`token_policies=daemon-read`,
+   `secret_id_ttl=0`, `token_ttl=1h`, `token_max_ttl=24h`), and write the
+   identity pair into `${HD_STATE_DIR}/identity/`.
+6. **Seed secrets** — `secrets/<ns>/daemon` is seeded (without clobbering on
+   re-run) with `admin_token_hash` (htpasswd bcrypt of the admin token),
+   `openai_api_key` and `openrouter_api_key` (see AI provider below).
+7. **Application** — `docker compose up -d daemon ui` (compose `depends_on`
+   already waits for vault healthy == unsealed); wait for `/healthz` 200 with
+   good timeout diagnostics (status + tailed logs on failure).
+8. **Summary** — UI URL, API URL, and the admin token (printed **once** on
+   first run; also persisted at `${HD_STATE_DIR}/admin_token` chmod 600 for
+   re-runs).
+
+**Re-run behavior** — vault is detected from the server itself (initialized? /
+sealed?), so re-runs skip init and only unseal when needed (e.g. after a host
+reboot or `docker compose restart`); KV v2 / AppRole / policy / role writes
+are idempotent; the AppRole identity pair is reused when it still matches the
+role (Vault keeps `role_id` stable, and `secret_id_ttl=0` means generated
+secret ids never expire — no churn on re-run); and the admin token + API keys
+are never regenerated. The `<ns>`/`<user>` values used on first run are
+persisted to `${HD_STATE_DIR}/provision.env`; start.sh refuses to proceed if
+they change later (that would desync the daemon's LOOKUP paths from the seeded
+secrets) — to change them, `make down-volumes` and remove the state dir.
+
+**Key shares** — a starter deployment defaults to 1 key share / 1 threshold
+(dev-style convenience, matching the smoke test): one unseal key unlocks the
+whole deployment, so `${HD_STATE_DIR}` is truly "the kingdom". For a
+higher-assurance host set e.g. `HONEY_VAULT_KEY_SHARES=5
+HONEY_VAULT_KEY_THRESHOLD=3` in `.env` before the first run; start.sh persists
+all keys to `unseal_key` (one per line) and you should additionally back them
+up out-of-band. These knobs are inert after Vault is initialized.
+
+**Lifecycle** — `make stop` (graceful stop, state kept), `make down`
+(containers + default networks removed, named volumes + state kept),
+`make down-volumes` (also deletes the named volumes — wipes Vault's file
+backend and valkey data), `make status` (compose ps + `/healthz` + vault seal
+status + UI reachability), `make logs` (follow daemon logs). None of them ever
+touch `.honey-starter/` except `start.sh`.
+
+### .honey-starter/ layout
+
+```
+.honey-starter/                      # chmod 700 — "the kingdom"
+├── admin_token                      # chmod 600 — plaintext admin bearer token
+│                                    #   (operational secret; ONLY its bcrypt hash
+│                                    #   is in Vault; printed once on first run)
+├── root_token                       # chmod 600 — Vault root token (host-only,
+│                                    #   never mounted; used by scripts only)
+├── unseal_key                       # chmod 600 — unseal key(s), one per line
+├── provision.env                    # chmod 600 — <ns>/<user> used on first run
+├── config/                          # chmod 755 dir; files a+rX — RENDERED
+│   └── ...                          #   bootstrap/ copy with placeholders
+└── identity/                        # chmod 755 dir
+    ├── role_id                      # chmod 600 + root-owned (or 0644 when no
+    └── secret_id                    #   root/sudo) — AppRole pair, mounted :ro
+```
+
+The `identity/` and `config/` files are bind-mounted into the daemon, whose
+container runs as root-without-caps (`cap_drop: [ALL]`) — see *Hardening
+notes* (the `cap_drop`/`CAP_DAC_OVERRIDE rule`) below for why the modes
+matter. The `admin_token`, `root_token`, `unseal_key` and `provision.env`
+files are host only: nothing is mounted from them, and they are created with
+chmod 600.
 
 ## Bring-up sequence
 
@@ -90,7 +191,7 @@ docker compose -f deploy/docker-compose.yaml up -d valkey vault
 # 2) initialize/unseal vault, enable KV v2 + AppRole, write identity files,
 #    seed secrets/data/<ns>/daemon
 #    (test/smoke-stack.sh automates all of this on a throwaway project;
-#     scripts/start.sh automates it for real deployments in Phase 3)
+#     scripts/start.sh / test/e2e.sh automate it for real deployments)
 #    Every step uses: docker compose exec vault vault ...  (or the helpers above)
 
 # 3) application (depends_on waits for vault healthy == unsealed)
@@ -396,7 +497,7 @@ printf '%s' "${SECRET_ID}" > .honey-starter/identity/secret_id
 chmod 644 .honey-starter/identity/role_id .honey-starter/identity/secret_id
 ```
 
-**Production (Phase 3 `start.sh`, or by hand)** — `.honey-starter/` is "the
+**Production (`scripts/start.sh`, or by hand)** — `.honey-starter/` is "the
 kingdom" (co-locates the rendered config and, during bring-up, the root token
 and unseal key). Keep host-side permissions tight (`chmod 700` on the
 directory). The shipped compose daemon always runs as root-without-caps
@@ -404,14 +505,14 @@ directory). The shipped compose daemon always runs as root-without-caps
 `CAP_DAC_OVERRIDE` — i.e. owned by root with `0600`, or group/world readable:
 
 ```bash
-# If Phase 3 runs as root / sudo: the files are already root-owned, so the
+# If start.sh runs as root / sudo: the files are already root-owned, so the
 # tightest form works — 0600 + owner root (uid 0) is readable by the daemon's
 # root-without-caps, and by no one else:
 printf '%s' "${ROLE_ID}"   > .honey-starter/identity/role_id
 printf '%s' "${SECRET_ID}" > .honey-starter/identity/secret_id
 chmod 600 .honey-starter/identity/role_id .honey-starter/identity/secret_id
 
-# If Phase 3 runs as a non-root user (common on WSL / workstations): the files
+# If start.sh runs as a non-root user (common on WSL / workstations): the files
 # are host-user-owned, and root-without-caps cannot read 0600. chown them to
 # root and keep 0600...
 sudo chown 0:0 .honey-starter/identity/role_id .honey-starter/identity/secret_id
@@ -432,7 +533,7 @@ from the WSL filesystem preserves the WSL uid (typically 1000) and mode, and
 container-root is **not** mapped to the host user for permission purposes on
 the Linux side — so the `cap_drop` rule above applies verbatim: `0600` files
 owned by the WSL user are unreadable by the daemon's root-without-caps
-process. If you run the smoke (or Phase 3) as a non-root WSL user, use the
+process. If you run the smoke/E2E (or start.sh) as a non-root WSL user, use the
 `0644` (smoke) / `chown 0:0` (production) forms above. Running as root in WSL
 (`sudo make smoke`) works with `0600`, but a non-root run is the common case
 and is exactly what the smoke's `0644` accommodates.
@@ -450,7 +551,7 @@ and is exactly what the smoke's `0644` accommodates.
 
 The compose daemon mounts a *rendered* config directory (no placeholders).
 `test/check-config.sh` and `test/smoke-stack.sh` render throwaway copies;
-`scripts/start.sh` (Phase 3) will own the real render for deployments.
+`scripts/start.sh` owns the real render for deployments.
 
 ## Validation
 
@@ -468,6 +569,17 @@ The compose daemon mounts a *rendered* config directory (no placeholders).
     permission-denied rather than a vacuous 404)
   * the UI serves HTTP 200
 
+  The smoke re-implements the provisioning sequence inline so it exercises the
+  *deployment* (compose file, image entrypoint, vault driver wiring) directly.
+* `make e2e` — `test/e2e.sh`, the end-to-end test that boots the stack
+  through the **real `scripts/start.sh`** single-command path into a throwaway
+  compose project and asserts the same trust chain (vault initialized +
+  unsealed, KV v2 + AppRole enabled, policy scoped exactly, identity files
+  present/readable, `/healthz` 200, admin bearer auth 200, anonymous denied,
+  AppRole read-ok / write-denied / out-of-scope genuine 403 with the decoy
+  trick, UI 200). Because it drives `start.sh` itself, it also exercises the
+  idempotent re-run path and the identity-file permission handling.
+
 Both gates skip cleanly (exit 0) when docker is unavailable, so they must be
 re-run on a docker-enabled host before merge.
 
@@ -475,14 +587,28 @@ re-run on a docker-enabled host before merge.
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `HD_STATE_DIR` | `<repo>/.honey-starter` | rendered config + identity base dir (absolute) |
+| `HD_STATE_DIR` | `<repo>/.honey-starter` | rendered config + identity + root token/unseal key + admin token base dir (absolute) |
+| `HONEY_NS` | `starter` | Vault KV namespace prefix baked into config + seed paths; single path segment; must stay constant after first run |
+| `HONEY_USER` | `admin` | admin subject bound to the casbin `editor` role; must stay constant after first run |
+| `HONEY_VAULT_KEY_SHARES` | `1` | Vault unseal key shares used on first init (see "Single-command bring-up") |
+| `HONEY_VAULT_KEY_THRESHOLD` | `1` | Vault unseal key threshold used on first init |
+| `OPENAI_API_KEY` | unset | AI key seeded into Vault on first run (placeholder stored when unset; replace by exporting + re-running `make start`) |
+| `OPENROUTER_API_KEY` | unset | AI key seeded into Vault on first run (placeholder stored when unset) |
 | `HD_API_HOST_PORT` | `9000` | host port for daemon API |
 | `HD_UI_HOST_PORT` | `8090` | host port for UI |
 | `HD_API_PORT` | `9000` | daemon API container port (also feeds listener template) |
 | `HD_UI_URL` | `http://localhost:8090` | public UI base URL (OAuth/SAML redirects) |
+| `HD_AI_BASE_URL` | `https://api.openai.com/v1` | non-secret AI base URL override (template `.env.AI_BASE_URL`) |
+| `HD_AI_MODEL` | `gpt-5.4-mini` | non-secret AI model override (template `.env.AI_MODEL`) |
 | `HD_CONFIG_CHECK_INTERVAL` | `30m` | daemon config watch interval (deliberate tradeoff — see "Config reload behavior") |
 | `HD_JWT_SIGNING_KEY` | empty | API session-token signing key (optional; prefer `hd-lookup:` Vault form) |
 | `HONEYDIPPER_IMAGE` | pinned build | daemon image tag |
 | `VALKEY_IMAGE` | `valkey/valkey:8.1.0` | valkey image tag |
 | `VAULT_IMAGE` | `hashicorp/vault:1.21.1` | vault image tag |
 | `HD_UI_IMAGE` | pinned build | UI image tag |
+
+`HONEY_NS`, `HONEY_USER`, `HONEY_VAULT_KEY_*` and the AI keys are read by
+`scripts/start.sh` from the repo-root `.env` (or the shell). The AI keys are
+provisioning inputs only — start.sh writes them into Vault and they never
+appear in compose/environment at runtime. Set the AI keys in `.env` with
+chmod 600 on that file (`.env` is gitignored).
