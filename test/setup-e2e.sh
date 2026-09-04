@@ -114,8 +114,12 @@ rm -rf "${COPY}/.git" "${COPY}/.honey-starter" "${COPY}/.env"
 export HONEY_STARTER_INSTALL_DIR="${COPY}"
 SETUP="${COPY}/scripts/setup.sh"
 
+# Source lib.sh from the COPY (the tree under test), not the dev checkout, so
+# the harness's COMPOSE_FILE / COMPOSE_PROJECT_NAME and vault_exec helpers use
+# the exact lib.sh + compose file setup.sh delegates to — full end-to-end.
+export COMPOSE_FILE="${COPY}/deploy/docker-compose.yaml"
 # shellcheck source=../scripts/lib.sh
-source "${HERE}/scripts/lib.sh"
+source "${COPY}/scripts/lib.sh"
 
 COMPOSE=(docker compose -f "${COMPOSE_FILE}")
 

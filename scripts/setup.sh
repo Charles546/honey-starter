@@ -148,7 +148,10 @@ the current .env; Enter accepts the [default]):
 AI provider matrix (what setup.sh writes to .env):
   openai   -> writes OPENAI_API_KEY=<key> when provided; HD_AI_BASE_URL /
               HD_AI_MODEL stay unset unless you supply them (the engine falls
-              back to https://api.openai.com/v1 / gpt-5.4-mini).
+              back to https://api.openai.com/v1 / gpt-5.4-mini). NOTE: on a
+              re-run, a previously-set HD_AI_BASE_URL from an earlier custom
+              install is KEPT (managed, only removed when unset) — remove it
+              from .env to fully revert to the default.
   custom   -> writes HD_AI_BASE_URL=<required validated http(s):// endpoint>
               + OPENAI_API_KEY=<key> when provided; never silently defaults
               the base URL.
@@ -175,8 +178,10 @@ Non-interactive mode:
   * Unmanaged lines (comments, blanks, HD_JWT_SIGNING_KEY, image pins, ...)
     are preserved byte-exact.
   * Managed keys (HONEY_NS, HONEY_USER, HD_AI_BASE_URL, HD_AI_MODEL,
-    HD_API_HOST_PORT, HD_UI_HOST_PORT, derived HD_UI_URL) are rewritten in
-    place each run; HD_CONFIG_CHECK_INTERVAL is written only when explicitly
+    HD_API_HOST_PORT, HD_UI_HOST_PORT) are rewritten in place each run.
+    HD_UI_URL (the public UI base URL) is PRESERVED when set via env or an
+    existing .env line, and only derived as http://localhost:<UI port> when
+    nothing is set. HD_CONFIG_CHECK_INTERVAL is written only when explicitly
     supplied (default stays 30m by omission).
   * Secret keys (OPENAI_API_KEY, OPENROUTER_API_KEY) are replaced only on an
     explicit value; an existing line is never downgraded to a placeholder.
@@ -207,6 +212,9 @@ Environment variables (all optional):
   HD_AI_MODEL                  model override (optional)
   HD_API_HOST_PORT             published daemon API port (default 9000)
   HD_UI_HOST_PORT              published UI port (default 8090)
+  HD_UI_URL                    public UI base URL (OAuth/SAML redirects);
+                               preserved when set, else derived from
+                               HD_UI_HOST_PORT
   HD_CONFIG_CHECK_INTERVAL     explicit override only (default stays 30m)
   OPENAI_API_KEY               AI key provisioning input (openai/custom)
   OPENROUTER_API_KEY           accepted for the openrouter engine (never
@@ -398,6 +406,20 @@ parse_args() {
   done
 }
 
+# Re-export captured AI secrets right before re-exec'ing another copy of this
+# script: exec does not carry shell variables, and the child copy re-captures
+# them at the top of its own main(). This keeps the keys OUT of every child
+# that runs in between (curl/tar/sha256sum/apt/docker) while still delivering
+# them to the on-disk copy that writes .env.
+re_export_secrets_for_exec() {
+  if [ -n "${EXPLICIT_OPENAI_KEY}" ]; then
+    export OPENAI_API_KEY="${EXPLICIT_OPENAI_KEY}"
+  fi
+  if [ -n "${EXPLICIT_OPENROUTER_KEY}" ]; then
+    export OPENROUTER_API_KEY="${EXPLICIT_OPENROUTER_KEY}"
+  fi
+}
+
 # reload_on_disk_without_update_flags: re-exec the on-disk copy after an update
 reload_on_disk_without_update_flags() {
   local a
@@ -408,6 +430,7 @@ reload_on_disk_without_update_flags() {
       *) newargs+=("${a}") ;;
     esac
   done
+  re_export_secrets_for_exec
   exec bash "${INSTALL_DIR}/scripts/setup.sh" "${newargs[@]}"
 }
 
@@ -422,7 +445,13 @@ detect_can_root() {
   elif command -v sudo >/dev/null 2>&1; then
     if sudo -n true >/dev/null 2>&1; then
       CAN_ROOT=1
-    elif [ -t 0 ]; then
+    # Match start.sh exactly: probe stdout ([ -t 1 ]), NOT stdin. Under the
+    # canonical `curl ... | bash` one-liner stdin is the exhausted script pipe,
+    # so [ -t 0 ] is false even in a real terminal and interactive sudo would
+    # never be attempted there (while the delegated start.sh probes stdout and
+    # DOES prompt) — the preflight note and the apt gate must agree with
+    # start.sh's actual behavior.
+    elif [ -t 1 ]; then
       if sudo true >/dev/null 2>&1; then
         CAN_ROOT=1
       fi
@@ -638,11 +667,25 @@ tree_is_valid() {
   return 0
 }
 
+# tree_is_presetup DIR: a pre-Phase-4 (Phase-3-era) tree — the layout files are
+# present but scripts/setup.sh is absent. The one-liner upgrades it in place
+# (tar merge, .honey-starter state preserved) instead of dying.
+tree_is_presetup() {
+  local d="$1" f
+  [ -d "${d}" ] || return 1
+  [ -f "${d}/scripts/setup.sh" ] && return 1
+  for f in "${TREE_LAYOUT_FILES[@]}"; do
+    [ -f "${d}/${f}" ] || return 1
+  done
+  return 0
+}
+
 # download_and_install DIR UPDATE(0|1)
 #   UPDATE=0 fresh install: download to a sibling temp dir, verify, extract,
 #            atomic mv into place (DIR must not exist or be empty).
-#   UPDATE=1 re-extract over the existing tree (tar merges; never deletes
-#            stale files — warned).
+#   UPDATE=1 re-extract over an EXISTING tree (tar merges; never deletes
+#            stale files — warned). When the dir does not exist, falls through
+#            to the fresh-install branch (no raw tar error).
 download_and_install() {
   local dir="$1" update="$2" ref tarball extract tmp_parent url_ok=0
   ref="${HONEY_STARTER_REF:-main}"
@@ -669,11 +712,13 @@ download_and_install() {
     fi
     info "  [ok] sha256 verified"
   fi
-  if [ "${update}" -eq 1 ]; then
+  if [ "${update}" -eq 1 ] && [ -d "${dir}" ]; then
     info "--- extracting over existing tree (tar merges; it never deletes stale files)"
     tar -xzf "${tarball}" --strip-components=1 -C "${dir}"
     verify_tree "${dir}"
   else
+    # Fresh install. Also the fallback when --update targets a nonexistent
+    # dir: clean extract + atomic mv (never a raw tar error).
     extract="${TMP_DIR}/extract"
     mkdir -p "${extract}"
     tar -xzf "${tarball}" --strip-components=1 -C "${extract}"
@@ -985,7 +1030,6 @@ infer_provider_default() {
 
 run_questionnaire() {
   local p base_default key_default msg
-  capture_secrets_env
 
   # --- HONEY_NS (prompt when env unset; default = current .env or starter) ---
   if [ -z "${HONEY_NS:-}" ]; then
@@ -1133,7 +1177,11 @@ run_questionnaire() {
   else
     EFFECTIVE_UI_PORT="${HD_UI_HOST_PORT}"
   fi
-  EFFECTIVE_UI_URL="http://localhost:${EFFECTIVE_UI_PORT}"
+  # HD_UI_URL is the documented public UI base URL (OAuth/SAML redirect
+  # building; compose defaults ${HD_UI_URL:-http://localhost:8090}). Derive
+  # the guided localhost default ONLY when nothing is set — never clobber an
+  # env-supplied or existing .env value on re-run.
+  EFFECTIVE_UI_URL="$(first_nonempty "${HD_UI_URL:-}" "$(cur_value HD_UI_URL)" "http://localhost:${EFFECTIVE_UI_PORT}")"
   EFFECTIVE_MODEL="$(first_nonempty "${HD_AI_MODEL:-}" "$(cur_value HD_AI_MODEL)")"
   EFFECTIVE_CONFIG_INTERVAL="$(first_nonempty "${HD_CONFIG_CHECK_INTERVAL:-}" "$(cur_value HD_CONFIG_CHECK_INTERVAL)")"
 
@@ -1518,6 +1566,16 @@ bootstrap_main() {
 
   if [ "${DO_UPDATE}" -eq 0 ] && tree_is_valid "${dir}"; then
     info "--- existing honey-starter tree found at ${dir}; skipping download"
+    # LOW-4 hint: the rolling one-liner keeps the on-disk copy even after main
+    # advances; make staleness actionable.
+    note "the on-disk copy stays as-is; refresh it from the release with: bash scripts/setup.sh --update"
+  elif tree_is_presetup "${dir}"; then
+    # Phase-3-era tree (no scripts/setup.sh yet): upgrade in place by merging
+    # the release over it. tar never deletes stale files; .honey-starter state
+    # (root token, unseal key, admin token, identity pair) is preserved.
+    warn "existing tree at ${dir} predates scripts/setup.sh (Phase 4)"
+    warn "extracting the release over it (tar merges; it never deletes stale files); .honey-starter/ state is preserved"
+    download_and_install "${dir}" 1
   else
     download_and_install "${dir}" "${DO_UPDATE}"
   fi
@@ -1531,6 +1589,11 @@ bootstrap_main() {
 
 # --- entrypoint ---------------------------------------------------------------
 main() {
+  # Capture (and unset from this shell) the AI secrets FIRST, so no child
+  # process in any branch ever inherits them. The on-disk copy uses the
+  # captured EXPLICIT_* values; re-exec'd copies get them re-exported by
+  # re_export_secrets_for_exec.
+  capture_secrets_env
   detect_mode
   parse_args "$@"
   if [ "${BOOTSTRAP_MODE}" -eq 1 ]; then

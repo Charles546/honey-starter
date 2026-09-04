@@ -156,6 +156,57 @@ fi
 rm -rf "${T1}" "${S1}"
 
 # ---------------------------------------------------------------------------
+# 1b. user-set HD_UI_URL preserved (public-URL knob must not be clobbered)
+# ---------------------------------------------------------------------------
+# Case A: env-supplied HD_UI_URL survives a fresh dry-run.
+# Case B: a pre-existing .env HD_UI_URL survives a re-run (round-trip) when
+#         no env HD_UI_URL is supplied — it is only derived when nothing is set.
+T1B="$(fresh_tree)"
+S1B="$(mktemp -d)"
+set +e
+(
+  cd "${T1B}"
+  HONEY_STARTER_INSTALL_DIR="${T1B}" \
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  OPENAI_API_KEY=sk-uipub HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
+  HD_UI_URL=https://env.example.com \
+  HD_STATE_DIR="${S1B}" \
+  bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.1b.out 2>&1
+RC1B=$?
+set -e
+if [ "${RC1B}" -eq 0 ] \
+  && grep -q '^HD_UI_URL=https://env.example.com$' "${T1B}/.env"; then
+  ok "env-supplied HD_UI_URL preserved (not clobbered by derived localhost)"
+else
+  bad "env-supplied HD_UI_URL was clobbered (rc=${RC1B}):"
+  grep '^HD_UI_URL' "${T1B}/.env" | sed 's/^/    | /' >&2
+fi
+# Case B: seed a .env with a public HD_UI_URL, re-run with no env HD_UI_URL.
+printf 'HD_UI_URL=https://public.example.com\n' > "${T1B}/.env"
+set +e
+(
+  cd "${T1B}"
+  HONEY_STARTER_INSTALL_DIR="${T1B}" \
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  OPENAI_API_KEY=sk-uipub2 HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
+  HD_STATE_DIR="${S1B}" \
+  bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.1c.out 2>&1
+RC1C=$?
+set -e
+if [ "${RC1C}" -eq 0 ] \
+  && grep -q '^HD_UI_URL=https://public.example.com$' "${T1B}/.env"; then
+  ok "pre-existing .env HD_UI_URL preserved across a re-run"
+else
+  bad "pre-existing .env HD_UI_URL was clobbered (rc=${RC1C}):"
+  grep '^HD_UI_URL' "${T1B}/.env" | sed 's/^/    | /' >&2
+fi
+rm -rf "${T1B}" "${S1B}"
+
+# ---------------------------------------------------------------------------
 # 2. byte-exact round-trip + read-modify-write contract
 # ---------------------------------------------------------------------------
 T2="$(fresh_tree)"
