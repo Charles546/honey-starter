@@ -46,9 +46,9 @@ loopback. `docker compose exec` reaches the container through the docker API
 rather than the container network, which is exactly why administrative access
 still works.
 
-The shared helper functions live in `scripts/lib.sh` and are used by both the
-smoke test (`test/smoke-stack.sh`), the E2E test (`test/e2e.sh`) and `scripts/start.sh` so the two
-cannot diverge:
+The shared helper functions live in `scripts/lib.sh` and are used by the
+smoke test (`test/smoke-stack.sh`), the E2E test (`test/e2e.sh`) and
+`scripts/start.sh` so the three cannot diverge:
 
 ```bash
 vault_exec          # docker compose exec -i -T --user vault vault vault "$@"
