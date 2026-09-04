@@ -8,6 +8,45 @@ Single-command starter to spin up a [Honeydipper](https://github.com/honeydipper
 > Lifecycle: `make stop | down | status | logs`. Deployment details in
 > `deploy/README.md`.
 
+## Install in one line
+
+On a bare Linux Docker host — no repo present beforehand, no host git needed, no
+need to read this README first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
+```
+
+`scripts/setup.sh` is the guided installer (Phase 4). The piped copy is a
+self-contained bootstrap: it runs a fail-fast preflight (Linux, bash 4+, curl +
+tar, docker + compose v2 + a reachable daemon — a host with no viable docker is
+never prompted and never triggers a download), downloads the release tarball
+from codeload, verifies the layout, extracts it atomically into
+`~/honey-starter` (or `$HONEY_STARTER_INSTALL_DIR`), and re-execs the on-disk
+copy. The on-disk copy then runs a short guided questionnaire, writes the
+repo-root `.env` (chmod 600) and delegates to `scripts/start.sh` — the same
+idempotent single-command bring-up as `make start` below.
+
+**Rolling-`main` caveat:** the one-liner tracks `main`, so it is exactly as
+current as the merge state of this repository. To pin an install, set
+`HONEY_STARTER_REF` to a branch or tag and optionally pin the tarball hash:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh \
+  | HONEY_STARTER_REF=<branch-or-tag> HONEY_STARTER_EXPECT_SHA256=<sha256> bash
+```
+
+**Non-interactive contract:** set `HONEY_STARTER_NONINTERACTIVE=1` and supply
+the decision variables via the environment (see
+`bash scripts/setup.sh --help` for the full list, the AI provider matrix and
+the `HONEY_STARTER_ANSWERS_FILE` replay option). Re-running on an existing
+install skips the download and reuses the tree in place.
+
+Questionnaire scope: the interactive AI provider prompt offers **openai**
+(default) | **custom** (OpenAI-compatible endpoint) | **skip** only —
+`openrouter` is never offered interactively (see
+`deploy/README.md` → *Guided install (setup.sh)* for the OpenRouter note).
+
 ## Requirements
 
 - **Docker** (with compose v2) — for running the stack and the configcheck/smoke gates
@@ -147,7 +186,7 @@ token, identity files, rendered config). To reset a deployment completely:
 The validation gate runs with one command:
 
 ```bash
-make validate   # = lint + check-bcrypt + check-config + compose-config + smoke + e2e
+make validate   # = lint + check-bcrypt + setup-dryrun + check-config + compose-config + smoke + e2e + setup-e2e
 ```
 
 `make all` runs the same set. The gates map to the trust-critical contracts
@@ -157,14 +196,16 @@ and their environment needs:
 |------|--------------|-------|
 | `make lint` | shellcheck over `scripts/*.sh` and `test/*.sh` | none (no docker) |
 | `make check-bcrypt` | B1: bcrypt token-hash contract via htpasswd | htpasswd (no docker) |
+| `make setup-dryrun` | P4-DRYRUN: hermetic tests for `scripts/setup.sh` (`.env` write/round-trip, quoting, masking, validation paths, answers-file branch) | none (no docker) |
 | `make check-config` | B2: `honeydipper configcheck` via docker image | docker + network |
 | `make compose-config` | C1: `docker compose config` validation | docker (compose v2) |
 | `make smoke` | C2: full-stack compose smoke (valkey+vault+daemon+ui) | docker + network |
 | `make e2e` | C3: E2E through the real `scripts/start.sh` path | docker + network |
+| `make setup-e2e` | P4-E2E: E2E through the real `scripts/setup.sh` guided-installer path (`.env` + delegate to `start.sh`) | docker + network |
 
-The docker-gated gates (check-config, compose-config, smoke, e2e) skip
-cleanly (exit 0) when docker is unavailable, so they should be re-run on a
-docker-enabled host before merge.
+The docker-gated gates (check-config, compose-config, smoke, e2e, setup-e2e)
+skip cleanly (exit 0) when docker is unavailable, so they should be re-run on
+a docker-enabled host before merge.
 
 ### lint — shellcheck gate (no docker)
 

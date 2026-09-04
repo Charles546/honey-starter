@@ -88,6 +88,57 @@ that is idempotent and safe to re-run:
 make start          # or: bash scripts/start.sh
 ```
 
+### Guided install (setup.sh)
+
+For a bare Linux Docker host with no repo present and no host git, the guided
+installer (`scripts/setup.sh`, Phase 4) is the entry point:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
+```
+
+The piped copy is a self-contained bootstrap (preflight → download → verify →
+extract into `~/honey-starter` → re-exec); the on-disk copy runs a short
+questionnaire, writes the repo-root `.env` (chmod 600) and delegates to
+`scripts/start.sh`. See the repository README → *Install in one line* and
+`bash scripts/setup.sh --help`.
+
+**Questionnaire scope.** The interactive AI provider prompt offers **openai**
+(default) | **custom** (an OpenAI-compatible endpoint) | **skip** only:
+
+* `openai` → writes `OPENAI_API_KEY`; leaves `HD_AI_BASE_URL`/`HD_AI_MODEL`
+  unset unless you supply them (the engine falls back to
+  `https://api.openai.com/v1` / `gpt-5.4-mini`).
+* `custom` → writes a required, validated `HD_AI_BASE_URL` (http(s)://) plus
+  `OPENAI_API_KEY`; it never silently defaults the base URL.
+* `skip` → no key/base lines; `start.sh` seeds placeholders; add the key to
+  `.env` and re-run later.
+* `openrouter` is **never prompted**. The openrouter *engine* exists in
+  `bootstrap/engines.yaml` (`base_url` fixed to `https://openrouter.ai/api/v1`,
+  Vault key field `openrouter_api_key`) but no shipped agent references it —
+  the starter agent is hard-bound to `engine: default` (openai). To use
+  OpenRouter, edit the **rendered** copy
+  `.honey-starter/config/agents.yaml` to `engine: openrouter` and re-run
+  `make start`. `OPENROUTER_API_KEY` is still accepted in the non-interactive
+  env contract; `start.sh` seeds it into Vault harmlessly until the rendered
+  agent config points at openrouter.
+
+**Security note.** The AI key exists in `.env` (chmod 600) *only* as a
+provisioning input: `setup.sh` never echoes it (masked in the summary), unsets
+it from its own environment after capture, and scrubs it (`env -u`) from the
+environment handed to the `start.sh` child — `start.sh` receives it by sourcing
+the 600-mode `.env` itself, seeds it into Vault at
+`secrets/data/<ns>/daemon`, and it never appears in compose/environment at
+runtime (see *Vault* below).
+
+**Partial-state / reset path.** If `.honey-starter/` exists (root token etc.)
+but `provision.env` is absent (a failed earlier run), `setup.sh` warns that no
+completed provisioning is recorded and that a `HONEY_NS`/`HONEY_USER` change
+is not yet guarded by `start.sh`. Reset: `make down-volumes` then
+`rm -rf .honey-starter`, then re-run. Re-running the installer never
+regenerates the admin token or the AppRole identity pair (that is `start.sh`'s
+guarantee).
+
 What it does, in order:
 
 1. **Preflight** — Linux-only guard; requires `docker` + compose v2, `curl`,
@@ -555,6 +606,23 @@ The compose daemon mounts a *rendered* config directory (no placeholders).
 
 ## Validation
 
+* `make setup-dryrun` — `test/setup-dryrun.sh`, hermetic no-docker tests for
+  `scripts/setup.sh`: fresh `.env` writes (chmod 600), byte-exact
+  read-modify-write round-trips (comments + unmanaged keys preserved, managed
+  keys updated in place), shell-safe quoting of values containing `#`/spaces,
+  masked summary output, validation failures, the missing-required-var error
+  path, the no-tty guidance, and the interactive branch via
+  `HONEY_STARTER_ANSWERS_FILE`.
+* `make setup-e2e` — `test/setup-e2e.sh`, the end-to-end test that drives the
+  **real `scripts/setup.sh`** guided-installer path from a throwaway copy of
+  the tree (questionnaire → `.env` chmod 600 → delegate to `scripts/start.sh`)
+  into a throwaway compose project and asserts the same trust chain as the
+  e2e gate (vault initialized + unsealed, KV v2 + AppRole enabled, policy
+  scoped exactly, identity files present/readable, `/healthz` 200, admin
+  bearer auth 200, anonymous denied, AppRole read-ok / write-denied /
+  out-of-scope genuine 403 with the decoy trick, UI 200), plus the
+  canonical-`.data` idempotent re-run comparison across a second `setup.sh`
+  run (no admin-token / identity-pair / seeded-KV churn).
 * `make compose-config` — `docker compose config` validation (docker-gated).
 * `make smoke` — `test/smoke-stack.sh`, a full-stack smoke test in a
   throwaway compose project (docker + network gated) that boots valkey/vault,
@@ -580,8 +648,9 @@ The compose daemon mounts a *rendered* config directory (no placeholders).
   trick, UI 200). Because it drives `start.sh` itself, it also exercises the
   idempotent re-run path and the identity-file permission handling.
 
-Both gates skip cleanly (exit 0) when docker is unavailable, so they must be
-re-run on a docker-enabled host before merge.
+The docker-gated gates (compose-config, smoke, e2e, setup-e2e) skip cleanly
+(exit 0) when docker is unavailable, so they must be re-run on a docker-enabled
+host before merge.
 
 ## Customization knobs
 
