@@ -340,6 +340,17 @@ normal env var. Seed the corresponding `hd_jwt_signing_key` field under
   `no-new-privileges: true` — so a compromised daemon cannot install
   capabilities, write to the config/identity mounts (read-only), or persist
   outside the cache volume and tmpfs.
+* **`cap_drop: [ALL]` also removes `CAP_DAC_OVERRIDE`, so root-in-container
+  obeys normal file permissions.** A bind mount from a host directory keeps
+  the host file's uid/gid/mode. On a Linux host (and under Docker Desktop's
+  WSL2 integration, where bind mounts preserve the WSL uid, typically 1000),
+  a `0600` identity file owned by the invoking host user is **not readable**
+  by the daemon's root-without-caps process — the entrypoint `cat` fails with
+  `Permission denied` and the daemon starts with empty AppRole credentials.
+  Anything the daemon must read through a bind mount must be readable by
+  root-without-caps: `0644` files (or `0640` with a group the daemon's uid
+  belongs to), or owned by uid 0. This is exactly why the smoke test writes
+  the throwaway identity files `0644` (see "Identity-file hygiene").
 * **AppRole scoping limits Vault blast radius.** Even with root inside the
   container, the AppRole credential can only *read*
   `secrets/data/<ns>/daemon`; it cannot write, cannot list, and cannot read
@@ -349,7 +360,9 @@ normal env var. Seed the corresponding `hd_jwt_signing_key` field under
   token + unseal key. Anyone who can read that directory (or the
   `docker compose exec vault` path) controls the deployment. Keep host
   permissions tight (`chmod 700` on the directory, `chmod 600` on identity
-  files).
+  files, with the daemon-readability caveat below: `0600` must be
+  root-owned, because the daemon's root-without-caps cannot read a
+  non-root-owned `0600` file).
 * **Running the daemon as non-root is a documented follow-up.** Compose cannot
   `chown` the bind mounts and named volume into a non-root UID, so adding
   `user:` to the daemon service requires the cache volume and the state
@@ -365,12 +378,47 @@ normal env var. Seed the corresponding `hd_jwt_signing_key` field under
 
 ### Identity-file hygiene (host side)
 
-When writing the AppRole identity files (Phase 3 `start.sh`, or by hand):
+The identity files are the daemon's AppRole pair (`role_id` + `secret_id`),
+mounted read-only into the container at `/var/hd-secrets/identity`. Because
+the daemon image has no `USER` (root-in-container) **and** `cap_drop: [ALL]`
+removes `CAP_DAC_OVERRIDE`, the container process cannot bypass normal file
+permissions — so the files must be readable by root-without-caps, i.e. `0644`
+(or `0640` with a group the container uid is in), or owned by uid 0.
+
+**Smoke test / throwaway stacks** (`test/smoke-stack.sh`) — the identity
+pair is freshly generated per run, mounted `:ro`, and never the Vault root
+token, so `0644` is the correct choice and keeps the smoke passing whether
+the host user is root or a non-root WSL user:
 
 ```bash
 printf '%s' "${ROLE_ID}"   > .honey-starter/identity/role_id
 printf '%s' "${SECRET_ID}" > .honey-starter/identity/secret_id
+chmod 644 .honey-starter/identity/role_id .honey-starter/identity/secret_id
+```
+
+**Production (Phase 3 `start.sh`, or by hand)** — `.honey-starter/` is "the
+kingdom" (co-locates the rendered config and, during bring-up, the root token
+and unseal key). Keep host-side permissions tight (`chmod 700` on the
+directory). The shipped compose daemon always runs as root-without-caps
+(`cap_drop: [ALL]`), so the identity files must be readable by uid 0 without
+`CAP_DAC_OVERRIDE` — i.e. owned by root with `0600`, or group/world readable:
+
+```bash
+# If Phase 3 runs as root / sudo: the files are already root-owned, so the
+# tightest form works — 0600 + owner root (uid 0) is readable by the daemon's
+# root-without-caps, and by no one else:
+printf '%s' "${ROLE_ID}"   > .honey-starter/identity/role_id
+printf '%s' "${SECRET_ID}" > .honey-starter/identity/secret_id
 chmod 600 .honey-starter/identity/role_id .honey-starter/identity/secret_id
+
+# If Phase 3 runs as a non-root user (common on WSL / workstations): the files
+# are host-user-owned, and root-without-caps cannot read 0600. chown them to
+# root and keep 0600...
+sudo chown 0:0 .honey-starter/identity/role_id .honey-starter/identity/secret_id
+chmod 600 .honey-starter/identity/role_id .honey-starter/identity/secret_id
+# ...or, when sudo is unavailable, relax to 0644 (world-readable; acceptable
+# only because the identity pair is scoped to read one Vault path and never
+# the root token).
 ```
 
 Use `printf '%s'` (no trailing newline — the entrypoint's `eval export`
@@ -378,6 +426,16 @@ command substitution strips trailing newlines anyway, but a file with a stray
 newline is fragile against non-entrypoint consumers). Do **not** `echo`
 secrets through shell history, and keep the root token and unseal key out of
 shell history and terminal logs.
+
+**Windows / WSL2 note.** Under Docker Desktop's WSL2 backend, a bind mount
+from the WSL filesystem preserves the WSL uid (typically 1000) and mode, and
+container-root is **not** mapped to the host user for permission purposes on
+the Linux side — so the `cap_drop` rule above applies verbatim: `0600` files
+owned by the WSL user are unreadable by the daemon's root-without-caps
+process. If you run the smoke (or Phase 3) as a non-root WSL user, use the
+`0644` (smoke) / `chown 0:0` (production) forms above. Running as root in WSL
+(`sudo make smoke`) works with `0600`, but a non-root run is the common case
+and is exactly what the smoke's `0644` accommodates.
 
 ## Bootstrap placeholders
 
