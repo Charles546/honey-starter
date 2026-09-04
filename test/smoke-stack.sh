@@ -104,6 +104,11 @@ echo "=== honey-starter smoke: compose project ${PROJECT} ==="
 
 # --- render config with placeholders substituted ---------------------------
 mkdir -p "${STATE}/config" "${STATE}/identity"
+# The daemon container runs root-without-caps (cap_drop: [ALL]), which cannot
+# bypass file permissions. mktemp -d is always 0700 and mkdir/cp/sed follow
+# the host umask, so normalize perms here regardless of umask: dirs 755 +
+# files world-readable keeps the bind mounts readable by the container.
+chmod 755 "${STATE}/config" "${STATE}/identity"
 cp -r "${HERE}/bootstrap/." "${STATE}/config/"
 sed -i "s/<ns>/${SMOKE_NS}/g" "${STATE}/config/init.yaml" \
   "${STATE}/config/auth.yaml" "${STATE}/config/engines.yaml" \
@@ -111,6 +116,7 @@ sed -i "s/<ns>/${SMOKE_NS}/g" "${STATE}/config/init.yaml" \
 sed -i "s/<user>/${SMOKE_USER}/g" "${STATE}/config/init.yaml" \
   "${STATE}/config/auth.yaml" "${STATE}/config/contexts.yaml" \
   "${STATE}/config/tests/api_auth_tests.yaml"
+chmod -R a+rX "${STATE}/config"
 echo "--- rendered config with ns=${SMOKE_NS} user=${SMOKE_USER}"
 
 # --- admin token + bcrypt hash (seeded into Vault) --------------------------
@@ -189,11 +195,20 @@ SECRET_ID="$(vault_exec_token "${ROOT_TOKEN}" write -force -field=secret_id \
   auth/approle/role/daemon/secret-id)"
 
 # identity files are mounted read-only into the daemon at /var/hd-secrets/identity
-# (printf '%s' -> no trailing newline; chmod 600 keeps them host-user-only).
+# (printf '%s' -> no trailing newline). The daemon container runs as root with
+# cap_drop: [ALL], which removes CAP_DAC_OVERRIDE: root-in-container obeys
+# normal file permissions and cannot read 0600 files owned by a non-root host
+# user (the common WSL / non-root docker-host case) — the entrypoint `cat`
+# would fail with "Permission denied", leaving VAULT_ROLE_ID/VAULT_SECRET_ID
+# empty and the vault LOOKUPs to fail. These are throwaway AppRole creds for
+# the throwaway smoke stack (never the root token), mounted :ro, so 0644 is
+# appropriate. Production identity-file hygiene is in deploy/README.md
+# ("Identity-file hygiene"): shipped compose is always root-without-caps, so
+# keep 0600 + chown 0:0, or relax to 0644 only when sudo is unavailable.
 printf '%s' "${ROLE_ID}" > "${STATE}/identity/role_id"
 printf '%s' "${SECRET_ID}" > "${STATE}/identity/secret_id"
-chmod 600 "${STATE}/identity/role_id" "${STATE}/identity/secret_id"
-echo "--- AppRole identity files written (chmod 600, no trailing newline)"
+chmod 644 "${STATE}/identity/role_id" "${STATE}/identity/secret_id"
+echo "--- AppRole identity files written (chmod 644, readable by daemon root-without-caps; no trailing newline)"
 
 # --- seed namespace secrets ---------------------------------------------------
 vault_exec_token "${ROOT_TOKEN}" kv put "secrets/${SMOKE_NS}/daemon" \
@@ -232,7 +247,13 @@ for ((i = 0; i < 180; i++)); do
 done
 if [ "${http_code}" != "200" ]; then
   echo "FAIL: daemon /healthz did not become 200 (last=${http_code})" >&2
-  "${COMPOSE[@]}" logs daemon >&2 || true
+  # Surface the daemon's own view immediately: the most common cause of a
+  # never-200 /healthz is the daemon crash-looping (e.g. the entrypoint could
+  # not read the AppRole identity files, or a LOOKUP failed at config load),
+  # so dump its status + full logs instead of making the operator wait.
+  "${COMPOSE[@]}" ps daemon >&2 || true
+  echo "--- daemon logs (tail) ---" >&2
+  "${COMPOSE[@]}" logs --tail=100 daemon >&2 || true
   exit 1
 fi
 echo "--- daemon healthy"
