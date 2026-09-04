@@ -133,8 +133,15 @@ ADMIN_TOKEN_BEFORE="$(e2e_read "${STATE}/admin_token")"
 ROLE_ID_FILE_BEFORE="$(e2e_read "${STATE}/identity/role_id")"
 SECRET_ID_FILE_BEFORE="$(e2e_read "${STATE}/identity/secret_id")"
 # The re-run must also leave the seeded KV payload (admin_token_hash, AI keys)
-# byte-identical, so a bug that rewrote seeded values every run is caught.
-SEED_KV_BEFORE="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null || true)"
+# unchanged, so a bug that rewrote seeded values every run is caught. We
+# compare the canonical `.data` object (field values + KV metadata, incl.
+# `metadata.version`), NOT the raw response envelope: Vault stamps every
+# response with a per-request `request_id` UUID, so byte-comparing full
+# responses fails even when the re-run performs no write at all. `.data` is
+# byte-stable across read-only reads, yet ANY write to the path -- even a
+# same-value `kv patch` -- bumps `metadata.version` and refreshes
+# `created_time`, so an actual rewrite is still detected.
+SEED_KV_BEFORE="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null | jq -cS '.data' 2>/dev/null || true)"
 if ! bash "${HERE}/scripts/start.sh" >"${START_LOG}" 2>&1; then
   echo "FAIL: scripts/start.sh re-run exited non-zero (must be idempotent)" >&2
   echo "--- start.sh re-run log (tail) ---" >&2
@@ -151,12 +158,12 @@ if [ "$(e2e_read "${STATE}/identity/role_id")" != "${ROLE_ID_FILE_BEFORE}" ] \
   echo "FAIL: start.sh re-run regenerated the AppRole identity pair (idempotency broken)" >&2
   exit 1
 fi
-SEED_KV_AFTER="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null || true)"
+SEED_KV_AFTER="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null | jq -cS '.data' 2>/dev/null || true)"
 if [ -n "${SEED_KV_BEFORE}" ] && [ "${SEED_KV_BEFORE}" != "${SEED_KV_AFTER}" ]; then
   echo "FAIL: start.sh re-run rewrote the seeded KV payload at ${SEED_PATH} (idempotency broken)" >&2
   exit 1
 fi
-echo "--- start.sh idempotent re-run converged (admin token + identity pair + seeded KV unchanged)"
+echo "--- start.sh idempotent re-run converged (admin token + identity pair + seeded KV data/metadata unchanged)"
 
 # --- 1. vault initialized + unsealed ------------------------------------------
 if ! vault_exec status -format=json | jq -e '.initialized == true and .sealed == false' >/dev/null; then
