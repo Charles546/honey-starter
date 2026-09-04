@@ -2,11 +2,11 @@
 
 Single-command starter to spin up a [Honeydipper](https://github.com/honeydipper/honeydipper) instance with a web UI on a Linux docker-enabled host or workstation.
 
-> **Phase 2 (current):** container deployment (docker-compose: valkey, vault,
-> daemon, ui) with Vault-backed secrets and a full-stack smoke test. The
-> `scripts/start.sh` orchestration/lifecycle automation lands in Phase 3; the
-> docker-compose deployment in `deploy/` is already runnable today (see
-> `deploy/README.md`).
+> **Single-command deployment:** `make start` (`scripts/start.sh`) brings up
+> valkey, a file-backed Vault (initialized + unsealed + seeded), the
+> Honeydipper daemon, and the UI on a Linux docker host with one command.
+> Lifecycle: `make stop | down | status | logs`. Deployment details in
+> `deploy/README.md`.
 
 ## Requirements
 
@@ -31,8 +31,12 @@ The starter composes a trimmed-down Honeydipper deployment on top of
 
 ## Secret lifecycle
 
-> Put secrets in Vault. The only secret material needed outside Vault is the
-> AppRole identity pair used to *reach* Vault.
+> Put secrets in Vault. The only secret material outside Vault is what is
+> needed to *reach* and *operate* Vault: the AppRole identity pair (mounted
+> into the daemon), and the host-only Vault root token / unseal key(s) that
+> `start.sh` keeps in `.honey-starter/` (chmod 600, never mounted). The admin
+> bearer token is also persisted there (chmod 600) so re-runs reuse it; only
+> its bcrypt hash lives in Vault.
 
 - The daemon **never** receives the Vault root token. It authenticates with an
   AppRole role whose policy is **read-only and scoped exactly** to
@@ -40,7 +44,7 @@ The starter composes a trimmed-down Honeydipper deployment on top of
 - The admin API token hash and the AI engine API keys live in Vault and are
   resolved at config-load time via `LOOKUP[vault,...]` references through the
   vault driver subprocess (which inherits the daemon's AppRole environment).
-- The AppRole `role_id`/`secret_id` are written by start.sh (Phase 3) into
+- The AppRole `role_id`/`secret_id` are written by start.sh into
   `.honey-starter/identity/` and mounted into the daemon read-only. The
   compose file references them as `hd-secret-file://identity/...`, which the
   image entrypoint materializes before exec — the values never appear in the
@@ -54,34 +58,96 @@ The starter composes a trimmed-down Honeydipper deployment on top of
 See `deploy/README.md` → *Vault* for the full mechanism and the three
 environment namespaces (`HD_*` template-fed, plain env, `hd-secret-file://`).
 
-## Quick start (docker-compose)
-
-The deployment lives in `deploy/` and is documented in `deploy/README.md`.
-Bring-up is two-phase because Vault starts sealed and the daemon resolves
-Vault secrets at boot:
+## Quick start (single command)
 
 ```bash
-# 1) render config (see deploy/README.md; Phase 3 automates this)
-# 2) infrastructure
-docker compose -f deploy/docker-compose.yaml up -d valkey vault
-# 3) initialize/unseal vault + seed secrets
-#    Vault is unreachable from the host by network design — every step uses
-#    `docker compose exec vault vault ...` (helpers in scripts/lib.sh).
-#    Phase 3 (scripts/start.sh) automates this.
-# 4) application
-docker compose -f deploy/docker-compose.yaml up -d daemon ui
+make start        # or: bash scripts/start.sh
 ```
 
-Then open `http://localhost:8090` for the UI and `http://localhost:9000/healthz`
-for the daemon health check. See `deploy/README.md` → *Vault reachability
-contract* for the host→Vault access model.
+`start.sh` brings up the whole stack on a Linux docker host with one command.
+It is **idempotent and safe to re-run**:
+
+1. **Preflight** — Linux-only guard; requires `docker` + compose v2, `curl`,
+   `jq`, `openssl`, `htpasswd`; best-effort host-port conflict check for the
+   published API/UI ports.
+2. **Load `.env`** (repo root) if present, honoring the documented env
+   contract (`HD_*` template-fed, plain env direct, `HD_STATE_DIR`,
+   `COMPOSE_FILE`).
+3. **Render config** — `bootstrap/` is copied into
+   `.honey-starter/config/` with the `<ns>`/`<user>` placeholders substituted
+   (env `HONEY_NS`, default `starter`; `HONEY_USER`, default `admin`).
+4. **Infrastructure** — start valkey + vault; wait for the vault API.
+5. **Vault (first run only)** — initialize (root token + unseal keys persisted
+   to `.honey-starter/` chmod 600, host-only), unseal, enable KV v2 at
+   `secrets/` + AppRole, write the read-only `daemon-read` policy scoped
+   exactly to `secrets/data/<ns>/daemon`, create the AppRole role, write the
+   identity pair into `.honey-starter/identity/`, and seed
+   `secrets/<ns>/daemon` with the admin token hash (htpasswd bcrypt) + AI API
+   keys.
+6. **Application** — start daemon + ui; wait for `/healthz` 200.
+7. **Summary** — UI URL, API URL, and the admin token (printed once on first
+   run; persisted at `.honey-starter/admin_token` chmod 600 for re-runs).
+
+On re-runs Vault is detected as already initialized/unsealed, identity and
+secrets are reused (never clobbered), and the script converges to the same
+healthy stack. After a host reboot / `docker compose restart`, `make start`
+re-unseals Vault with the persisted keys.
+
+Then open `http://localhost:8090` for the UI and use the printed admin token to
+log in. `http://localhost:9000/healthz` is the daemon health check.
+
+See `deploy/README.md` → *Vault reachability contract* for the host→Vault
+access model, and *Bring-up sequence* for the underlying two-phase design that
+`start.sh` automates.
+
+### File permissions: the cap_drop / CAP_DAC_OVERRIDE rule (read before first start)
+
+The daemon container runs as **root without capabilities** (`cap_drop: [ALL]`
+removes `CAP_DAC_OVERRIDE`), so root-in-container obeys normal file
+permissions and **cannot read `0600` bind-mount files owned by your host
+user**. `start.sh` handles this for you:
+
+- the bind-mounted `config/` and `identity/` directories are normalized so the
+  container can read them (`chmod 755` dirs; config files world-readable);
+- AppRole identity files are written `0600` + `chown 0:0` (root-owned) when
+  `start.sh` can act as root (running as root or with passwordless sudo), and
+  `0644` otherwise (never the root token — only the AppRole pair scoped to
+  read one Vault path).
+
+**Windows / WSL2 note.** Under Docker Desktop's WSL2 backend, bind mounts
+preserve the WSL uid (typically 1000) and mode, and container-root is *not*
+mapped to the host user for permission checks — so a `0600` file owned by your
+WSL user is unreadable by the daemon. Run `start.sh` as root (`sudo make
+start`) or with sudo available so it can write root-owned `0600` identity
+files. Also remember that WSL2 localhost networking means `localhost:8090` /
+`localhost:9000` reach the published ports on the host. Full details:
+`deploy/README.md` → *Hardening notes* and *Identity-file hygiene (host
+side)*.
+
+## Lifecycle
+
+Once the stack is running, manage it with the lifecycle scripts (also wired
+into the Makefile):
+
+| Command | What it does |
+|---------|--------------|
+| `make start` | bring everything up (idempotent; also re-unseals Vault after a reboot/restart) |
+| `make stop` | graceful stop; containers stopped, volumes + `.honey-starter/` preserved |
+| `make down` | full teardown; containers + default networks removed, named volumes + `.honey-starter/` preserved |
+| `make down-volumes` | teardown that also deletes the named volumes (wipes Vault file backend + valkey data) |
+| `make status` | compose ps + daemon `/healthz` + vault seal status + UI reachability |
+| `make logs` | follow the daemon logs (`make logs ui` for the UI, extra args pass through) |
+
+`down` and `stop` never touch `.honey-starter/` (root token/unseal key, admin
+token, identity files, rendered config). To reset a deployment completely:
+`make down-volumes`, then `rm -rf .honey-starter/`.
 
 ## Validation
 
 The validation gate runs with one command:
 
 ```bash
-make validate   # = lint + check-bcrypt + check-config + compose-config + smoke
+make validate   # = lint + check-bcrypt + check-config + compose-config + smoke + e2e
 ```
 
 `make all` runs the same set. The gates map to the trust-critical contracts
@@ -94,6 +160,11 @@ and their environment needs:
 | `make check-config` | B2: `honeydipper configcheck` via docker image | docker + network |
 | `make compose-config` | C1: `docker compose config` validation | docker (compose v2) |
 | `make smoke` | C2: full-stack compose smoke (valkey+vault+daemon+ui) | docker + network |
+| `make e2e` | C3: E2E through the real `scripts/start.sh` path | docker + network |
+
+The docker-gated gates (check-config, compose-config, smoke, e2e) skip
+cleanly (exit 0) when docker is unavailable, so they should be re-run on a
+docker-enabled host before merge.
 
 ### lint — shellcheck gate (no docker)
 
@@ -155,7 +226,26 @@ namespace secrets **plus a decoy secret outside the AppRole scope**, boots
 daemon + ui, and asserts the trust chain end to end: `/healthz` 200, admin
 bearer-token auth, anonymous denial, AppRole write denial and a genuine
 permission-denied (not a vacuous 404) on an out-of-scope read, and UI 200.
-See `deploy/README.md` → *Validation* for details.
+The smoke re-implements the provisioning sequence inline to test the
+*deployment* itself. See `deploy/README.md` → *Validation* for details.
+
+Docker-gated (skips cleanly when docker is unavailable), so re-run on a
+docker-enabled host before merge.
+
+### C3 — end-to-end test through start.sh (docker + network)
+
+```bash
+bash test/e2e.sh
+```
+
+Boots the stack through the **real `scripts/start.sh`** single-command path
+into a throwaway compose project (`HD_STATE_DIR` in a mktemp dir, high host
+ports) and verifies the full trust chain: Vault initialized + unsealed, KV v2
++ AppRole enabled, policy scoped exactly, identity files present/readable,
+daemon `/healthz` 200 (proving every Vault LOOKUP resolved), admin bearer auth
+200, anonymous denied, AppRole read-ok / write-denied / out-of-scope genuine
+403 (with the decoy-secret trick), UI 200. Because it drives start.sh itself,
+it also exercises the idempotent re-run path.
 
 Docker-gated (skips cleanly when docker is unavailable), so re-run on a
 docker-enabled host before merge.
