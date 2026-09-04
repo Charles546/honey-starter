@@ -128,7 +128,7 @@ chmod 700 "${STATE_DIR}" 2>/dev/null || true
 # bypass file permissions, so the bind-mounted config/identity dirs must be
 # traversable/readable by it regardless of host umask (see guard in
 # deploy/README.md "Hardening notes"): dirs 755, config files world-readable.
-chmod 755 "${CONFIG_DIR}" "${IDENTITY_DIR}"
+chmod 755 "${CONFIG_DIR}" "${IDENTITY_DIR}" 2>/dev/null || true
 
 echo "--- state dir: ${STATE_DIR}"
 
@@ -192,6 +192,9 @@ write_identity_file() {
 # Changing them after the first run would desync the daemon's LOOKUP paths from
 # the seeded secrets, so we persist the values used on first run and refuse to
 # proceed on a mismatch.
+# Read the persisted <ns>/<user> values if the deployment was already
+# provisioned. They are only written AFTER a successful first provisioning
+# (see below), so a failed first run does not strand the namespace.
 if [ -f "${PROVISION_FILE}" ]; then
   PROVISION_CONTENT="$(file_read "${PROVISION_FILE}")" \
     || die "cannot read ${PROVISION_FILE}; re-run start.sh as its owner or with sudo (or reset the deployment)"
@@ -200,10 +203,6 @@ if [ -f "${PROVISION_FILE}" ]; then
   if [ "${HONEY_NS}" != "${PROVISION_NS}" ] || [ "${HONEY_USER}" != "${PROVISION_USER}" ]; then
     die "HONEY_NS/HONEY_USER changed since first run (was ns=${PROVISION_NS} user=${PROVISION_USER}, now ns=${HONEY_NS} user=${HONEY_USER}). This would desync the daemon's Vault LOOKUP paths from the seeded secrets. Reset the deployment (rm -rf ${STATE_DIR} and, if you want to also wipe Vault data, 'make down-volumes') to start over."
   fi
-else
-  # persist now; the values are also validated at render time below
-  ( umask 077; printf 'PROVISION_NS=%s\nPROVISION_USER=%s\n' "${HONEY_NS}" "${HONEY_USER}" > "${PROVISION_FILE}" )
-  chmod 600 "${PROVISION_FILE}"
 fi
 
 # --- render bootstrap config ------------------------------------------------
@@ -636,6 +635,14 @@ if [ "${http_code}" != "200" ]; then
   die "daemon /healthz did not become 200"
 fi
 echo "--- daemon healthy"
+
+# --- persist namespace/user after successful provisioning --------------------
+# Written only now, so a failed first run does not strand the <ns>/<user>
+# values (a re-run with corrected values or a fresh state dir still works).
+if [ ! -f "${PROVISION_FILE}" ]; then
+  ( umask 077; printf 'PROVISION_NS=%s\nPROVISION_USER=%s\n' "${HONEY_NS}" "${HONEY_USER}" > "${PROVISION_FILE}" )
+  chmod 600 "${PROVISION_FILE}"
+fi
 
 # --- success summary -----------------------------------------------------------
 echo ""

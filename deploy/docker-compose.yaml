@@ -119,6 +119,12 @@ services:
       # Template-fed daemon settings (HD_* -> .env.<suffix>).
       HD_API_PORT: ${HD_API_PORT:-9000}
       HD_UI_URL: ${HD_UI_URL:-http://localhost:8090}
+      # Non-secret AI routing knobs (template-fed -> .env.AI_BASE_URL /
+      # .env.AI_MODEL). Defaults must match the fallbacks in
+      # bootstrap/engines.yaml so the default "gpt" engine stays consistent
+      # when the operator does not override them. AI API keys stay in Vault.
+      HD_AI_BASE_URL: ${HD_AI_BASE_URL:-https://api.openai.com/v1}
+      HD_AI_MODEL: ${HD_AI_MODEL:-gpt-5.4-mini}
       # Deliberately 30m (not 1m): every configCheckInterval tick re-assembles
       # the local-dir init repo unconditionally (refreshRepo() treats a local
       # path with no BRANCH as "uncommitted" and returns true every tick), and

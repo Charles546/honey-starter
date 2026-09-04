@@ -115,14 +115,26 @@ if ! bash "${HERE}/scripts/start.sh" >"${START_LOG}" 2>&1; then
 fi
 echo "--- start.sh completed successfully"
 
+# --- root token + admin token from the state dir (host-only, chmod 600) ------
+# start.sh ran in a subprocess as the same user, so these are readable.
+ROOT_TOKEN="$(e2e_read "${STATE}/root_token")"
+[ -n "${ROOT_TOKEN}" ] || { echo "FAIL: empty root_token in ${STATE}" >&2; exit 1; }
+ADMIN_TOKEN="$(e2e_read "${STATE}/admin_token")"
+[ -n "${ADMIN_TOKEN}" ] || { echo "FAIL: empty admin_token in ${STATE}" >&2; exit 1; }
+echo "--- state files present: root_token, unseal_key, admin_token, identity/*"
+
 # --- idempotent re-run: start.sh must converge without regenerating secrets --
 # Core single-command requirement: re-runs must not re-init Vault, and must not
 # regenerate/overwrite the admin token or API keys. Capture the state files,
 # re-run start.sh, and assert nothing that must stay stable changed. (Vault's
 # init/unseal state is asserted separately below.)
+SEED_PATH="secrets/${E2E_NS}/daemon"
 ADMIN_TOKEN_BEFORE="$(e2e_read "${STATE}/admin_token")"
 ROLE_ID_FILE_BEFORE="$(e2e_read "${STATE}/identity/role_id")"
 SECRET_ID_FILE_BEFORE="$(e2e_read "${STATE}/identity/secret_id")"
+# The re-run must also leave the seeded KV payload (admin_token_hash, AI keys)
+# byte-identical, so a bug that rewrote seeded values every run is caught.
+SEED_KV_BEFORE="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null || true)"
 if ! bash "${HERE}/scripts/start.sh" >"${START_LOG}" 2>&1; then
   echo "FAIL: scripts/start.sh re-run exited non-zero (must be idempotent)" >&2
   echo "--- start.sh re-run log (tail) ---" >&2
@@ -139,16 +151,12 @@ if [ "$(e2e_read "${STATE}/identity/role_id")" != "${ROLE_ID_FILE_BEFORE}" ] \
   echo "FAIL: start.sh re-run regenerated the AppRole identity pair (idempotency broken)" >&2
   exit 1
 fi
-echo "--- start.sh idempotent re-run converged (admin token + identity pair unchanged)"
-
-# --- root token + admin token from the state dir (host-only, chmod 600) ------
-# start.sh ran in a subprocess as the same user, so these are readable.
-ROOT_TOKEN="$(e2e_read "${STATE}/root_token")"
-[ -n "${ROOT_TOKEN}" ] || { echo "FAIL: empty root_token in ${STATE}" >&2; exit 1; }
-ADMIN_TOKEN="$(e2e_read "${STATE}/admin_token")"
-[ -n "${ADMIN_TOKEN}" ] || { echo "FAIL: empty admin_token in ${STATE}" >&2; exit 1; }
-
-echo "--- state files present: root_token, unseal_key, admin_token, identity/*"
+SEED_KV_AFTER="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null || true)"
+if [ -n "${SEED_KV_BEFORE}" ] && [ "${SEED_KV_BEFORE}" != "${SEED_KV_AFTER}" ]; then
+  echo "FAIL: start.sh re-run rewrote the seeded KV payload at ${SEED_PATH} (idempotency broken)" >&2
+  exit 1
+fi
+echo "--- start.sh idempotent re-run converged (admin token + identity pair + seeded KV unchanged)"
 
 # --- 1. vault initialized + unsealed ------------------------------------------
 if ! vault_exec status -format=json | jq -e '.initialized == true and .sealed == false' >/dev/null; then
