@@ -1416,10 +1416,14 @@ EFFECTIVE_CONFIG_INTERVAL=""
 # Phase 6 per-instance COMPOSE_PROJECT_NAME state. IS_FRESH is computed ONCE in
 # on_disk_main right after read_provision (Req 2: fresh = never-provisioned, i.e.
 # ! state_dir_has_artifacts). RENAMING (writer) is 1 for a confirmed rename or a
-# silent adopt (ADOPT=1); DECLINED marks a declined env-vs-persisted change;
-# GUARD_RENAMING is what the F3 guard receives — 1 whenever a project event
-# (adopt / confirm-y / decline) happened, so the artifacts early-return is
-# suppressed and the EFFECTIVE name is truly probed (see guard).
+# silent adopt (ADOPT=1); DECLINED marks a declined env-vs-persisted change
+# (a NO-CHANGE: the writer keeps the persisted line, so the guard must NOT
+# re-probe the kept name); GUARD_RENAMING is what the F3 guard receives — 1
+# ONLY for a real project change (adopt / confirm-y), so the artifacts
+# early-return is suppressed and the EFFECTIVE name is truly probed (see guard).
+# A declined change keeps GUARD_RENAMING=0: the artifacts shield the kept name
+# (the instance rightfully owns its project) and a manage re-run with an
+# exported differing env never false-fires on its own running stack.
 EFFECTIVE_PROJECT=""
 IS_FRESH=0
 RENAMING=0
@@ -1541,7 +1545,10 @@ preliminary_project_name() {
 #                                      language, Req 8); answers-file-only or
 #                                      NONINTERACTIVE runs DIE. Confirm-y ->
 #                                      RENAMING=1, EFFECTIVE = env; confirm-n ->
-#                                      keep persisted, DECLINED=1.
+#                                      a NO-CHANGE: DECLINED=1, keep persisted,
+#                                      RENAMING=0 + GUARD_RENAMING=0 (the guard
+#                                      early-returns on the artifacts — it must
+#                                      never force-probe the kept name).
 #   * --update (HONEY_STARTER_UPDATE_IN_PROGRESS=1): env IGNORED; keep
 #     persisted; never warn / confirm / adopt.
 resolve_existing_project() {
@@ -1588,10 +1595,12 @@ resolve_existing_project() {
       EFFECTIVE_PROJECT="${env_p}"
       ;;
     *)
-      # declined: the writer keeps the persisted line (RENAMING stays 0) but the
-      # guard re-probes the KEPT name (GUARD_RENAMING=1) — artifacts justify the
-      # OLD name, and any project event must be truly probed.
-      DECLINED=1; GUARD_RENAMING=1
+      # declined: a NO-CHANGE — the writer keeps the persisted line
+      # (RENAMING stays 0) and the guard must NOT re-probe the kept name
+      # (GUARD_RENAMING=0): the artifacts early-return shields it (this
+      # instance rightfully owns its project), so a manage re-run with an
+      # exported differing env + decline never false-fires on its own stack.
+      DECLINED=1; RENAMING=0; GUARD_RENAMING=0
       EFFECTIVE_PROJECT="${cur_p}"
       ;;
   esac
@@ -2125,8 +2134,9 @@ abort_or_continue_prompt() {
 # rename/adopt can never bind to an occupied project name. The PROJECT is
 # passed IN (the EFFECTIVE project name) — the guard NEVER re-reads
 # ${COMPOSE_PROJECT_NAME:-honey-starter} internally. RENAMING=1 suppresses the
-# artifacts early-return (an adopt / confirmed-rename / decline must truly
-# probe the effective name — artifacts justify the OLD name only). Probe:
+# artifacts early-return (an adopt / confirmed-rename must truly probe the
+# effective name — artifacts justify the OLD name only). A DECLINED change is a
+# NO-CHANGE and does NOT re-probe: its artifacts shield the kept name. Probe:
 #   docker compose -f <INSTALL_DIR>/deploy/docker-compose.yaml -p <p>
 #     ps --status running -q daemon ui valkey vault
 #   docker volume inspect <p>_vault-file
@@ -2333,9 +2343,10 @@ on_disk_main() {
   # F3 pre-guard (Phase 6 B1): probe the name the runtime will actually use.
   #   * fresh     -> preliminary (env > .env prefill > derived), RENAMING=0
   #   * existing  -> EFFECTIVE_PROJECT (resolved ABOVE, before any guard), with
-  #                  GUARD_RENAMING (=1 for adopt / confirm-y / decline, so the
-  #                  artifacts early-return is suppressed and the effective name
-  #                  is truly probed; =0 for a no-change manage re-run)
+  #                  GUARD_RENAMING (=1 for adopt / confirm-y, so the artifacts
+  #                  early-return is suppressed and the effective name is truly
+  #                  probed; =0 for a no-change manage re-run AND for a declined
+  #                  change — both keep the persisted name shielded by artifacts)
   if [ "${IS_FRESH}" -eq 1 ]; then
     guard_project_state_consistency "$(preliminary_project_name)" 0
   else

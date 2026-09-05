@@ -62,8 +62,14 @@
 #     env-vs-persisted change is TTY-confirmed (or NI-dies) with the data-loss
 #     language, an env-with-nothing-persisted is adopted silently (and probed),
 #     --update ignores env, and the F3 guard probes the EFFECTIVE name on every
-#     effective change (pre + post-questionnaire re-probe) — every probe test
-#     asserts the stub log is non-empty and contains the expected -p probe.
+#     effective CHANGE (adopt / confirm-y / fresh install / fresh re-probe) —
+#     a DECLINED change is a NO-CHANGE: the guard early-returns on the state
+#     artifacts (an already-provisioned instance rightfully owns its project;
+#     decline never force-probes the kept name and never false-fires on its own
+#     stack), while an ARTIFACT-LESS tree has nothing to shield it so its
+#     would-be project IS probed and a genuine collision still dies. Every probe
+#     test asserts the stub log is non-empty and contains the expected -p probe
+#     (and a no-probe test asserts the log stays EMPTY — no vacuous pass).
 #   * R4 NOTE (do NOT chase): T2/T3/T15/T16b are manage-flows on artifact-free
 #     seeded trees -> under the never-provisioned IS_FRESH criterion they
 #     become IS_FRESH=1 and GAIN a COMPOSE_PROJECT_NAME= line (derived,
@@ -1493,9 +1499,9 @@ echo ""
 # P-series. Phase 6 — per-instance COMPOSE_PROJECT_NAME persisted in .env.
 # Every probe test REQUIRES: stub on PATH AND a non-empty DOCKER_STUB_LOG with
 # the expected -p probe (a vacuous pass — a docker-missing skip, an early
-# return, or a wrong name — FAILS the test). P1-P10/P14-P16 are hermetic
-# answers/env/--dry-run; P11-P13 are pty (python3-gated; skipped cleanly when
-# python3 is unavailable).
+# return, or a wrong name — FAILS the test); a no-probe path asserts the log
+# stays EMPTY. P1-P11/P14-P16 are hermetic answers/env/--dry-run; P12-P13 are
+# pty (python3-gated; skipped cleanly when python3 is unavailable).
 # ---------------------------------------------------------------------------
 
 # P1. fresh NI env-unset -> the derived hs-...-hash8 is written; 2nd run is
@@ -1783,57 +1789,61 @@ else
 fi
 rm -rf "${TP10}" "${SP10}"
 
-# P11. B1 false-negative (pty): artifacts + persisted otherproj + env myproj +
-#      stub RUNNING otherproj; respond n -> decline -> the guard re-probes the
-#      KEPT name otherproj -> collision DIE; .env unchanged; log has
-#      -p otherproj, NOT -p myproj.
-if command -v python3 >/dev/null 2>&1; then
-  TP11="$(fresh_tree)"; SP11="$(mktemp -d)"; mkdir -p "${SP11}"
-  printf 'root-token-dummy\n' > "${SP11}/root_token"
-  printf 'PROVISION_NS=ansns\nPROVISION_USER=ansuser\n' > "${SP11}/provision.env"
-  printf 'COMPOSE_PROJECT_NAME=otherproj\nHONEY_NS=ansns\nHONEY_USER=ansuser\nHD_API_HOST_PORT=9300\nHD_UI_HOST_PORT=9390\n' > "${TP11}/.env"
-  printf 'RUNNING otherproj\n' > /tmp/setup-dryrun.p11.state
-  : > /tmp/setup-dryrun.p11.log
-  set +e
-  (
-    cd "${TP11}"
-    env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
-      -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
-      DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p11.state \
-      DOCKER_STUB_LOG=/tmp/setup-dryrun.p11.log \
-      COMPOSE_PROJECT_NAME=myproj \
-      HD_STATE_DIR="${SP11}" \
-      python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TP11}/scripts/setup.sh" "Continue with the change?" \
-        n ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.p11.out 2>&1
-  RC11=$?
-  set -e
-  if [ "${RC11}" -ne 0 ] \
-    && grep -q "cannot use project 'otherproj'" /tmp/setup-dryrun.p11.out \
-    && grep -q '^COMPOSE_PROJECT_NAME=otherproj$' "${TP11}/.env" \
-    && grep -q -- "-p otherproj" /tmp/setup-dryrun.p11.log \
-    && ! grep -q -- "-p myproj" /tmp/setup-dryrun.p11.log; then
-    ok "P11: decline (n) re-probes the KEPT name -> collision DIES; .env unchanged; log -p otherproj only"
-  else
-    bad "P11 rc=${RC11} (want decline -> probe otherproj -> die):"
-    sed 's/^/    | /' /tmp/setup-dryrun.p11.out >&2 || true
-  fi
-  rm -rf "${TP11}" "${SP11}"
+# P11. B1 false-negative CLOSE (hermetic): an ARTIFACT-LESS (never-provisioned)
+#      tree has NO state artifacts to shield its project, so the F3 pre-guard
+#      genuinely probes the name the run would use and a real collision DIES.
+#      Tree: .env prefill COMPOSE_PROJECT_NAME=otherproj + env COMPOSE_PROJECT_NAME
+#      UNSET. (A fresh tree's pre-guard is env-first, so an exported env would
+#      make the preliminary the env name — see P10; and the decline confirm
+#      itself is IS_FRESH=0-only, i.e. artifacts-present, so an artifact-less
+#      run reaches the pre-guard directly with no prompt.) Stub RUNNING
+#      otherproj -> guard(otherproj, 0) probes -p otherproj -> DIES pre-write;
+#      .env unchanged.
+TP11="$(fresh_tree)"; SP11="$(mktemp -d)"
+printf 'COMPOSE_PROJECT_NAME=otherproj\nHONEY_NS=starter\nHONEY_USER=admin\nHD_API_HOST_PORT=9300\nHD_UI_HOST_PORT=9390\n' > "${TP11}/.env"
+printf 'RUNNING otherproj\n' > /tmp/setup-dryrun.p11.state
+: > /tmp/setup-dryrun.p11.log
+set +e
+(
+  cd "${TP11}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p11.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p11.log \
+    HONEY_STARTER_INSTALL_DIR="${TP11}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9300 HD_UI_HOST_PORT=9390 HD_STATE_DIR="${SP11}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p11.out 2>&1
+RC11=$?
+set -e
+if [ "${RC11}" -ne 0 ] \
+  && grep -q "refusing to set up a NEW instance" /tmp/setup-dryrun.p11.out \
+  && grep -q "compose project 'otherproj'" /tmp/setup-dryrun.p11.out \
+  && grep -q '^COMPOSE_PROJECT_NAME=otherproj$' "${TP11}/.env" \
+  && [ -s /tmp/setup-dryrun.p11.log ] \
+  && grep -q -- "-p otherproj" /tmp/setup-dryrun.p11.log; then
+  ok "P11: artifact-less tree (no shield) + persisted otherproj + stub RUNNING otherproj -> pre-guard -p otherproj -> DIES; .env unchanged"
 else
-  ok "P11 SKIPPED (python3 unavailable)"
+  bad "P11 rc=${RC11} (want artifact-less collision -> die):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p11.out >&2 || true
 fi
+rm -rf "${TP11}" "${SP11}"
 
-# P12. B1 false-positive (pty): same as P11 but stub RUNNING myproj; respond n
-#      -> the guard probes otherproj (FREE) -> proceeds; .env keeps otherproj;
-#      log has -p otherproj, NOT -p myproj (no false die on the env name).
+# P12. decline is a NO-CHANGE (pty): the REPRODUCED false-die scenario —
+#      artifacts present + persisted otherproj + env myproj + the instance's
+#      OWN stack RUNNING under otherproj (the KEPT name); respond n -> DECLINED=1,
+#      GUARD_RENAMING=0 -> the F3 guard EARLY-RETURNS on the state artifacts
+#      (an already-provisioned instance rightfully owns its project; a declined
+#      change must NOT force-probe the kept name and must NOT false-fire on its
+#      own stack). The run PROCEEDS, .env keeps otherproj, the "keeping the
+#      persisted compose project" NOTE is printed, and the guard makes NO probe
+#      at all (stub log stays EMPTY - asserted, no vacuous pass).
 if command -v python3 >/dev/null 2>&1; then
   TP12="$(fresh_tree)"; SP12="$(mktemp -d)"; mkdir -p "${SP12}"
   printf 'root-token-dummy\n' > "${SP12}/root_token"
   printf 'PROVISION_NS=ansns\nPROVISION_USER=ansuser\n' > "${SP12}/provision.env"
   printf 'COMPOSE_PROJECT_NAME=otherproj\nHONEY_NS=ansns\nHONEY_USER=ansuser\nHD_API_HOST_PORT=9300\nHD_UI_HOST_PORT=9390\n' > "${TP12}/.env"
-  printf 'RUNNING myproj\n' > /tmp/setup-dryrun.p12.state
+  printf 'RUNNING otherproj\n' > /tmp/setup-dryrun.p12.state
   : > /tmp/setup-dryrun.p12.log
   set +e
   (
@@ -1853,11 +1863,11 @@ if command -v python3 >/dev/null 2>&1; then
   set -e
   if [ "${RC12}" -eq 0 ] \
     && grep -q '^COMPOSE_PROJECT_NAME=otherproj$' "${TP12}/.env" \
-    && grep -q -- "-p otherproj" /tmp/setup-dryrun.p12.log \
-    && ! grep -q -- "-p myproj" /tmp/setup-dryrun.p12.log; then
-    ok "P12: decline (n) probes the KEPT name (otherproj free) -> proceeds; .env keeps otherproj; no false die"
+    && grep -q "keeping the persisted compose project" /tmp/setup-dryrun.p12.out \
+    && [ ! -s /tmp/setup-dryrun.p12.log ]; then
+    ok "P12 (repro): decline (n) with OWN stack running under the KEPT name -> guard early-returns on artifacts (NO probe; log empty) -> proceeds; .env keeps otherproj; no false die"
   else
-    bad "P12 rc=${RC12} (want decline -> probe otherproj -> proceed):"
+    bad "P12 rc=${RC12} (want decline -> proceed, no probe, .env kept):"
     sed 's/^/    | /' /tmp/setup-dryrun.p12.out >&2 || true
   fi
   rm -rf "${TP12}" "${SP12}"
