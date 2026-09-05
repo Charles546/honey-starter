@@ -43,7 +43,9 @@
 #       setup.sh, the invoking tree stays untouched
 #   * Phase 5 AI model matrix (three-way HD_AI_MODEL semantics, skip behavior,
 #     pin / no-pin, validation): an INVALID MODEL DIES via env AND answers
-#     file AND a typed answer (pty)
+#     file AND a typed answer (pty); a VALID model NEVER dies (cross-
+#     contamination guard: an invalid EARLIER prompt must not poison the model
+#     block's global flags)
 #   * branch-3 directory prompt hermetics (pty): ~/ default display (never the
 #     spilled absolute path), Enter -> re-exec -> branch-2-in-place, bare ~ ->
 #     $HOME at the prompt AND as an on-disk positional
@@ -1062,6 +1064,38 @@ if command -v python3 >/dev/null 2>&1; then
 else
   ok "model matrix: 17k interactive invalid-model die SKIPPED (python3 unavailable)"
 fi
+
+# 17l. Cross-contamination regression: an INVALID answer to an EARLIER prompt
+# (HONEY_NS / HONEY_USER) must NOT poison a perfectly VALID model via the
+# global INVALID_SEEN/INVALID_VALUE flags. The model block resets both flags
+# before its own question, so a valid model NEVER dies (and never shows a
+# misleading 'invalid HD_AI_MODEL: <value-from-another-prompt>' error). The
+# answers file here reproduces the reviewer's probe: 3x invalid ns + 3x
+# invalid user (each retry loop consumes exactly 3 lines then defaults) +
+# provider openai + the VALID model gpt-valid. Without the reset this rc was 1
+# dying on the model; with it the run completes and writes HD_AI_MODEL=gpt-valid.
+T17L="$(fresh_tree)"; S17L="$(mktemp -d)"
+printf 'bad ns one\nbad ns two\nbad ns three\nbad user one\nbad user two\nbad user three\nopenai\ngpt-valid\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17l
+set +e
+(
+  cd "${T17L}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${T17L}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17l HD_STATE_DIR="${S17L}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17l.out 2>&1
+RC17L=$?
+set -e
+if [ "${RC17L}" -eq 0 ] \
+  && grep -q '^HD_AI_MODEL=gpt-valid$' "${T17L}/.env" \
+  && ! grep -q "invalid HD_AI_MODEL" /tmp/setup-dryrun.17l.out; then
+  ok "model matrix: valid model never dies after invalid EARLIER answers (cross-contamination regression; HD_AI_MODEL=gpt-valid written)"
+else
+  bad "model matrix 17l rc=${RC17L} (want rc 0 + HD_AI_MODEL=gpt-valid, no invalid-HD_AI_MODEL die):"
+  sed 's/^/    | /' /tmp/setup-dryrun.17l.out >&2 || true
+fi
+rm -rf "${T17L}" "${S17L}"
+
 
 
 # ---------------------------------------------------------------------------

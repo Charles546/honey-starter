@@ -1438,6 +1438,16 @@ run_questionnaire() {
     if [ "${EFFECTIVE_PROVIDER}" = "openai" ] || [ "${EFFECTIVE_PROVIDER}" = "custom" ]; then
       model_default="$(first_nonempty "$(cur_value HD_AI_MODEL)" "${MODEL_DEFAULT}")"
       if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
+        # Reset the invalid-input flags before THIS question: INVALID_SEEN /
+        # INVALID_VALUE are GLOBAL (set by prompt_setting's retry loop on an
+        # invalid answer to ANY earlier prompt, e.g. HONEY_NS / HONEY_USER) and
+        # must never leak across prompts. Without the reset, a stale flag from
+        # an earlier invalid answer would make a perfectly VALID model die with
+        # a misleading '(invalid HD_AI_MODEL: ...)' value from a different
+        # prompt. The documented contract is: an INVALID model dies (any input
+        # source); a VALID model never dies.
+        INVALID_SEEN=0
+        INVALID_VALUE=""
         if prompt_setting HD_AI_MODEL "AI model (HD_AI_MODEL)" \
           "${model_default}" 0 valid_model; then
           EFFECTIVE_MODEL="${REPLY}"
