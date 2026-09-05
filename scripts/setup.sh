@@ -204,9 +204,11 @@ The branch-3 directory prompt (the single bootstrap exception):
 
     Install directory [~/honey-starter]
 
-  (Enter accepts the default.) An answers-file-only or no-tty bootstrap run
-  silently uses HONEY_STARTER_INSTALL_DIR or the default. Every other
-  question is asked only by the on-disk copy.
+  (Enter accepts the default.) The default is shown in its ~/ form whenever
+  it is under $HOME (otherwise as-is); a typed ~/x expands to $HOME/x and a
+  bare ~ means $HOME. An answers-file-only or no-tty bootstrap run silently
+  uses HONEY_STARTER_INSTALL_DIR or the default. Every other question is
+  asked only by the on-disk copy.
 
 Install dir:
   HONEY_STARTER_INSTALL_DIR is consulted ONLY in branch 3 (standalone, where
@@ -266,8 +268,10 @@ HD_AI_MODEL semantics (three-way; the model is a non-secret pin):
   HD_AI_MODEL= (removes the line) or deleting the line by hand. No-pin is not
   sticky: a later run with HD_AI_MODEL unset re-pins (runtime-identical, since
   compose already defaults HD_AI_MODEL). Valid model: non-empty, no
-  whitespace/control, charset [A-Za-z0-9._:/@+-] (env-supplied models are
-  validated in non-interactive runs too).
+  whitespace/control, charset [A-Za-z0-9._:/@+-]. An invalid model DIES
+  regardless of the input source -- environment, answers file, or a typed
+  answer at the prompt (a later line is never adopted as the model, and the
+  pin is never written over an invalid answer).
 
 AI provider matrix (what setup.sh writes to .env):
   openai   -> writes OPENAI_API_KEY=<key> when provided + the HD_AI_MODEL pin;
@@ -525,11 +529,15 @@ POSITIONAL_TARGET=""
 # resolve_arg_path: absolutize a <dir> argument at PARSE time (both modes parse
 # identically — `setup .` resolves against the CALLER's $PWD, not the tree's
 # location; the bootstrap forwards "$@" so `curl ... | bash -s <dir>` resolves
-# the same way). Expands a leading ~/, then normalizes via readlink -f
+# the same way). Expands a leading ~/ AND a bare ~ (the exact value "~") to
+# $HOME (HOME-unset leaves a bare ~ literal), then normalizes via readlink -f
 # (fallback cd && pwd -P) so equality vs the invoked tree (SCRIPT_TREE,
 # resolved the same way in detect_mode) is canonical.
 resolve_arg_path() {
   local p="$1" out=""
+  if [ "${p}" = "~" ] && [ -n "${HOME:-}" ]; then
+    p="${HOME:-}"
+  fi
   if [ "${p#\~/}" != "${p}" ]; then
     p="${HOME:-}/${p#\~/}"
   fi
@@ -952,15 +960,26 @@ dispatch_target() {
 # bootstrap copy otherwise never prompts (this is the single deliberate
 # exception). Answers-file-only or no-tty runs keep DEFAULT silently.
 ask_install_dir() {
-  local default="$1" ans="" tfd=""
+  local default="$1" ans="" tfd="" display=""
   [ -z "${POSITIONAL_TARGET}" ] || { printf '%s' "${default}"; return 0; }
   [ -z "${HONEY_STARTER_INSTALL_DIR:-}" ] || { printf '%s' "${default}"; return 0; }
   [ -z "${HONEY_STARTER_ANSWERS_FILE:-}" ] || { printf '%s' "${default}"; return 0; }
   [ "${HONEY_STARTER_NONINTERACTIVE:-0}" != "1" ] || { printf '%s' "${default}"; return 0; }
+  # Show the default in its ~/ form when it is under $HOME (the documented
+  # "[~/honey-starter]" — never the spilled absolute path); otherwise as-is.
+  display="${default}"
+  if [ -n "${HOME:-}" ] && [ "${display#"${HOME}/"}" != "${display}" ]; then
+    # shellcheck disable=SC2088 # literal "~/..." display form is INTENTIONAL
+    # (the prompt shows "[~/honey-starter]", never the spilled absolute path)
+    display="~/${display#"${HOME}/"}"
+  fi
   if { exec {tfd}<>/dev/tty; } 2>/dev/null; then
-    printf 'Install directory [%s] ' "${default}" >&2
+    printf 'Install directory [%s] ' "${display}" >&2
     if IFS= read -r -u "${tfd}" ans && [ -n "${ans}" ]; then
       default="${ans}"
+      if [ "${default}" = "~" ] && [ -n "${HOME:-}" ]; then
+        default="${HOME:-}"
+      fi
       if [ "${default#\~/}" != "${default}" ]; then
         default="${HOME:-}/${default#\~/}"
       fi
@@ -1222,6 +1241,8 @@ prompt_setting() {
         return 0
       fi
       warn "invalid ${varname}: '${ans}'"
+      INVALID_SEEN=1
+      INVALID_VALUE="${ans}"
       tries=$((tries + 1))
       if [ "${tries}" -ge 3 ]; then
         REPLY="${default}"
@@ -1313,6 +1334,14 @@ EFFECTIVE_API_PORT=""
 EFFECTIVE_UI_PORT=""
 EFFECTIVE_UI_URL=""
 EFFECTIVE_CONFIG_INTERVAL=""
+# Set by prompt_setting when it sees an INVALID answer (any input source) so a
+# caller can distinguish "the documented default applied" from "invalid input
+# was seen then retried/defaulted". Consulted ONLY by the HD_AI_MODEL block,
+# which resets both before its own question: the documented contract is an
+# INVALID MODEL DIES (env, answers file, or typed) — it must never silently
+# adopt a retry line or re-pin.
+INVALID_SEEN=0
+INVALID_VALUE=""
 
 # infer_provider_default: provider determinable without prompting (env value,
 # or inferred from supplied base/key; documented default openai).
@@ -1415,9 +1444,17 @@ run_questionnaire() {
         else
           # HD_AI_MODEL has a documented default (the pin) and is intentionally
           # NOT part of all_answers_supplied / MISSING_VARS: a prompt failure
-          # (unreachable in practice, since the default always validates) falls
-          # back to the default rather than a missing-required-value error.
+          # falls back to the default rather than a missing-required-value error.
           EFFECTIVE_MODEL="${model_default}"
+        fi
+        # Documented contract: an INVALID MODEL DIES regardless of the input
+        # source -- env (validated earlier), answers file, or typed. Without
+        # this, a typo'd model in an answers file / at the prompt would either
+        # be adopted by the retry loop (a later line that happens to validate,
+        # e.g. a port) or fall back to the pin -- silently. prompt_setting
+        # surfaces "invalid input was seen" via INVALID_SEEN.
+        if [ "${INVALID_SEEN}" -eq 1 ]; then
+          die "invalid HD_AI_MODEL: '${INVALID_VALUE}' (no whitespace/control; charset [A-Za-z0-9._:/@+-]). Fix the model and re-run."
         fi
       else
         # NI / auto-NI: the documented default applies (pin)
@@ -1921,6 +1958,9 @@ bootstrap_main() {
         die "cannot determine an install dir: HOME is unset. Set HONEY_STARTER_INSTALL_DIR explicitly."
       fi
       dir="${HOME}/${DEFAULT_INSTALL_SUBDIR}"
+    fi
+    if [ "${dir}" = "~" ] && [ -n "${HOME:-}" ]; then
+      dir="${HOME:-}"
     fi
     if [ "${dir#\~/}" != "${dir}" ]; then
       dir="${HOME}/${dir#\~/}"

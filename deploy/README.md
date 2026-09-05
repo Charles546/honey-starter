@@ -112,8 +112,9 @@ is a three-branch rule:
 2. **no `<dir>`, script inside a tree** — manage that instance in place.
 3. **no `<dir>`, standalone/piped** — `HONEY_STARTER_INSTALL_DIR` (consulted
    ONLY here) or `~/honey-starter`; interactive shells get the single
-   `Install directory [~/honey-starter]` prompt (after the fail-fast preflight,
-   before the download).
+   `Install directory [~/honey-starter]` prompt (shown in its `~/` form
+   whenever it is under `$HOME`; a typed `~/x` expands to `$HOME/x`, and a bare
+   `~` means `$HOME`) — after the fail-fast preflight, before the download.
 
 To run two instances simultaneously, use **separate directories** with distinct
 `HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and export an env-only `COMPOSE_PROJECT_NAME`
@@ -166,6 +167,12 @@ env semantics:
   WRITE `gpt-5.4-mini`.
 * provider `skip` — no question; an existing line is kept when env is unset,
   removed when explicitly empty, replaced when non-empty.
+
+An **invalid** model (whitespace/control, or characters outside
+`[A-Za-z0-9._:/@+-]`) **dies** regardless of the input source — environment,
+answers file, or a typed answer at the prompt. It is never silently replaced
+by the pin nor by a later line (e.g. a port), so a typo'd model never
+silently becomes `gpt-5.4-mini`.
 
 **Upgrade churn note:** on the first post-upgrade re-run, a fresh openai/custom
 install gains an explicit `HD_AI_MODEL=gpt-5.4-mini` line. This is

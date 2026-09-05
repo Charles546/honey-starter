@@ -38,11 +38,23 @@
 #     - on-disk positional manages an EXISTING instance (target prefilled,
 #       invoking tree untouched)
 #     - on-disk positional materializes a NEW instance from the invoked tree
+#     - on-disk positional MERGES a pre-Phase-4 tree (layout present, no
+#       setup.sh): .env / .honey-starter sentinels preserved, the tree gains
+#       setup.sh, the invoking tree stays untouched
 #   * Phase 5 AI model matrix (three-way HD_AI_MODEL semantics, skip behavior,
-#     pin / no-pin, validation)
+#     pin / no-pin, validation): an INVALID MODEL DIES via env AND answers
+#     file AND a typed answer (pty)
+#   * branch-3 directory prompt hermetics (pty): ~/ default display (never the
+#     spilled absolute path), Enter -> re-exec -> branch-2-in-place, bare ~ ->
+#     $HOME at the prompt AND as an on-disk positional
 #   * argument parsing: `--` end-of-flags, two positionals die, unknown option
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
+#
+# python3 is OPTIONAL and used only by the pty harness (test/pty-helper.py) for
+# the interactive branch-3 prompt / typed-invalid-model tests (17k/19/20);
+# when python3 is absent those checks are skipped cleanly. setup.sh itself
+# never needs python3.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -780,6 +792,48 @@ fi
 rm -rf "${TSRC16}" "${S16}" "$(dirname "${NEW16}")"
 
 # ---------------------------------------------------------------------------
+# 16b. On-disk positional -> pre-Phase-4 tree (valid layout, NO scripts/setup.sh)
+#      is merged over in place: .env / .honey-starter sentinels preserved, the
+#      tree gains scripts/setup.sh, the invoking tree stays untouched.
+# ---------------------------------------------------------------------------
+TSRC16B="$(fresh_tree)"; TPRE16B="$(fresh_tree)"; S16B="$(mktemp -d)"
+rm -f "${TPRE16B}/scripts/setup.sh"     # make it pre-Phase-4
+printf 'HONEY_NS=oldns\nHONEY_USER=olduser\nHD_API_HOST_PORT=9400\nHD_UI_HOST_PORT=9490\nHD_AI_MODEL=old-model\n' > "${TPRE16B}/.env"
+mkdir -p "${TPRE16B}/.honey-starter"
+printf 'SENTINEL-ROOT-TOKEN\n' > "${TPRE16B}/.honey-starter/root_token"
+printf '# src-marker\nOPENAI_API_KEY=sk-source-keep\n' > "${TSRC16B}/.env"
+cp "${TSRC16B}/.env" /tmp/setup-dryrun.src16b.env
+set +e
+(
+  cd "${TSRC16B}"
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_AI_PROVIDER=openai \
+  HD_STATE_DIR="${S16B}" \
+  bash scripts/setup.sh "${TPRE16B}" --dry-run
+) >/tmp/setup-dryrun.16b.out 2>&1
+RC16B=$?
+set -e
+if [ "${RC16B}" -eq 0 ] \
+  && [ -f "${TPRE16B}/scripts/setup.sh" ] \
+  && grep -q '^HONEY_NS=oldns$' "${TPRE16B}/.env" \
+  && grep -q '^HD_AI_MODEL=old-model$' "${TPRE16B}/.env" \
+  && grep -q '^HD_API_HOST_PORT=9400$' "${TPRE16B}/.env" \
+  && [ -f "${TPRE16B}/.honey-starter/root_token" ] \
+  && ! grep -q 'src-marker' "${TPRE16B}/.env"; then
+  ok "managed pre-Phase-4 tree via positional: merged in place, .env/.honey-starter sentinels preserved, tree gained setup.sh"
+else
+  bad "pre-Phase-4 merge rc=${RC16B}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.16b.out >&2 || true
+fi
+if diff -q "${TSRC16B}/.env" /tmp/setup-dryrun.src16b.env >/dev/null; then
+  ok "pre-Phase-4 merge: invoking/source tree .env untouched (non-destructive)"
+else
+  bad "pre-Phase-4 merge source tree modified:"
+  diff -u /tmp/setup-dryrun.src16b.env "${TSRC16B}/.env" >&2 || true
+fi
+rm -rf "${TSRC16B}" "${TPRE16B}" "${S16B}"
+
+# ---------------------------------------------------------------------------
 # 17. Phase 5 AI model matrix (three-way HD_AI_MODEL semantics). All
 #     network-free, hermetic, --dry-run.
 # ---------------------------------------------------------------------------
@@ -916,14 +970,29 @@ assert_rc "model matrix: invalid env HD_AI_MODEL (NI) dies rc 1" 1 bash -c "
   HD_STATE_DIR='${S17G}' bash scripts/setup.sh --dry-run"
 rm -rf "${T17G}" "${S17G}"
 
-# 17h. invalid model via the ANSWERS FILE dies rc 1
+# 17h. invalid model via the ANSWERS FILE DIES (the real die, not a downstream
+# failure): "bad model" is invalid, and the retry loop must not adopt a later
+# line (e.g. the port 9300, which would otherwise validate as a model string)
+# nor re-pin. The run exits 1 ON THE MODEL, before any .env write.
 T17H="$(fresh_tree)"; S17H="$(mktemp -d)"
 printf 'ansns\nansuser\nopenai\nbad model\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
-assert_rc "model matrix: invalid model via the answers file dies rc 1" 1 bash -c "
-  cd '${T17H}' && env -i HOME=\"${HOME}\" PATH=\"${PATH}\" \\
-  HONEY_STARTER_INSTALL_DIR='${T17H}' \\
-  HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17h HD_STATE_DIR='${S17H}' \\
-  bash scripts/setup.sh --dry-run"
+set +e
+(
+  cd "${T17H}" && env -i HOME="${HOME}" PATH="${PATH}" \
+  HONEY_STARTER_INSTALL_DIR="${T17H}" \
+  HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17h HD_STATE_DIR="${S17H}" \
+  bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17h.out 2>&1
+RC17H=$?
+set -e
+if [ "${RC17H}" -eq 1 ] \
+  && grep -q "invalid HD_AI_MODEL: 'bad model'" /tmp/setup-dryrun.17h.out \
+  && [ ! -f "${T17H}/.env" ]; then
+  ok "model matrix: invalid model via the answers file DIES on the model (rc 1, real die, no .env)"
+else
+  bad "model matrix 17h rc=${RC17H} (want the invalid-HD_AI_MODEL die):"
+  sed 's/^/    | /' /tmp/setup-dryrun.17h.out >&2 || true
+fi
 rm -rf "${T17H}" "${S17H}"
 
 # 17i. NI unset HD_AI_MODEL (custom) -> pin written (regression-guarded)
@@ -965,6 +1034,36 @@ else
 fi
 rm -rf "${T17J}" "${S17J}"
 
+# 17k. invalid model TYPED at the interactive prompt DIES too (the documented
+# contract covers env, answers file, AND a typed answer). The retry loop must
+# not adopt the next pty line (9300 would validate as a model string) nor
+# re-pin. Exercised through the pty harness (test/pty-helper.py); skipped
+# cleanly when python3 is unavailable.
+if command -v python3 >/dev/null 2>&1; then
+  T17K="$(fresh_tree)"; S17K="$(mktemp -d)"
+  set +e
+  (
+    cd "${T17K}" && HD_STATE_DIR="${S17K}" \
+    python3 "${HERE}/test/pty-helper.py" --on-disk \
+      "${T17K}/scripts/setup.sh" "Vault KV namespace" \
+      ansns ansuser openai "bad model" 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.17k.out 2>&1
+  RC17K=$?
+  set -e
+  if [ "${RC17K}" -eq 1 ] \
+    && grep -q "invalid HD_AI_MODEL: 'bad model'" /tmp/setup-dryrun.17k.out \
+    && [ ! -f "${T17K}/.env" ]; then
+    ok "model matrix: invalid model TYPED at the interactive prompt dies rc 1 (no .env)"
+  else
+    bad "model matrix 17k rc=${RC17K} (pty interactive invalid model):"
+    sed 's/^/    | /' /tmp/setup-dryrun.17k.out >&2 || true
+  fi
+  rm -rf "${T17K}" "${S17K}"
+else
+  ok "model matrix: 17k interactive invalid-model die SKIPPED (python3 unavailable)"
+fi
+
+
 # ---------------------------------------------------------------------------
 # 18. Argument parsing: `--` end-of-flags, two positionals die, unknown option
 #     dies (usage_die -> exit 2).
@@ -983,6 +1082,104 @@ assert_rc "-- ends flag parsing: a --dry-run after -- is a second <dir> (exit 2)
 assert_rc "piped --help reaches the script and exits 0 (bootstrap copy)" 0 bash -c "
   cd '${T18}' && HOME='${HOME}' bash -c 'cat scripts/setup.sh | bash -s -- --help'"
 rm -rf "${T18}" "${S18}"
+
+# ---------------------------------------------------------------------------
+# 19. Branch-3 directory prompt (pty): the SINGLE standalone/piped bootstrap
+#     prompt. Exercises the display form (M3a: "[~/honey-starter]", never the
+#     spilled absolute path), Enter-accepts-default, the typed-dir ->
+#     re-exec -> branch-2-in-place handoff, and bare "~" (M3b). python3 pty
+#     harness; skipped cleanly when python3 is unavailable.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+  # 19a. The prompt shows the ~/ default form; Enter accepts it -> the
+  #      pre-created $HOME/honey-starter tree is reused (no download) and the
+  #      on-disk copy re-runs the questionnaire -> .env written in place. This
+  #      also proves the typed/Enter'd dir -> re-exec -> branch-2-in-place flow.
+  PH19A="$(mktemp -d)"
+  cp -a "${HERE}/." "${PH19A}/honey-starter"
+  rm -rf "${PH19A}/honey-starter/.git" "${PH19A}/honey-starter/.honey-starter" "${PH19A}/honey-starter/.env"
+  S19A="$(mktemp -d)"
+  CWD19A="$(mktemp -d)"
+  set +e
+  ( cd "${CWD19A}" && env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
+      -u HONEY_STARTER_INSTALL_DIR HOME="${PH19A}" HD_STATE_DIR="${S19A}" \
+      python3 "${HERE}/test/pty-helper.py" --standalone \
+        "${HERE}/scripts/setup.sh" "Install directory [" \
+        "" ansns ansuser openai modeltest sk-key-pty 9300 9390 -- --dry-run \
+  ) >/tmp/setup-dryrun.19a.out 2>&1
+  RC19A=$?
+  set -e
+  if [ "${RC19A}" -eq 0 ] \
+    && grep -q 'Install directory \[~/honey-starter\]' /tmp/setup-dryrun.19a.out \
+    && ! grep -q "Install directory \[${PH19A}" /tmp/setup-dryrun.19a.out \
+    && [ -f "${PH19A}/honey-starter/.env" ] \
+    && grep -q '^HONEY_NS=ansns$' "${PH19A}/honey-starter/.env"; then
+    ok "branch-3 prompt: shows the ~/ default, Enter accepts it -> re-exec -> branch-2 in place (.env written)"
+  else
+    bad "branch-3 prompt 19a rc=${RC19A}:"
+    sed 's/^/    | /' /tmp/setup-dryrun.19a.out >&2 || true
+  fi
+  rm -rf "${PH19A}" "${S19A}" "${CWD19A}"
+
+  # 19b. bare "~" typed at the branch-3 prompt resolves to $HOME exactly (NOT
+  #      "$PWD/~/..."): with HOME set to a valid tree, "~" -> that tree, reused
+  #      in place (no download).
+  TH19B="$(mktemp -d)"
+  cp -a "${HERE}/." "${TH19B}"
+  rm -rf "${TH19B}/.git" "${TH19B}/.honey-starter" "${TH19B}/.env"
+  S19B="$(mktemp -d)"
+  CWD19B="$(mktemp -d)"
+  set +e
+  ( cd "${CWD19B}" && env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
+      -u HONEY_STARTER_INSTALL_DIR HOME="${TH19B}" HD_STATE_DIR="${S19B}" \
+      python3 "${HERE}/test/pty-helper.py" --standalone \
+        "${HERE}/scripts/setup.sh" "Install directory [" \
+        "~" ansns ansuser openai modeltest2 sk-key-pty2 9301 9391 -- --dry-run \
+  ) >/tmp/setup-dryrun.19b.out 2>&1
+  RC19B=$?
+  set -e
+  if [ "${RC19B}" -eq 0 ] \
+    && [ -f "${TH19B}/.env" ] \
+    && grep -q '^HONEY_NS=ansns$' "${TH19B}/.env" \
+    && [ ! -e "${CWD19B}/~" ]; then
+    ok "branch-3 prompt: bare ~ typed resolves to \$HOME (tree reused in place; no \$PWD/~)"
+  else
+    bad "branch-3 prompt 19b rc=${RC19B}:"
+    sed 's/^/    | /' /tmp/setup-dryrun.19b.out >&2 || true
+  fi
+  rm -rf "${TH19B}" "${S19B}" "${CWD19B}"
+else
+  ok "branch-3 prompt hermetics SKIPPED (python3 unavailable)"
+fi
+
+# ---------------------------------------------------------------------------
+# 20. On-disk positional bare "~" -> $HOME via resolve_arg_path: with HOME set
+#     to a valid tree, `setup ~` manages THAT tree (rc 0, .env written there)
+#     and no "$PWD/~" directory is ever created.
+# ---------------------------------------------------------------------------
+T20="$(fresh_tree)"; TH20="$(mktemp -d)"
+cp -a "${HERE}/." "${TH20}"
+rm -rf "${TH20}/.git" "${TH20}/.honey-starter" "${TH20}/.env"
+S20="$(mktemp -d)"
+CWD20="$(mktemp -d)"
+set +e
+(
+  cd "${CWD20}" && HOME="${TH20}" HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_AI_PROVIDER=openai HD_STATE_DIR="${S20}" \
+  bash "${T20}/scripts/setup.sh" '~' --dry-run
+) >/tmp/setup-dryrun.20.out 2>&1
+RC20=$?
+set -e
+if [ "${RC20}" -eq 0 ] \
+  && [ -f "${TH20}/.env" ] \
+  && [ ! -e "${CWD20}/~" ]; then
+  ok "on-disk positional bare ~ resolves to \$HOME and manages that tree in place (no \$PWD/~)"
+else
+  bad "positional bare ~ rc=${RC20}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.20.out >&2 || true
+fi
+rm -rf "${T20}" "${TH20}" "${S20}" "${CWD20}"
+
 echo ""
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="

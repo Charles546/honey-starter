@@ -73,8 +73,10 @@ never prompts, but when it has no `<dir>`, no `HONEY_STARTER_INSTALL_DIR`, no
 `HONEY_STARTER_ANSWERS_FILE`, is not non-interactive, and a real `/dev/tty` is
 available, it asks exactly one question — `Install directory [~/honey-starter]`
 (Enter accepts the default) — **after** the fail-fast preflight and **before**
-the download. A host with no viable docker is never prompted. Every other
-question is asked only by the on-disk copy.
+the download. The default is shown in its `~/` form whenever it is under
+`$HOME` (never the spilled absolute path); a typed `~/x` expands to `$HOME/x`
+and a bare `~` means `$HOME`. A host with no viable docker is never prompted.
+Every other question is asked only by the on-disk copy.
 
 **Rolling-`main` caveat:** the one-liner tracks `main`, so it is exactly as
 current as the merge state of this repository. To pin an install, set
@@ -99,6 +101,10 @@ Questionnaire scope: the interactive AI provider prompt offers **openai**
 For openai/custom, setup.sh also asks **AI model** (`HD_AI_MODEL`, default
 `gpt-5.4-mini` — the pin; see `--help` for the three-way
 `HD_AI_MODEL=`/`HD_AI_MODEL=<value>`/unset semantics and the no-pin path).
+An invalid model (whitespace/control, or characters outside
+`[A-Za-z0-9._:/@+-]`) **dies** regardless of where it came from — the
+environment, an answers file, or a typed answer at the prompt; it is never
+silently replaced by the pin nor by a later line.
 
 ## Requirements
 
