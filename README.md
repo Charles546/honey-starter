@@ -20,12 +20,61 @@ curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scrip
 `scripts/setup.sh` is the guided installer (Phase 4). The piped copy is a
 self-contained bootstrap: it runs a fail-fast preflight (Linux, bash 4+, curl +
 tar, docker + compose v2 + a reachable daemon — a host with no viable docker is
-never prompted and never triggers a download), downloads the release tarball
-from codeload, verifies the layout, extracts it atomically into
-`~/honey-starter` (or `$HONEY_STARTER_INSTALL_DIR`), and re-execs the on-disk
-copy. The on-disk copy then runs a short guided questionnaire, writes the
-repo-root `.env` (chmod 600) and delegates to `scripts/start.sh` — the same
-idempotent single-command bring-up as `make start` below.
+never prompted and never triggers a download), resolves the install directory,
+downloads the release tarball from codeload, verifies the layout, extracts it
+atomically into `~/honey-starter` (or `$HONEY_STARTER_INSTALL_DIR`), and
+re-execs the on-disk copy. The on-disk copy then runs a short guided
+questionnaire, writes the repo-root `.env` (chmod 600) and delegates to
+`scripts/start.sh` — the same idempotent single-command bring-up as `make
+start` below.
+
+### Multiple instances: setup.sh <dir> (Phase 5)
+
+The same command SETS UP a NEW instance at a given directory or RE-SETS UP
+(manages) an EXISTING instance. Multiple instances coexist as **separate
+directories** with their own ports; to run two simultaneously, set distinct
+`HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and an env-only `COMPOSE_PROJECT_NAME`
+(export it before running — it is never stored in `.env`).
+
+**Target selection (3 branches):**
+
+1. **`<dir>` argument given** — operate on that directory. An EXISTING
+   honey-starter instance there is re-set-up (managed) in place; otherwise a
+   NEW instance is set up there.
+2. **no `<dir>`, script inside a tree** — re-set-up that instance in place.
+3. **no `<dir>`, standalone/piped** — `$HONEY_STARTER_INSTALL_DIR` or
+   `~/honey-starter` (`HONEY_STARTER_INSTALL_DIR` is consulted ONLY in this
+   branch; on-disk runs never read it — pass a parameter to target another
+   instance).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash -s /opt/honey-starter   # piped, explicit dir
+bash scripts/setup.sh .            # from an existing install: manage it in place
+bash scripts/setup.sh new-proj     # set up a NEW instance in ./new-proj
+```
+
+**New vs existing:** an existing instance (layout incl. `scripts/setup.sh`) is
+managed in place — its `.env` prefills the questionnaire and its
+`HONEY_NS`/`HONEY_USER` provision guards apply. A pre-Phase-4 tree (layout
+present, no `setup.sh`) is merged over in place. An absent or empty directory
+gets a NEW instance: an on-disk run **copies** the invoked tree (the source
+keeps running; a fresh target never inherits `.git`/`.env`/`.honey-starter`, so
+it cannot clone the source deployment's secrets/state — intentional); a piped
+run downloads the release. A non-empty directory that is not a honey-starter
+tree makes setup.sh die "not a honey-starter tree" (never destructive) — e.g.
+`curl ... | bash -s .` from a non-empty non-instance dir dies with that message;
+run it from an empty dir or pass an existing/empty path instead.
+
+**`--update`:** `bash scripts/setup.sh --update` re-extracts the release over
+the target tree (tar merges; then run in place).
+
+**The single bootstrap prompt (exception):** the piped bootstrap copy normally
+never prompts, but when it has no `<dir>`, no `HONEY_STARTER_INSTALL_DIR`, no
+`HONEY_STARTER_ANSWERS_FILE`, is not non-interactive, and a real `/dev/tty` is
+available, it asks exactly one question — `Install directory [~/honey-starter]`
+(Enter accepts the default) — **after** the fail-fast preflight and **before**
+the download. A host with no viable docker is never prompted. Every other
+question is asked only by the on-disk copy.
 
 **Rolling-`main` caveat:** the one-liner tracks `main`, so it is exactly as
 current as the merge state of this repository. To pin an install, set
@@ -38,14 +87,18 @@ curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scrip
 
 **Non-interactive contract:** set `HONEY_STARTER_NONINTERACTIVE=1` and supply
 the decision variables via the environment (see
-`bash scripts/setup.sh --help` for the full list, the AI provider matrix and
-the `HONEY_STARTER_ANSWERS_FILE` replay option). Re-running on an existing
-install skips the download and reuses the tree in place.
+`bash scripts/setup.sh --help` for the full list, the AI provider matrix, the
+new `HD_AI_MODEL` question and the `HONEY_STARTER_ANSWERS_FILE` replay option).
+Re-running on an existing install skips the download and reuses the tree in
+place.
 
 Questionnaire scope: the interactive AI provider prompt offers **openai**
 (default) | **custom** (OpenAI-compatible endpoint) | **skip** only —
 `openrouter` is never offered interactively (see
 `deploy/README.md` → *Guided install (setup.sh)* for the OpenRouter note).
+For openai/custom, setup.sh also asks **AI model** (`HD_AI_MODEL`, default
+`gpt-5.4-mini` — the pin; see `--help` for the three-way
+`HD_AI_MODEL=`/`HD_AI_MODEL=<value>`/unset semantics and the no-pin path).
 
 ## Requirements
 

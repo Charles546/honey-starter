@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # setup-dryrun.sh — no-docker unit/dry-run tests for scripts/setup.sh (the
-# guided single-command installer, Phase 4).
+# guided single-command installer; Phase 4 + Phase 5 multi-instance + AI model).
 #
 # Hermetic: the tree under test is copied into a throwaway mktemp dir and
 # setup.sh is executed against THAT copy with a temp HONEY_STARTER_INSTALL_DIR
@@ -9,19 +9,38 @@
 # --dry-run preflight treats docker as informational).
 #
 # Covered contracts:
-#   * fresh non-interactive run writes .env (chmod 600) with correct values,
-#     no prompts attempted, secrets masked in the summary
+#   * fresh non-interactive run writes .env (chmod 600) with correct values
+#     (incl. the HD_AI_MODEL=gpt-5.4-mini pin), no prompts attempted, secrets
+#     masked in the summary
 #   * byte-exact round-trip across a second run: seeded .env with comments +
 #     unmanaged keys + managed keys keeps unmanaged lines byte-identical while
-#     managed values are updated in place; mode stays 600
+#     managed values are updated in place; mode stays 600; skip writes no
+#     HD_AI_MODEL line
 #   * shell-safe quoting of a value containing # and spaces (single-quoted)
 #   * secret replace-only-on-explicit-value (no downgrade, no loss on re-run)
-#   * validation failures (bad HONEY_NS, bad port, bad base URL) die
+#   * validation failures (bad HONEY_NS, bad port, bad base URL, bad model) die
 #   * missing-required-var error path (custom provider without HD_AI_BASE_URL)
 #   * no-tty guidance message
-#   * the interactive branch via HONEY_STARTER_ANSWERS_FILE
+#   * the interactive branch via HONEY_STARTER_ANSWERS_FILE, incl. the Phase 5
+#     answers-file schema with the model line (T9)
 #   * HD_CONFIG_CHECK_INTERVAL only written on explicit override; otherwise
 #     absent (compose default 30m applies by omission)
+#   * Phase 5 target selection:
+#     - bootstrap precedence: a positional <dir> wins over the env, and the
+#       env wins over the default (network-free: tree_is_valid skips the
+#       download)
+#     - on-disk branch 2 IGNORES HONEY_STARTER_INSTALL_DIR (key user-spec
+#       test): a no-<dir> run inside a tree stays at that tree
+#     - in-place `setup .`
+#     - `setup .` from an outside empty dir materializes a new instance
+#       (exclusions verified; source untouched)
+#     - `setup .` from an outside non-empty no-layout dir dies rc 1
+#     - on-disk positional manages an EXISTING instance (target prefilled,
+#       invoking tree untouched)
+#     - on-disk positional materializes a NEW instance from the invoked tree
+#   * Phase 5 AI model matrix (three-way HD_AI_MODEL semantics, skip behavior,
+#     pin / no-pin, validation)
+#   * argument parsing: `--` end-of-flags, two positionals die, unknown option
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 set -euo pipefail
@@ -115,6 +134,15 @@ if grep -q '^HONEY_NS=starter$' "${T1}/.env" \
 else
   bad "managed keys mismatch:"
   sed 's/^/    | /' "${T1}/.env" >&2
+fi
+# Phase 5 Requirement 3: a fresh openai NI run pins the documented model
+# (HD_AI_MODEL unset -> gpt-5.4-mini; compose already defaults it, so the
+# explicit line is runtime-identical).
+if grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${T1}/.env"; then
+  ok "fresh openai NI run writes the HD_AI_MODEL=gpt-5.4-mini pin (Requirement 3)"
+else
+  bad "HD_AI_MODEL pin line missing from fresh openai .env:"
+  grep '^HD_AI_MODEL' "${T1}/.env" 2>/dev/null | sed 's/^/    | /' >&2 || true
 fi
 if ! grep -q 'OPENAI_API_KEY=' "${T1}/.env"; then
   bad "OPENAI_API_KEY missing from .env"
@@ -271,6 +299,11 @@ if grep -q '^HD_AI_BASE_URL=' "${T2}/.env"; then
   bad "skip provider wrote HD_AI_BASE_URL"
 else
   ok "skip provider wrote no HD_AI_BASE_URL"
+fi
+if grep -q '^HD_AI_MODEL=' "${T2}/.env"; then
+  bad "skip provider wrote an HD_AI_MODEL line (no model question for skip)"
+else
+  ok "skip provider wrote no HD_AI_MODEL line (model only for openai/custom)"
 fi
 MODE2="$(stat -c '%a' "${T2}/.env")"
 if [ "${MODE2}" = "600" ]; then
@@ -490,7 +523,10 @@ rm -rf "${T8}" "${S8}"
 # ---------------------------------------------------------------------------
 T9="$(fresh_tree)"
 S9="$(mktemp -d)"
-printf 'ansns\nansuser\ncustom\nhttps://ans.example.com/v1\nsk-answers-key\n9300\n9390\n' \
+# Phase 5 answers-file schema: HONEY_NS, HONEY_USER, provider, MODEL
+# (openai/custom only; empty = accept default -> pin), base URL (custom only),
+# API key (openai/custom), ports. NO install-dir line.
+printf 'ansns\nansuser\ncustom\nans-custom-model\nhttps://ans.example.com/v1\nsk-answers-key\n9300\n9390\n' \
   > /tmp/setup-dryrun.answers
 set +e
 (
@@ -506,11 +542,12 @@ set -e
 if [ "${RC9}" -eq 0 ] \
   && grep -q '^HONEY_NS=ansns$' "${T9}/.env" \
   && grep -q '^HONEY_USER=ansuser$' "${T9}/.env" \
+  && grep -q '^HD_AI_MODEL=ans-custom-model$' "${T9}/.env" \
   && grep -q '^HD_AI_BASE_URL=https://ans.example.com/v1$' "${T9}/.env" \
   && grep -Fq 'OPENAI_API_KEY=sk-answers-key' "${T9}/.env" \
   && grep -q '^HD_API_HOST_PORT=9300$' "${T9}/.env" \
   && grep -q '^HD_UI_HOST_PORT=9390$' "${T9}/.env"; then
-  ok "answers-file interactive branch produced the expected .env"
+  ok "answers-file interactive branch produced the expected .env (custom model + base URL)"
 else
   bad "answers-file branch (rc=${RC9}):"
   sed 's/^/    | /' /tmp/setup-dryrun.9.out >&2
@@ -519,6 +556,433 @@ fi
 rm -rf "${T9}" "${S9}"
 
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 10. Phase 5 bootstrap precedence (network-free). Copy ONLY setup.sh into an
+#     empty dir (forces bootstrap mode: BASH_SOURCE is a real file but the tree
+#     markers are absent). Two valid trees A/B are pre-made; tree_is_valid
+#     short-circuits the download. The positional <dir> must WIN over
+#     HONEY_STARTER_INSTALL_DIR, and the env must win over the default.
+# ---------------------------------------------------------------------------
+BT="$(mktemp -d)"
+cp "${SETUP_SRC}" "${BT}/setup.sh"
+TA="$(fresh_tree)"
+TB="$(fresh_tree)"
+SHOME="$(mktemp -d)"
+S10="$(mktemp -d)"
+set +e
+(
+  cd "${BT}"
+  HOME="${SHOME}" \
+  HONEY_STARTER_INSTALL_DIR="${TA}" HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S10}" \
+  bash setup.sh "${TB}" --dry-run
+) >/tmp/setup-dryrun.b1.out 2>&1
+RC10=$?
+set -e
+if [ "${RC10}" -eq 0 ] && [ -f "${TB}/.env" ] && [ ! -f "${TA}/.env" ] \
+  && [ ! -d "${SHOME}/honey-starter" ]; then
+  ok "bootstrap precedence: positional <dir> wins over HONEY_STARTER_INSTALL_DIR (.env in ${TB})"
+else
+  bad "bootstrap precedence (positional vs env) rc=${RC10}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.b1.out >&2 || true
+fi
+set +e
+(
+  cd "${BT}"
+  HOME="${SHOME}" \
+  HONEY_STARTER_INSTALL_DIR="${TA}" HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S10}" \
+  bash setup.sh --dry-run
+) >/tmp/setup-dryrun.b2.out 2>&1
+RC11=$?
+set -e
+if [ "${RC11}" -eq 0 ] && [ -f "${TA}/.env" ] \
+  && [ ! -d "${SHOME}/honey-starter" ]; then
+  ok "bootstrap precedence: HONEY_STARTER_INSTALL_DIR=... wins over the default (~/honey-starter)"
+else
+  bad "bootstrap precedence (env vs default) rc=${RC11}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.b2.out >&2 || true
+fi
+rm -rf "${BT}" "${TA}" "${TB}" "${SHOME}" "${S10}"
+
+# ---------------------------------------------------------------------------
+# 11. On-disk branch 2 IGNORES HONEY_STARTER_INSTALL_DIR (key user-spec test):
+#     a no-<dir> run inside a valid tree must re-set-up THAT tree in place even
+#     when the env points elsewhere; the other dir stays untouched.
+# ---------------------------------------------------------------------------
+T11="$(fresh_tree)"
+S11="$(mktemp -d)"
+OTHER11="$(mktemp -d)"
+set +e
+(
+  cd "${T11}"
+  HONEY_STARTER_INSTALL_DIR="${OTHER11}" HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S11}" \
+  bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.b3.out 2>&1
+RC11=$?
+set -e
+if [ "${RC11}" -eq 0 ] && [ -f "${T11}/.env" ] \
+  && [ ! -f "${OTHER11}/.env" ] && [ -z "$(ls -A "${OTHER11}")" ]; then
+  ok "on-disk branch 2 env-ignored: HONEY_STARTER_INSTALL_DIR=/other does NOT relocate; tree managed in place, /other untouched"
+else
+  bad "branch 2 env-ignored rc=${RC11}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.b3.out >&2 || true
+fi
+rm -rf "${T11}" "${S11}" "${OTHER11}"
+
+# ---------------------------------------------------------------------------
+# 12. In-place `setup .` (inside the tree -> pure in-place, no copy/mv)
+# ---------------------------------------------------------------------------
+T12="$(fresh_tree)"
+S12="$(mktemp -d)"
+set +e
+(
+  cd "${T12}"
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S12}" \
+  bash scripts/setup.sh . --dry-run
+) >/tmp/setup-dryrun.b4.out 2>&1
+RC12=$?
+set -e
+if [ "${RC12}" -eq 0 ] && [ -f "${T12}/.env" ] \
+  && ! grep -q 'materialized' /tmp/setup-dryrun.b4.out; then
+  ok "in-place setup . writes .env at the tree (no materialize/copy)"
+else
+  bad "in-place setup . rc=${RC12}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.b4.out >&2 || true
+fi
+rm -rf "${T12}" "${S12}"
+
+# ---------------------------------------------------------------------------
+# 13. `setup .` from an outside EMPTY dir -> materialize a NEW instance. The
+#     source tree is COPIED (never moved), its .env marker must NOT reach the
+#     fresh target; no .git/.honey-starter either; source stays intact.
+# ---------------------------------------------------------------------------
+TSRC13="$(fresh_tree)"
+S13="$(mktemp -d)"
+EMPTY13="$(mktemp -d)"
+printf '# src-marker\nOPENAI_API_KEY=sk-source-secret\n' > "${TSRC13}/.env"
+set +e
+(
+  cd "${EMPTY13}"
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S13}" \
+  bash "${TSRC13}/scripts/setup.sh" . --dry-run
+) >/tmp/setup-dryrun.b5.out 2>&1
+RC13=$?
+set -e
+if [ "${RC13}" -eq 0 ] && [ -f "${EMPTY13}/.env" ] \
+  && [ -f "${EMPTY13}/scripts/setup.sh" ] \
+  && [ ! -e "${EMPTY13}/.git" ] && [ ! -e "${EMPTY13}/.honey-starter" ] \
+  && ! grep -q 'sk-source-secret' "${EMPTY13}/.env" \
+  && grep -q 'src-marker' "${TSRC13}/.env"; then
+  ok "setup . outside empty dir materialized a NEW instance (fresh target does NOT inherit the source .env; source untouched)"
+else
+  bad "setup . empty-dir materialize rc=${RC13}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.b5.out >&2 || true
+fi
+rm -rf "${TSRC13}" "${S13}" "${EMPTY13}"
+
+# ---------------------------------------------------------------------------
+# 14. `setup .` from an outside NON-EMPTY no-layout dir -> dies rc 1 with the
+#     "not a honey-starter tree" message; the dir is never destructively
+#     touched.
+# ---------------------------------------------------------------------------
+TSRC14="$(fresh_tree)"
+S14="$(mktemp -d)"
+NOISE14="$(mktemp -d)"
+touch "${NOISE14}/random.txt"
+assert_rc "setup . outside a non-empty no-layout dir dies (never destructive)" 1 bash -c "
+  cd '${NOISE14}' && HONEY_STARTER_NONINTERACTIVE=1 \\
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \\
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR='${S14}' \\
+  bash '${TSRC14}/scripts/setup.sh' . --dry-run"
+if [ -f "${NOISE14}/random.txt" ]; then
+  ok "non-empty no-layout dir left intact after the die"
+else
+  bad "non-empty no-layout dir was modified (never destructive)"
+fi
+rm -rf "${TSRC14}" "${S14}" "${NOISE14}"
+
+# ---------------------------------------------------------------------------
+# 15. On-disk positional -> manage an EXISTING instance: the TARGET tree's .env
+#     prefills the questionnaire (HONEY_NS/HD_AI_MODEL/ports preserved from the
+#     target), and the invoking/source tree is untouched (non-destructive reuse).
+# ---------------------------------------------------------------------------
+TSRC15="$(fresh_tree)"
+TDST15="$(fresh_tree)"
+S15="$(mktemp -d)"
+printf 'HONEY_NS=otherns\nHONEY_USER=otheruser\nHD_API_HOST_PORT=9400\nHD_UI_HOST_PORT=9490\nHD_AI_MODEL=custom-model-x\n' > "${TDST15}/.env"
+printf '# source-marker\nHONEY_NS=srcns\nOPENAI_API_KEY=sk-source-keep\n' > "${TSRC15}/.env"
+cp "${TSRC15}/.env" /tmp/setup-dryrun.src15.env
+set +e
+(
+  cd "${TSRC15}"
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9400 HD_UI_HOST_PORT=9490 HD_STATE_DIR="${S15}" \
+  bash scripts/setup.sh "${TDST15}" --dry-run
+) >/tmp/setup-dryrun.b6.out 2>&1
+RC15=$?
+set -e
+if [ "${RC15}" -eq 0 ] && grep -q '^HONEY_NS=otherns$' "${TDST15}/.env" \
+  && grep -q '^HD_AI_MODEL=custom-model-x$' "${TDST15}/.env" \
+  && grep -q '^HD_API_HOST_PORT=9400$' "${TDST15}/.env"; then
+  ok "manage-existing: target .env prefilled from the TARGET tree (ns/model/ports preserved)"
+else
+  bad "manage-existing prefill rc=${RC15}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.b6.out >&2 || true
+  grep -E '^(HONEY_NS|HD_AI_MODEL|HD_API_HOST_PORT)=' "${TDST15}/.env" 2>/dev/null | sed 's/^/    | /' >&2 || true
+fi
+if diff -q "${TSRC15}/.env" /tmp/setup-dryrun.src15.env >/dev/null; then
+  ok "manage-existing: invoking/source tree .env untouched (non-destructive)"
+else
+  bad "manage-existing source tree modified:"
+  diff -u /tmp/setup-dryrun.src15.env "${TSRC15}/.env" >&2 || true
+fi
+rm -rf "${TSRC15}" "${TDST15}" "${S15}"
+
+# ---------------------------------------------------------------------------
+# 16. On-disk positional -> NEW instance: materialized from the invoked tree
+#     (exclusions verified), .env written at the target, source untouched.
+# ---------------------------------------------------------------------------
+TSRC16="$(fresh_tree)"
+S16="$(mktemp -d)"
+NEW16="$(mktemp -d)/brand-new"
+set +e
+(
+  cd "${TSRC16}"
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=newns HONEY_USER=newuser HONEY_AI_PROVIDER=custom \
+  HD_AI_BASE_URL=https://new.example.com/v1 OPENAI_API_KEY=sk-new-inst \
+  HD_API_HOST_PORT=9500 HD_UI_HOST_PORT=9590 HD_STATE_DIR="${S16}" \
+  bash scripts/setup.sh "${NEW16}" --dry-run
+) >/tmp/setup-dryrun.b7.out 2>&1
+RC16=$?
+set -e
+if [ "${RC16}" -eq 0 ] && [ -f "${NEW16}/.env" ] \
+  && [ -f "${NEW16}/scripts/setup.sh" ] \
+  && [ ! -e "${NEW16}/.git" ] && [ ! -e "${NEW16}/.honey-starter" ] \
+  && grep -q '^HONEY_NS=newns$' "${NEW16}/.env" \
+  && [ ! -f "${TSRC16}/.env" ]; then
+  ok "positional new instance materialized from the invoked tree (exclusions; source untouched)"
+else
+  bad "positional new instance rc=${RC16}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.b7.out >&2 || true
+fi
+rm -rf "${TSRC16}" "${S16}" "$(dirname "${NEW16}")"
+
+# ---------------------------------------------------------------------------
+# 17. Phase 5 AI model matrix (three-way HD_AI_MODEL semantics). All
+#     network-free, hermetic, --dry-run.
+# ---------------------------------------------------------------------------
+# 17a. answers-file openai writes the model answer
+T17A="$(fresh_tree)"; S17A="$(mktemp -d)"
+printf 'ansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
+set +e
+(
+  cd "${T17A}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${T17A}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17a HD_STATE_DIR="${S17A}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17a.out 2>&1
+RC17A=$?
+set -e
+if [ "${RC17A}" -eq 0 ] && grep -q '^HD_AI_MODEL=ft:gpt-4o:org:custom$' "${T17A}/.env"; then
+  ok "model matrix: answers-file openai model line written (ft:gpt-4o:org:custom)"
+else
+  bad "model matrix 17a rc=${RC17A}:"; tail -5 /tmp/setup-dryrun.17a.out >&2 || true
+fi
+rm -rf "${T17A}" "${S17A}"
+
+# 17b. answers-file EMPTY model line = accept default -> pin written
+T17B="$(fresh_tree)"; S17B="$(mktemp -d)"
+printf 'ansns\nansuser\nopenai\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17b
+set +e
+(
+  cd "${T17B}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${T17B}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17b HD_STATE_DIR="${S17B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17b.out 2>&1
+RC17B=$?
+set -e
+if [ "${RC17B}" -eq 0 ] && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${T17B}/.env"; then
+  ok "model matrix: empty model line in the answers file -> default pin written"
+else
+  bad "model matrix 17b rc=${RC17B}:"; tail -5 /tmp/setup-dryrun.17b.out >&2 || true
+fi
+rm -rf "${T17B}" "${S17B}"
+
+# 17c. skip consumes NO model line (and none is written)
+T17C="$(fresh_tree)"; S17C="$(mktemp -d)"
+printf 'ansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17c
+set +e
+(
+  cd "${T17C}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${T17C}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17c HD_STATE_DIR="${S17C}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17c.out 2>&1
+RC17C=$?
+set -e
+if [ "${RC17C}" -eq 0 ] && ! grep -q '^HD_AI_MODEL=' "${T17C}/.env"; then
+  ok "model matrix: skip consumes no model line; none written"
+else
+  bad "model matrix 17c rc=${RC17C}:"; tail -5 /tmp/setup-dryrun.17c.out >&2 || true
+fi
+rm -rf "${T17C}" "${S17C}"
+
+# 17d. skip + non-empty HD_AI_MODEL env -> override written (passthrough wins)
+T17D="$(fresh_tree)"; S17D="$(mktemp -d)"
+printf 'HD_AI_MODEL=old-override\n' > "${T17D}/.env"
+printf 'ansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17d
+set +e
+(
+  cd "${T17D}"
+  env -i HOME="${HOME}" PATH="${PATH}" HD_AI_MODEL=custom-override \
+    HONEY_STARTER_INSTALL_DIR="${T17D}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17d HD_STATE_DIR="${S17D}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17d.out 2>&1
+RC17D=$?
+set -e
+if [ "${RC17D}" -eq 0 ] && grep -q '^HD_AI_MODEL=custom-override$' "${T17D}/.env"; then
+  ok "model matrix: skip + non-empty HD_AI_MODEL -> override written (passthrough wins over all providers)"
+else
+  bad "model matrix 17d rc=${RC17D}:"; tail -5 /tmp/setup-dryrun.17d.out >&2 || true
+fi
+rm -rf "${T17D}" "${S17D}"
+
+# 17e. skip + HD_AI_MODEL= (explicit empty) + existing override -> line REMOVED
+T17E="$(fresh_tree)"; S17E="$(mktemp -d)"
+printf 'HD_AI_MODEL=old-override\n' > "${T17E}/.env"
+printf 'ansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17e
+set +e
+(
+  cd "${T17E}"
+  env -i HOME="${HOME}" PATH="${PATH}" HD_AI_MODEL= \
+    HONEY_STARTER_INSTALL_DIR="${T17E}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17e HD_STATE_DIR="${S17E}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17e.out 2>&1
+RC17E=$?
+set -e
+if [ "${RC17E}" -eq 0 ] && ! grep -q '^HD_AI_MODEL=' "${T17E}/.env"; then
+  ok "model matrix: skip + HD_AI_MODEL= (explicit-empty) removes an existing override line"
+else
+  bad "model matrix 17e rc=${RC17E}:"; tail -5 /tmp/setup-dryrun.17e.out >&2 || true
+fi
+rm -rf "${T17E}" "${S17E}"
+
+# 17f. HD_AI_MODEL= (explicit empty) + openai + existing override: the QUESTION
+#      is SKIPPED and the existing override is NOT kept (line removed)
+T17F="$(fresh_tree)"; S17F="$(mktemp -d)"
+printf 'HD_AI_MODEL=old-pin\n' > "${T17F}/.env"
+printf 'ansns\nansuser\nopenai\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17f
+set +e
+(
+  cd "${T17F}"
+  env -i HOME="${HOME}" PATH="${PATH}" HD_AI_MODEL= \
+    HONEY_STARTER_INSTALL_DIR="${T17F}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17f HD_STATE_DIR="${S17F}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17f.out 2>&1
+RC17F=$?
+set -e
+if [ "${RC17F}" -eq 0 ] && ! grep -q '^HD_AI_MODEL=' "${T17F}/.env"; then
+  ok "model matrix: HD_AI_MODEL= (explicit-empty) + openai skips the question and does NOT re-keep the override"
+else
+  bad "model matrix 17f rc=${RC17F}:"; tail -5 /tmp/setup-dryrun.17f.out >&2 || true
+fi
+rm -rf "${T17F}" "${S17F}"
+
+# 17g. invalid model via ENV (non-interactive) dies rc 1
+T17G="$(fresh_tree)"; S17G="$(mktemp -d)"
+assert_rc "model matrix: invalid env HD_AI_MODEL (NI) dies rc 1" 1 bash -c "
+  cd '${T17G}' && HONEY_STARTER_INSTALL_DIR='${T17G}' HONEY_STARTER_NONINTERACTIVE=1 \\
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \\
+  HD_AI_MODEL='bad model' HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \\
+  HD_STATE_DIR='${S17G}' bash scripts/setup.sh --dry-run"
+rm -rf "${T17G}" "${S17G}"
+
+# 17h. invalid model via the ANSWERS FILE dies rc 1
+T17H="$(fresh_tree)"; S17H="$(mktemp -d)"
+printf 'ansns\nansuser\nopenai\nbad model\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
+assert_rc "model matrix: invalid model via the answers file dies rc 1" 1 bash -c "
+  cd '${T17H}' && env -i HOME=\"${HOME}\" PATH=\"${PATH}\" \\
+  HONEY_STARTER_INSTALL_DIR='${T17H}' \\
+  HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ans17h HD_STATE_DIR='${S17H}' \\
+  bash scripts/setup.sh --dry-run"
+rm -rf "${T17H}" "${S17H}"
+
+# 17i. NI unset HD_AI_MODEL (custom) -> pin written (regression-guarded)
+T17I="$(fresh_tree)"; S17I="$(mktemp -d)"
+set +e
+(
+  cd "${T17I}"
+  HONEY_STARTER_INSTALL_DIR="${T17I}" HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=custom \
+  HD_AI_BASE_URL=https://nb.example/v1 HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
+  HD_STATE_DIR="${S17I}" bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17i.out 2>&1
+RC17I=$?
+set -e
+if [ "${RC17I}" -eq 0 ] && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${T17I}/.env"; then
+  ok "model matrix: NI unset HD_AI_MODEL (custom) writes the gpt-5.4-mini pin"
+else
+  bad "model matrix 17i rc=${RC17I}:"; tail -5 /tmp/setup-dryrun.17i.out >&2 || true
+fi
+rm -rf "${T17I}" "${S17I}"
+
+# 17j. existing .env override kept when env unset (openai re-run; managed)
+T17J="$(fresh_tree)"; S17J="$(mktemp -d)"
+printf 'HD_AI_MODEL=my-existing-model\n' > "${T17J}/.env"
+set +e
+(
+  cd "${T17J}"
+  HONEY_STARTER_INSTALL_DIR="${T17J}" HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
+  HD_STATE_DIR="${S17J}" bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.17j.out 2>&1
+RC17J=$?
+set -e
+if [ "${RC17J}" -eq 0 ] && grep -q '^HD_AI_MODEL=my-existing-model$' "${T17J}/.env"; then
+  ok "model matrix: existing .env HD_AI_MODEL override kept when env unset (openai re-run)"
+else
+  bad "model matrix 17j rc=${RC17J}:"; tail -5 /tmp/setup-dryrun.17j.out >&2 || true
+fi
+rm -rf "${T17J}" "${S17J}"
+
+# ---------------------------------------------------------------------------
+# 18. Argument parsing: `--` end-of-flags, two positionals die, unknown option
+#     dies (usage_die -> exit 2).
+# ---------------------------------------------------------------------------
+T18="$(fresh_tree)"
+S18="$(mktemp -d)"
+assert_rc "unknown option rejected (exit 2)" 2 bash -c "
+  cd '${T18}' && HOME='${HOME}' bash scripts/setup.sh --bogus"
+assert_rc "two directory arguments rejected (exit 2)" 2 bash -c "
+  cd '${T18}' && HOME='${HOME}' bash scripts/setup.sh a b"
+assert_rc "-- ends flag parsing: a --dry-run after -- is a second <dir> (exit 2)" 2 bash -c "
+  cd '${T18}' && HOME='${HOME}' bash scripts/setup.sh -- '${T18}' --dry-run"
+# `bash -s -- --help`: the `--` ends bash's own option parsing so --help
+# reaches the SCRIPT (the piped/bootstrap copy), which prints its own help and
+# exits 0. (Without the `--`, `bash -s --help` would be BASH's own --help.)
+assert_rc "piped --help reaches the script and exits 0 (bootstrap copy)" 0 bash -c "
+  cd '${T18}' && HOME='${HOME}' bash -c 'cat scripts/setup.sh | bash -s -- --help'"
+rm -rf "${T18}" "${S18}"
 echo ""
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="

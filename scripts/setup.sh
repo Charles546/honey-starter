@@ -1,23 +1,41 @@
 #!/usr/bin/env bash
-# setup.sh — guided single-command installer for a honey-starter deployment.
+# setup.sh — guided installer for honey-starter deployments. One script, two
+# execution modes, and (Phase 5) THREE target-selection branches so the same
+# command SETS UP a NEW instance at a given directory or RE-SETS UP (manages)
+# an EXISTING instance in place. Multiple instances coexist as separate
+# directories (run them simultaneously with distinct ports + an env-only
+# COMPOSE_PROJECT_NAME).
 #
-# Two modes live in this one file:
-#
-#   1. BOOTSTRAP copy  — when the script has no valid honey-starter tree next
-#      to it (BASH_SOURCE is empty under `curl ... | bash` / `bash -s`, or the
-#      file is not inside a tree with scripts/start.sh + scripts/lib.sh + the
-#      compose + bootstrap layout). That copy performs ONLY path-independent
-#      bootstrap: --help, install-dir resolution (HONEY_STARTER_INSTALL_DIR or
-#      ~/honey-starter), fail-fast preflight, download + verify + extract of
-#      the release tarball into the install dir, then
-#      `exec bash <install>/scripts/setup.sh "$@"`. The bootstrap copy NEVER
+#   1. BOOTSTRAP copy  — standalone/piped (BASH_SOURCE is empty under
+#      `curl ... | bash` / `bash -s`, or the file is not inside a tree with
+#      scripts/start.sh + scripts/lib.sh + the compose + bootstrap layout).
+#      That copy performs ONLY path-independent bootstrap: --help, target
+#      resolution, fail-fast preflight, download + verify + extract of the
+#      release tarball into the target, then
+#      `exec bash <target>/scripts/setup.sh "$@"`. The bootstrap copy NEVER
 #      sources scripts/lib.sh, NEVER computes paths from BASH_SOURCE for its
-#      own logic, NEVER prompts and NEVER writes .env.
+#      own logic and NEVER writes .env. It NEVER prompts either — except the
+#      single documented branch-3 directory prompt (a standalone run with no
+#      <dir>, no HONEY_STARTER_INSTALL_DIR, no answers file, not
+#      non-interactive, and a real /dev/tty asks exactly
+#      `Install directory [~/honey-starter]` once, AFTER the fail-fast
+#      preflight and BEFORE the download). All questionnaire prompting lives in
+#      the on-disk copy.
 #
 #   2. ON-DISK copy     — when the same file runs from inside a valid tree.
-#      This copy runs the guided questionnaire, writes the repo-root .env
-#      (chmod 600) and delegates to scripts/start.sh. scripts/start.sh remains
-#      the single consumer of scripts/lib.sh.
+#      Resolves the CHOSEN target (branch 1: a given <dir> — manage an
+#      existing instance there or materialize a NEW one from this tree via an
+#      ALWAYS-copy; branch 2: no <dir> — this tree, in place), runs the guided
+#      questionnaire, writes the CHOSEN tree's repo-root .env (chmod 600) and
+#      delegates to that tree's scripts/start.sh. scripts/start.sh remains the
+#      single consumer of scripts/lib.sh.
+#
+#   3. Target selection (the three branches, authoritative):
+#      1. a <dir> argument is given -> existing instance there: manage it;
+#         otherwise set up a NEW instance there.
+#      2. no <dir>, script inside an existing instance -> manage it in place.
+#      3. no <dir>, standalone/piped -> HONEY_STARTER_INSTALL_DIR (branch-3
+#         only) or ~/honey-starter; interactive: one directory prompt.
 #
 # Secret contract (identical to scripts/start.sh / deploy/README.md):
 #   * The ONLY secret material setup.sh writes is the AI API key, written into
@@ -36,12 +54,16 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
 #   bash <repo>/scripts/setup.sh            # on-disk copy (clone / re-run)
+#   bash <repo>/scripts/setup.sh [<dir>]    # set up <dir> new or manage it
+#   bash <repo>/scripts/setup.sh .          # manage the instance in cwd
+#   curl ... | bash -s /opt/honey-starter   # piped, explicit target dir
 #   bash <repo>/scripts/setup.sh --dry-run  # prereqs + questionnaire + .env render only
-#   bash <repo>/scripts/setup.sh --update   # re-extract the release over this tree
+#   bash <repo>/scripts/setup.sh --update   # re-extract the release over <dir>
 #   bash <repo>/scripts/setup.sh --help
 #
 # See the --help text (print_help) for the full questionnaire, the AI provider
-# matrix, the non-interactive contract and the .env writer contract.
+# matrix, the three-way HD_AI_MODEL semantics, the non-interactive contract
+# and the .env writer contract.
 set -euo pipefail
 
 # --- constants ---------------------------------------------------------------
@@ -76,6 +98,21 @@ INSTALLED_TREE_FILES=(
 # no existing line the key is omitted (start.sh seeds its own placeholder).
 SECRET_KEYS=(OPENAI_API_KEY OPENROUTER_API_KEY)
 
+# The AI model default setup.sh pins on fresh openai/custom installs. It is a
+# DELIBERATE copy of the gpt-5.4-mini fallback that MUST stay in sync with the
+# compose default (deploy/docker-compose.yaml HD_AI_MODEL=...) and the
+# bootstrap config fallback (bootstrap/engines.yaml `default "gpt-5.4-mini"
+# .env.AI_MODEL`). setup.sh writing the explicit line is runtime-identical
+# (compose already injects HD_AI_MODEL when .env leaves it unset).
+MODEL_DEFAULT="gpt-5.4-mini"
+
+# Tree entries excluded when an on-disk run materializes a NEW instance from
+# the invoked tree (tar --exclude patterns). A fresh target NEVER inherits
+# .git, .env or .honey-starter — it cannot clone the source deployment's
+# secrets/state (intentional; the source tree itself is only ever COPIED,
+# never moved, so the user can re-run setup from it against other targets).
+MATERIALIZE_EXCLUDES=(--exclude='./.git' --exclude='./.env' --exclude='./.honey-starter')
+
 # --- output helpers ----------------------------------------------------------
 info() { printf '%s\n' "$*"; }
 note() { printf 'NOTE: %s\n' "$*"; }
@@ -89,35 +126,96 @@ honey-starter guided installer (scripts/setup.sh)
 
 Installs a complete Honeydipper instance (Valkey + file-backed Vault + daemon
 + web UI) on a Linux docker host with one command and a short questionnaire.
-
-Two execution modes live in this single file:
-
-  * Bootstrap copy  - `curl -fsSL <url>/scripts/setup.sh | bash` (or any run
-    where no valid honey-starter tree sits next to the script). Performs only
-    path-independent bootstrap: --help, install-dir resolution, fail-fast
-    preflight, download + verify + extract of the release tarball into the
-    install dir, then re-execs the on-disk copy. Never prompts.
-  * On-disk copy    - once the tree is on disk (downloaded or git clone),
-    `bash scripts/setup.sh` runs the guided questionnaire, writes the repo-root
-    .env (chmod 600) and delegates to scripts/start.sh.
+The same script SETS UP a NEW instance at a given directory or RE-SETS UP
+(manages) an EXISTING instance in place; multiple instances coexist as
+separate directories (run them simultaneously with distinct ports + an
+env-only COMPOSE_PROJECT_NAME).
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
-  bash scripts/setup.sh [--dry-run|--update|--force-reinstall|--help]
+  bash scripts/setup.sh [options] [<dir>]
+  bash scripts/setup.sh .            # manage the instance in the current dir
+  bash scripts/setup.sh new-proj     # set up a NEW instance in ./new-proj
+  curl -fsSL <curl>/scripts/setup.sh | bash -s /opt/honey-starter
+  bash scripts/setup.sh --update     # re-extract the release over <dir>
 
 Options:
   --help, -h           show this help and exit 0 (works in the piped copy too)
   --dry-run            prereqs + questionnaire + masked .env preview + write the
                        .env (chmod 600), then STOP before scripts/start.sh
-  --update             force re-extract of the release over the current tree
+  --update             force re-extract of the release over the target tree
                        (tar merges; it never deletes stale files), then continue
   --force-reinstall    same as --update
+  --                   end of options; the next argument is the <dir>
+
+Target selection (3 branches):
+  1. a <dir> argument is given  -> operate on that directory. An EXISTING
+     honey-starter instance there is re-set-up (managed) in place; otherwise
+     a NEW instance is set up there (an on-disk run copies the invoked tree,
+     a piped/bootstrap run downloads the release).
+  2. no <dir>, and the script runs inside a honey-starter tree -> re-set-up
+     that instance in place.
+  3. no <dir>, and the script is standalone/piped (not in a tree) -> the
+     install dir is HONEY_STARTER_INSTALL_DIR (interactive shell: one prompt
+     "Install directory [~/honey-starter]" - see below) or ~/honey-starter.
+
+New vs existing:
+  * existing instance (layout incl. scripts/setup.sh) -> managed in place;
+    its .env prefills the questionnaire; the HONEY_NS/HONEY_USER desync
+    guards apply to ITS provision state.
+  * a pre-Phase-4 tree (layout present, no setup.sh) -> the invoked copy is
+    merged over it (.git/.env/.honey-starter preserved) and it is then
+    managed in place.
+  * absent or empty dir -> a new instance is materialized. An ON-DISK run
+    copies the invoked tree (ALWAYS a copy - the source tree persists; the
+    fresh target never inherits .git/.env/.honey-starter, so it cannot clone
+    the source deployment's secrets/state); a piped run downloads the
+    release. Later runs then manage it in place.
+  * exists, non-empty, no layout -> setup.sh dies "not a honey-starter tree"
+    (never destructive).
+
+--update:
+  The target is resolved first (ensure the tree exists: materialize-new via
+  copy or reuse), then the release is re-extracted over it (copy then
+  re-extract), then the target's own copy re-execs in place. In a piped run
+  --update behaves as before against the resolved install dir.
+
+Two execution modes live in this single file:
+
+  * Bootstrap copy  - standalone/piped (no valid honey-starter tree next to
+    the script), incl. `curl ... | bash -s <dir>`. Performs path-independent
+    bootstrap: --help, target resolution, fail-fast preflight, download +
+    verify + extract of the release tarball into the target, then re-execs
+    the on-disk copy. IT NEVER PROMPTS except for the single branch-3
+    directory prompt (see below); all questionnaire prompting happens in the
+    on-disk copy.
+  * On-disk copy    - once the script runs inside a tree (branch 2, or the
+    on-disk half of branch 1: managing another instance / a new instance
+    materialized from this tree). Runs the guided questionnaire, writes the
+    repo-root .env (chmod 600) of the CHOSEN tree and delegates to that
+    tree's scripts/start.sh.
+
+The branch-3 directory prompt (the single bootstrap exception):
+  When NO <dir> is given and the bootstrap copy has no
+  HONEY_STARTER_INSTALL_DIR and no HONEY_STARTER_ANSWERS_FILE, is not
+  non-interactive, and a real /dev/tty is available, it asks exactly one
+  question AFTER the fail-fast preflight (a host with no viable docker is
+  never prompted) and BEFORE the download:
+
+    Install directory [~/honey-starter]
+
+  (Enter accepts the default.) An answers-file-only or no-tty bootstrap run
+  silently uses HONEY_STARTER_INSTALL_DIR or the default. Every other
+  question is asked only by the on-disk copy.
 
 Install dir:
-  Resolved once at bootstrap time from HONEY_STARTER_INSTALL_DIR or the default
-  ~/honey-starter, and cached by the installed tree: later runs detect the
-  valid tree and skip re-downloading. The on-disk copy always runs from the
-  tree it lives in.
+  HONEY_STARTER_INSTALL_DIR is consulted ONLY in branch 3 (standalone, where
+  $0 is meaningless). On-disk runs (branches 1-2) never consult it - to
+  target another instance, pass a <dir>. The canonical one-liner passes
+  through branch 3 (env consulted) and re-execs the on-disk copy, so branch 2
+  applies in place afterwards. Once a target is chosen (bootstrap hand-off
+  and on-disk entry) setup.sh exports HONEY_STARTER_INSTALL_DIR=<target> so
+  delegation and any re-exec agree.
 
 Questionnaire (interactive; a question is asked ONLY when its environment
 variable is unset, and on an existing install every default is prefilled from
@@ -129,39 +227,69 @@ the current .env; Enter accepts the [default]):
                       ([A-Za-z0-9@._-]+); constant after first run.
   3. HONEY_AI_PROVIDER  openai (default) | custom (OpenAI-compatible endpoint)
                       | skip. openrouter is NEVER offered interactively.
-  4. HD_AI_BASE_URL   ONLY when provider=custom; required http(s):// endpoint;
+  4. HD_AI_MODEL      AI model (default gpt-5.4-mini; the pin). Asked ONLY
+                      for openai/custom - see HD_AI_MODEL semantics below.
+  5. HD_AI_BASE_URL   ONLY when provider=custom; required http(s):// endpoint;
                       never silently defaulted.
-  5. API key          hidden input (read -s). For openai/custom. Empty = keep
+  6. API key          hidden input (read -s). For openai/custom. Empty = keep
                       the current key (existing install) or add later
                       (placeholder flow: start.sh seeds a placeholder and you
                       add the real key to .env and re-run).
-  6. ports            HD_API_HOST_PORT (default 9000) and HD_UI_HOST_PORT
+  7. ports            HD_API_HOST_PORT (default 9000) and HD_UI_HOST_PORT
                       (default 8090), integers 1-65535, confirmed together.
 
   HONEY_STARTER_ANSWERS_FILE (when set) supplies the answers first,
-  newline-delimited, in exactly the order above (base URL line only for
-  custom; the final Y/n confirmation is the last line of a full non-dry run).
-  Otherwise answers come from a real /dev/tty (opened explicitly). If neither
-  is available and the run is not non-interactive, setup.sh exits with
-  guidance -- it never silently defaults and never hangs.
+  newline-delimited, in exactly the order above. Provider-conditional lines:
+  model (4) only for openai/custom; base URL (5) only for custom; API key (6)
+  only for openai/custom; an empty model line means "accept the default"
+  (pins gpt-5.4-mini). There is NO install-dir line - the answers file's
+  physical location is indication enough; target a non-default directory with
+  a positional argument (setup.sh <dir>). The final Y/n confirmation is the
+  last line of a full non-dry run. Otherwise answers come from a real
+  /dev/tty (opened explicitly). If neither is available and the run is not
+  non-interactive, setup.sh exits with guidance - it never silently defaults
+  and never hangs.
+
+HD_AI_MODEL semantics (three-way; the model is a non-secret pin):
+  * HD_AI_MODEL=<value> (non-empty) -> override, written to .env, wins over
+    everything (all providers, passthrough preserved).
+  * HD_AI_MODEL= (explicitly empty) -> a definitive NO-PIN run: the existing
+    override is NOT kept, the line is removed, and the question is skipped
+    (its answer cannot silently re-pin). Non-interactive: same.
+  * HD_AI_MODEL unset + provider openai/custom -> the question is asked;
+    interactive Enter or an empty answers-file line accepts the default,
+    WRITING HD_AI_MODEL=gpt-5.4-mini (the pin). Non-interactive unset -> the
+    same pin.
+  * provider skip -> no question; an existing override line is kept when env
+    is unset, removed when env is explicitly empty, replaced when non-empty.
+  Under the pin default, "engine default / no pin" is reached by one run with
+  HD_AI_MODEL= (removes the line) or deleting the line by hand. No-pin is not
+  sticky: a later run with HD_AI_MODEL unset re-pins (runtime-identical, since
+  compose already defaults HD_AI_MODEL). Valid model: non-empty, no
+  whitespace/control, charset [A-Za-z0-9._:/@+-] (env-supplied models are
+  validated in non-interactive runs too).
 
 AI provider matrix (what setup.sh writes to .env):
-  openai   -> writes OPENAI_API_KEY=<key> when provided; HD_AI_BASE_URL /
-              HD_AI_MODEL stay unset unless you supply them (the engine falls
-              back to https://api.openai.com/v1 / gpt-5.4-mini). NOTE: on a
-              re-run, a previously-set HD_AI_BASE_URL from an earlier custom
-              install is KEPT (managed, only removed when unset) — remove it
-              from .env to fully revert to the default.
+  openai   -> writes OPENAI_API_KEY=<key> when provided + the HD_AI_MODEL pin;
+              HD_AI_BASE_URL stays unset unless supplied (the engine falls
+              back to https://api.openai.com/v1). NOTE: on a re-run, a
+              previously-set HD_AI_BASE_URL from an earlier custom install is
+              KEPT (managed, only removed when unset) - remove it from .env
+              to fully revert to the default.
   custom   -> writes HD_AI_BASE_URL=<required validated http(s):// endpoint>
-              + OPENAI_API_KEY=<key> when provided; never silently defaults
-              the base URL.
-  skip     -> no key/base lines; start.sh seeds placeholders; add the key to
-              .env and re-run later.
+              + OPENAI_API_KEY=<key> when provided + the HD_AI_MODEL pin;
+              never silently defaults the base URL (the default gpt-5.4-mini
+              may not exist on your endpoint - type your own model).
+  skip     -> no key/base/model lines are ADDED; an existing HD_AI_MODEL
+              override is kept/removed/replaced per the env state above.
   openrouter is never prompted, but HONEY_STARTER_NONINTERACTIVE runs still
   accept OPENROUTER_API_KEY (start.sh seeds openrouter_api_key into Vault
   harmlessly until the bootstrap config is edited). The openrouter ENGINE
   exists in bootstrap/engines.yaml but no shipped agent references it (the
-  starter agent is hard-bound to openai/default). To use OpenRouter, edit the
+  starter agent is hard-bound to openai/default). Quirk (doc only):
+  .env.AI_MODEL is SHARED by the openai default engine and the openrouter
+  engine (qwen/qwen3.5-9b default); in compose HD_AI_MODEL is always set so
+  openrouter's own default is already dead. To use OpenRouter, edit the
   RENDERED copy .honey-starter/config/agents.yaml to `engine: openrouter` and
   re-run `make start`; its base_url is fixed in engines.yaml and its Vault key
   field is openrouter_api_key.
@@ -169,10 +297,10 @@ AI provider matrix (what setup.sh writes to .env):
 Non-interactive mode:
   HONEY_STARTER_NONINTERACTIVE=1 (or every decision variable supplied via env
   so nothing would be prompted) requires no tty. Defaults apply for anything
-  with a documented default; a missing value with NO default (HD_AI_BASE_URL
-  for provider=custom) exits 1 listing the missing variables. A full (non-dry)
-  non-interactive run also requires HONEY_STARTER_ASSUME_YES=1 to skip the
-  write-and-start confirmation.
+  with a documented default (HD_AI_MODEL included); a missing value with NO
+  default (HD_AI_BASE_URL for provider=custom) exits 1 listing the missing
+  variables. A full (non-dry) non-interactive run also requires
+  HONEY_STARTER_ASSUME_YES=1 to skip the write-and-start confirmation.
 
 .env writer contract (scripts/setup.sh is the guided writer):
   * Unmanaged lines (comments, blanks, HD_JWT_SIGNING_KEY, image pins, ...)
@@ -197,7 +325,7 @@ Preflight (fail-fast, before any prompt or download):
   before the questionnaire. docker/compose are never auto-installed.
 
 Environment variables (all optional):
-  HONEY_STARTER_INSTALL_DIR    install dir (default ~/honey-starter)
+  HONEY_STARTER_INSTALL_DIR    install dir (branch 3 only; default ~/honey-starter)
   HONEY_STARTER_REF            branch or tag to fetch (default main)
   HONEY_STARTER_EXPECT_SHA256  require this sha256 of the downloaded tarball
   HONEY_STARTER_NONINTERACTIVE set to 1 to disable all prompting
@@ -208,8 +336,9 @@ Environment variables (all optional):
   HONEY_NS                     Vault KV namespace prefix (default starter)
   HONEY_USER                   admin subject (default admin)
   HONEY_AI_PROVIDER            openai | custom | skip (default openai)
+  HD_AI_MODEL                  model override | explicitly-empty = no-pin run
+                               (unset = question/pin; see HD_AI_MODEL above)
   HD_AI_BASE_URL               OpenAI-compatible base URL (required for custom)
-  HD_AI_MODEL                  model override (optional)
   HD_API_HOST_PORT             published daemon API port (default 9000)
   HD_UI_HOST_PORT              published UI port (default 8090)
   HD_UI_URL                    public UI base URL (OAuth/SAML redirects);
@@ -392,20 +521,66 @@ cur_value() {
 # --- arguments ---------------------------------------------------------------
 DRY_RUN=0
 DO_UPDATE=0
+POSITIONAL_TARGET=""
+# resolve_arg_path: absolutize a <dir> argument at PARSE time (both modes parse
+# identically — `setup .` resolves against the CALLER's $PWD, not the tree's
+# location; the bootstrap forwards "$@" so `curl ... | bash -s <dir>` resolves
+# the same way). Expands a leading ~/, then normalizes via readlink -f
+# (fallback cd && pwd -P) so equality vs the invoked tree (SCRIPT_TREE,
+# resolved the same way in detect_mode) is canonical.
+resolve_arg_path() {
+  local p="$1" out=""
+  if [ "${p#\~/}" != "${p}" ]; then
+    p="${HOME:-}/${p#\~/}"
+  fi
+  case "${p}" in
+    /*) ;;
+    *) p="$(pwd)/${p}" ;;
+  esac
+  if command -v readlink >/dev/null 2>&1; then
+    out="$(readlink -f "${p}" 2>/dev/null || true)"
+  fi
+  if [ -z "${out}" ]; then
+    if [ -d "${p}" ]; then
+      out="$(cd "${p}" && pwd -P)"
+    else
+      out="${p}"
+    fi
+  fi
+  printf '%s' "${out}"
+}
+
 parse_args() {
-  local a
+  local a positional=0 endflags=0
   DRY_RUN=0
   DO_UPDATE=0
+  POSITIONAL_TARGET=""
   for a in "$@"; do
+    if [ "${endflags}" -eq 1 ]; then
+      if [ "${positional}" -ge 1 ]; then
+        usage_die "more than one directory argument: ${a}"
+      fi
+      POSITIONAL_TARGET="$(resolve_arg_path "${a}")"
+      positional=1
+      continue
+    fi
     case "${a}" in
+      --) endflags=1 ;;
       --help|-h) print_help; exit 0 ;;
       --dry-run) DRY_RUN=1 ;;
       --update|--force-reinstall) DO_UPDATE=1 ;;
-      *) usage_die "unknown option: ${a}" ;;
+      -*)
+        usage_die "unknown option: ${a}" ;;
+      *)
+        if [ "${positional}" -ge 1 ]; then
+          usage_die "more than one directory argument: ${a}"
+        fi
+        POSITIONAL_TARGET="$(resolve_arg_path "${a}")"
+        positional=1
+        ;;
     esac
   done
 }
-
 # Re-export captured AI secrets right before re-exec'ing another copy of this
 # script: exec does not carry shell variables, and the child copy re-captures
 # them at the top of its own main(). This keeps the keys OUT of every child
@@ -678,6 +853,129 @@ tree_is_presetup() {
     [ -f "${d}/${f}" ] || return 1
   done
   return 0
+}
+
+# --- new-instance materialization + target dispatch (Phase 5) ------------------
+# materialize_new TARGET: copy the INVOKED tree (SCRIPT_TREE) into a
+# same-parent temp dir and atomically mv (rename(2)) it into place, with a
+# copy+remove fallback on EXDEV (cross-filesystem). The source tree is NEVER
+# moved — it must persist for future re-runs against other targets. The fresh
+# target never inherits .git/.env/.honey-starter (MATERIALIZE_EXCLUDES), so it
+# cannot clone the source deployment's secrets/state (documented).
+materialize_new() {
+  local target="$1" tmp_parent tmpdir
+  tmp_parent="$(dirname "${target}")"
+  mkdir -p "${tmp_parent}"
+  tmpdir="$(mktemp -d "${tmp_parent}/.honey-starter-new.XXXXXX")"
+  if ! ( cd "${SCRIPT_TREE}" && tar -cf - "${MATERIALIZE_EXCLUDES[@]}" . ) \
+    | ( cd "${tmpdir}" && tar -xf - ); then
+    rm -rf "${tmpdir}"
+    die "cannot materialize a new instance at ${target} (copy failed)"
+  fi
+  verify_tree "${tmpdir}"
+  if [ ! -f "${tmpdir}/scripts/setup.sh" ]; then
+    rm -rf "${tmpdir}"
+    die "cannot materialize a new instance at ${target} (invoked tree has no scripts/setup.sh)"
+  fi
+  if [ -e "${target}" ]; then
+    # an EMPTY dir is consumed by the atomic rename; anything else must have
+    # been rejected by dispatch (never destructive here)
+    if ! rmdir "${target}" 2>/dev/null; then
+      rm -rf "${tmpdir}"
+      die "cannot materialize a new instance at ${target} (target exists)"
+    fi
+  fi
+  if mv "${tmpdir}" "${target}"; then
+    info "--- materialized a new honey-starter instance at ${target} (copied from ${SCRIPT_TREE})"
+  else
+    # EXDEV / cross-filesystem fallback: copy + remove (NEVER mv the source).
+    # After a failed rename the target does not exist yet (mv is atomic), so
+    # create it first; the mktemp content is removed only after a full copy.
+    if mkdir -p "${target}" && cp -a "${tmpdir}/." "${target}/" && rm -rf "${tmpdir}"; then
+      info "--- materialized a new honey-starter instance at ${target} (copied from ${SCRIPT_TREE})"
+    else
+      rm -rf "${tmpdir}"
+      die "cannot materialize a new instance at ${target}"
+    fi
+  fi
+  verify_tree "${target}"
+}
+
+# merge_invoked_over_presetup TARGET: a pre-Phase-4 tree (layout present, no
+# scripts/setup.sh) is upgraded by merging a copy of the invoked tree over it
+# with the same exclusions (.git/.env/.honey-starter preserved — the target's
+# own state stays, and it gains scripts/setup.sh).
+merge_invoked_over_presetup() {
+  local target="$1"
+  warn "target ${target} predates scripts/setup.sh (Phase 4)"
+  warn "merging the invoked tree over it (.git/.env/.honey-starter kept); it is now managed in place"
+  if ! ( cd "${SCRIPT_TREE}" && tar -cf - "${MATERIALIZE_EXCLUDES[@]}" . ) \
+    | ( cd "${target}" && tar -xf - ); then
+    die "cannot merge the invoked tree over ${target}"
+  fi
+  verify_tree "${target}"
+  [ -f "${target}/scripts/setup.sh" ] || die "merged tree at ${target} has no scripts/setup.sh (unexpected)"
+}
+
+# dispatch_target TARGET: branch-1 new-vs-existing decision for an on-disk run
+# with a <dir> argument. Sets INSTALL_DIR to the CHOSEN tree. Never
+# destructive: a non-empty no-layout dir dies "not a honey-starter tree".
+dispatch_target() {
+  local target="$1"
+  if [ "${target}" = "${SCRIPT_TREE}" ]; then
+    # target == invoked tree (after readlink -f normalization): pure in-place
+    INSTALL_DIR="${SCRIPT_TREE}"
+    return 0
+  fi
+  if tree_is_valid "${target}"; then
+    info "--- re-setting up the existing honey-starter instance at ${target}"
+    INSTALL_DIR="${target}"
+    return 0
+  fi
+  if tree_is_presetup "${target}"; then
+    merge_invoked_over_presetup "${target}"
+    INSTALL_DIR="${target}"
+    return 0
+  fi
+  if [ ! -e "${target}" ] || [ -z "$(ls -A "${target}" 2>/dev/null || true)" ]; then
+    materialize_new "${target}"
+    INSTALL_DIR="${target}"
+    return 0
+  fi
+  die "${target} is not a honey-starter tree. Move it away, remove it, or pass another directory."
+}
+
+# ask_install_dir DEFAULT -> prints the branch-3 destination. Fires ONLY when a
+# standalone (piped/bootstrap) run has no <dir>, no HONEY_STARTER_INSTALL_DIR,
+# no answers file, is not non-interactive, and a real /dev/tty is available.
+# Exactly ONE prompt, AFTER the fail-fast preflight, BEFORE the download; the
+# bootstrap copy otherwise never prompts (this is the single deliberate
+# exception). Answers-file-only or no-tty runs keep DEFAULT silently.
+ask_install_dir() {
+  local default="$1" ans="" tfd=""
+  [ -z "${POSITIONAL_TARGET}" ] || { printf '%s' "${default}"; return 0; }
+  [ -z "${HONEY_STARTER_INSTALL_DIR:-}" ] || { printf '%s' "${default}"; return 0; }
+  [ -z "${HONEY_STARTER_ANSWERS_FILE:-}" ] || { printf '%s' "${default}"; return 0; }
+  [ "${HONEY_STARTER_NONINTERACTIVE:-0}" != "1" ] || { printf '%s' "${default}"; return 0; }
+  if { exec {tfd}<>/dev/tty; } 2>/dev/null; then
+    printf 'Install directory [%s] ' "${default}" >&2
+    if IFS= read -r -u "${tfd}" ans && [ -n "${ans}" ]; then
+      default="${ans}"
+      if [ "${default#\~/}" != "${default}" ]; then
+        default="${HOME:-}/${default#\~/}"
+      fi
+      case "${default}" in
+        /*) ;;
+        *) default="$(pwd)/${default}" ;;
+      esac
+      default="$(resolve_arg_path "${default}")"
+    else
+      printf '\n' >&2
+    fi
+    exec {tfd}>&- 2>/dev/null || true
+    exec {tfd}<&- 2>/dev/null || true
+  fi
+  printf '%s' "${default}"
 }
 
 # download_and_install DIR UPDATE(0|1)
@@ -974,6 +1272,14 @@ valid_base_url() {
     *) return 1 ;;
   esac
 }
+valid_model() {
+  # non-empty; no whitespace/control; charset [A-Za-z0-9._:/@+-] (underscore
+  # for underscored/slashed endpoint model names, : for fine-tuning ids).
+  case "$1" in
+    ''|*[!A-Za-z0-9._:/@+-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 valid_yesno() {
   case "$1" in
     y|Y|yes|YES|n|N|no|NO) return 0 ;;
@@ -1029,7 +1335,7 @@ infer_provider_default() {
 }
 
 run_questionnaire() {
-  local p base_default key_default msg
+  local p base_default key_default msg model_default
 
   # --- HONEY_NS (prompt when env unset; default = current .env or starter) ---
   if [ -z "${HONEY_NS:-}" ]; then
@@ -1078,6 +1384,55 @@ run_questionnaire() {
     openai|custom|skip) ;;
     *) die "HONEY_AI_PROVIDER must be one of openai|custom|skip (got: ${EFFECTIVE_PROVIDER})" ;;
   esac
+
+  # --- AI model (openai/custom; pin default; NOT asked for skip) -------------
+  # Three-way env semantics (exact):
+  #   * HD_AI_MODEL non-empty        -> override written, wins (passthrough)
+  #   * HD_AI_MODEL explicitly empty -> definitive no-pin run: existing
+  #                                     override NOT kept, line removed, the
+  #                                     question is SKIPPED entirely
+  #   * HD_AI_MODEL unset + openai/custom -> question asked; Enter / an empty
+  #                                     answers-file line = accept the default,
+  #                                     WRITING the pin (gpt-5.4-mini); NI unset
+  #                                     uses the same default
+  #   * provider skip                -> no question; line kept/removed/replaced
+  #                                     per the env state above
+  if [ -n "${HD_AI_MODEL:-}" ]; then
+    # non-empty env override wins over everything (all providers)
+    EFFECTIVE_MODEL="${HD_AI_MODEL}"
+  elif [ -n "${HD_AI_MODEL+x}" ]; then
+    # explicitly empty: definitive no-pin — bypass cur_value (the existing
+    # override is NOT kept), force the writer to remove the line, and skip the
+    # question (its answer cannot silently re-pin)
+    EFFECTIVE_MODEL=""
+  else
+    if [ "${EFFECTIVE_PROVIDER}" = "openai" ] || [ "${EFFECTIVE_PROVIDER}" = "custom" ]; then
+      model_default="$(first_nonempty "$(cur_value HD_AI_MODEL)" "${MODEL_DEFAULT}")"
+      if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
+        if prompt_setting HD_AI_MODEL "AI model (HD_AI_MODEL)" \
+          "${model_default}" 0 valid_model; then
+          EFFECTIVE_MODEL="${REPLY}"
+        else
+          # HD_AI_MODEL has a documented default (the pin) and is intentionally
+          # NOT part of all_answers_supplied / MISSING_VARS: a prompt failure
+          # (unreachable in practice, since the default always validates) falls
+          # back to the default rather than a missing-required-value error.
+          EFFECTIVE_MODEL="${model_default}"
+        fi
+      else
+        # NI / auto-NI: the documented default applies (pin)
+        EFFECTIVE_MODEL="${model_default}"
+      fi
+    else
+      # skip provider: keep an existing .env override (managed; only removed
+      # when env is explicitly empty — handled above)
+      EFFECTIVE_MODEL="$(cur_value HD_AI_MODEL)"
+    fi
+  fi
+  if [ -n "${EFFECTIVE_MODEL}" ]; then
+    valid_model "${EFFECTIVE_MODEL}" \
+      || die "HD_AI_MODEL must be non-empty with no whitespace/control and only [A-Za-z0-9._:/@+-] (got: ${EFFECTIVE_MODEL})"
+  fi
 
   # --- custom base URL (required, http(s)://, never silently defaulted) ------
   base_default="$(first_nonempty "${HD_AI_BASE_URL:-}" "$(cur_value HD_AI_BASE_URL)")"
@@ -1182,7 +1537,6 @@ run_questionnaire() {
   # the guided localhost default ONLY when nothing is set — never clobber an
   # env-supplied or existing .env value on re-run.
   EFFECTIVE_UI_URL="$(first_nonempty "${HD_UI_URL:-}" "$(cur_value HD_UI_URL)" "http://localhost:${EFFECTIVE_UI_PORT}")"
-  EFFECTIVE_MODEL="$(first_nonempty "${HD_AI_MODEL:-}" "$(cur_value HD_AI_MODEL)")"
   EFFECTIVE_CONFIG_INTERVAL="$(first_nonempty "${HD_CONFIG_CHECK_INTERVAL:-}" "$(cur_value HD_CONFIG_CHECK_INTERVAL)")"
 
   # --- final validation of effective values -----------------------------------
@@ -1452,36 +1806,19 @@ delegate_to_start() {
 # --- on-disk main flow ---------------------------------------------------------
 ENV_FILE=""
 on_disk_main() {
-  INSTALL_DIR="${SCRIPT_TREE}"
-  if [ -n "${HONEY_STARTER_INSTALL_DIR:-}" ]; then
-    local want
-    want="${HONEY_STARTER_INSTALL_DIR}"
-    case "${want}" in
-      /*) ;;
-      *) want="$(pwd)/${want}" ;;
-    esac
-    if [ "${want}" != "${INSTALL_DIR}" ]; then
-      warn "running tree is at ${INSTALL_DIR} but HONEY_STARTER_INSTALL_DIR=${HONEY_STARTER_INSTALL_DIR}; using ${INSTALL_DIR}"
-    fi
+  # Target resolution (branch 1 positional / branch 2 SCRIPT_TREE). Branch 3
+  # (standalone, env-or-default + directory prompt) is bootstrap-only — an
+  # on-disk run always has a tree (SCRIPT_TREE non-empty from detect_mode).
+  local target="${POSITIONAL_TARGET:-}"
+  if [ -n "${target}" ]; then
+    INSTALL_DIR="${target}"      # branch 1 - dispatched below (new vs existing)
+  else
+    INSTALL_DIR="${SCRIPT_TREE}" # branch 2 - manage the invoked tree in place
   fi
-  export HONEY_STARTER_INSTALL_DIR="${INSTALL_DIR}"
-
-  if [ "${DO_UPDATE}" -eq 1 ]; then
-    info "=== honey-starter: update (${INSTALL_DIR}) ==="
-    download_and_install "${INSTALL_DIR}" 1
-    reload_on_disk_without_update_flags "$@"
-  fi
-
-  ENV_FILE="${INSTALL_DIR}/.env"
-  parse_env "${ENV_FILE}"
-  resolve_state_dir
-  read_provision
 
   info "=== honey-starter guided installer (on-disk copy) ==="
-  info "install dir: ${INSTALL_DIR}"
-  info "state dir:   ${STATE_DIR}"
 
-  # fail-fast preflight before any prompt or .env mutation
+  # fail-fast preflight BEFORE any prompt / download / materialize
   preflight_os
   preflight_download_tools
   preflight_docker
@@ -1491,11 +1828,47 @@ on_disk_main() {
   open_input_sources
   preflight_optional_tools
 
-  # up-front desync / partial-state warnings (would-be values), abort offered
+  # (branch-3 directory prompt never applies to an on-disk run: branch 1 has a
+  # positional, branch 2 already lives in the instance.)
+
+  # branch-1 new-vs-existing dispatch at the resolved target, after the
+  # fail-fast preflight: materialize/reuse decides the CHOSEN tree that every
+  # prefill/guard below reads.
+  if [ -n "${target}" ]; then
+    dispatch_target "${target}"
+  else
+    INSTALL_DIR="${SCRIPT_TREE}"
+  fi
+
+  # After dispatch/materialize/reuse, pin the chosen target env so delegation
+  # and any re-exec agree. On-disk runs (branches 1-2) never consult
+  # HONEY_STARTER_INSTALL_DIR — it is branch-3-only by contract.
+  export HONEY_STARTER_INSTALL_DIR="${INSTALL_DIR}"
+
+  if [ "${DO_UPDATE}" -eq 1 ]; then
+    info "=== honey-starter: update (${INSTALL_DIR}) ==="
+    # copy then re-extract: the target tree was ensured above (materialized
+    # new from the invoked tree when it did not exist); now pull the release
+    # over it so the fresh instance runs the latest code
+    download_and_install "${INSTALL_DIR}" 1
+    reload_on_disk_without_update_flags "$@"
+  fi
+
+  ENV_FILE="${INSTALL_DIR}/.env"
+  parse_env "${ENV_FILE}"
+  resolve_state_dir
+  read_provision
+
+  info "install dir: ${INSTALL_DIR}"
+  info "state dir:   ${STATE_DIR}"
+
+  # up-front desync / partial-state warnings (would-be values, against the
+  # CHOSEN tree — the target decision precedes this, so its "before ns/user
+  # answers" guarantee holds)
   warn_state_up_front
 
-  # questionnaire (env values / .env prefill / documented defaults; prompts
-  # only when a source exists and the env var is unset)
+  # questionnaire (env values / chosen-tree .env prefill / documented
+  # defaults; prompts only when a source exists and the env var is unset)
   run_questionnaire
   report_missing_if_any
 
@@ -1532,29 +1905,34 @@ on_disk_main() {
   info "--- .env written to ${ENV_FILE} (chmod 600)"
   delegate_to_start
 }
-
 # --- bootstrap main flow -------------------------------------------------------
 bootstrap_main() {
   local dir
-  dir="${HONEY_STARTER_INSTALL_DIR:-}"
-  if [ -z "${dir}" ]; then
-    if [ -z "${HOME:-}" ]; then
-      die "cannot determine an install dir: HOME is unset. Set HONEY_STARTER_INSTALL_DIR explicitly."
+  if [ -n "${POSITIONAL_TARGET}" ]; then
+    dir="${POSITIONAL_TARGET}"        # branch 1: positional wins over env
+  else
+    # branch 3: HONEY_STARTER_INSTALL_DIR (branch-3-only) or ~/honey-starter.
+    # The single directory prompt fires AFTER the fail-fast preflight below
+    # and BEFORE the download; a default always exists, so branch 3 never
+    # errors on a missing dir (HOME-unset still dies).
+    dir="${HONEY_STARTER_INSTALL_DIR:-}"
+    if [ -z "${dir}" ]; then
+      if [ -z "${HOME:-}" ]; then
+        die "cannot determine an install dir: HOME is unset. Set HONEY_STARTER_INSTALL_DIR explicitly."
+      fi
+      dir="${HOME}/${DEFAULT_INSTALL_SUBDIR}"
     fi
-    dir="${HOME}/${DEFAULT_INSTALL_SUBDIR}"
+    if [ "${dir#\~/}" != "${dir}" ]; then
+      dir="${HOME}/${dir#\~/}"
+    fi
+    case "${dir}" in
+      /*) ;;
+      *) dir="$(pwd)/${dir}" ;;
+    esac
   fi
-  if [ "${dir#\~/}" != "${dir}" ]; then
-    dir="${HOME}/${dir#\~/}"
-  fi
-  case "${dir}" in
-    /*) ;;
-    *) dir="$(pwd)/${dir}" ;;
-  esac
-  export HONEY_STARTER_INSTALL_DIR="${dir}"
   INSTALL_DIR="${dir}"
 
   info "=== honey-starter guided installer (bootstrap copy) ==="
-  info "install dir: ${dir}"
 
   # fail-fast preflight BEFORE any prompt or download
   preflight_os
@@ -1563,6 +1941,19 @@ bootstrap_main() {
   if [ "${DRY_RUN}" -eq 1 ]; then
     note "--dry-run: docker-gated preflight is informational only; download + render-only validation continues"
   fi
+
+  # branch-3 single directory prompt (the ONLY prompt in the bootstrap copy;
+  # placement: AFTER the fail-fast preflight, BEFORE the download — a host
+  # with no viable docker is never prompted). Standalone runs with a <dir>
+  # (branch 1) or an env dir / answers file / NI never reach the prompt.
+  if [ -z "${POSITIONAL_TARGET}" ]; then
+    dir="$(ask_install_dir "${dir}")"
+    INSTALL_DIR="${dir}"
+  fi
+
+  info "install dir: ${dir}"
+  export HONEY_STARTER_INSTALL_DIR="${dir}"
+  INSTALL_DIR="${dir}"
 
   if [ "${DO_UPDATE}" -eq 0 ] && tree_is_valid "${dir}"; then
     info "--- existing honey-starter tree found at ${dir}; skipping download"
@@ -1586,7 +1977,6 @@ bootstrap_main() {
   info "--- starting the on-disk guided installer"
   reload_on_disk_without_update_flags "$@"
 }
-
 # --- entrypoint ---------------------------------------------------------------
 main() {
   # Capture (and unset from this shell) the AI secrets FIRST, so no child

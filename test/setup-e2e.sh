@@ -31,7 +31,9 @@
 #      the admin token + AppRole identity pair + the seeded KV `.data`
 #      (canonical object incl. metadata.version) are unchanged — re-running
 #      the installer never regenerates secrets (start.sh's guarantee, reused
-#      via the canonical-`.data` comparison from e2e.sh).
+#      via the canonical-`.data` comparison from e2e.sh). The second run uses
+#      the Phase 5 positional in-place form (`cd "${COPY}" && bash
+#      scripts/setup.sh .`), proving manage-existing end to end.
 #
 # Requires: docker (compose v2), network, curl, jq, openssl, htpasswd.
 # Skips gracefully (exit 0) when docker is unavailable.
@@ -111,7 +113,10 @@ COPY="${WORK}/tree"
 mkdir -p "${COPY}"
 cp -a "${HERE}/." "${COPY}/"
 rm -rf "${COPY}/.git" "${COPY}/.honey-starter" "${COPY}/.env"
-export HONEY_STARTER_INSTALL_DIR="${COPY}"
+# Phase 5: HONEY_STARTER_INSTALL_DIR is branch-3-only (standalone/piped). An
+# on-disk run never consults it — the invoked copy detects the instance it is
+# inside via detect_mode/SCRIPT_TREE, so both the first run and the positional
+# re-run below land on the COPY tree without any install-dir env.
 SETUP="${COPY}/scripts/setup.sh"
 
 # Source lib.sh from the COPY (the tree under test), not the dev checkout, so
@@ -186,7 +191,11 @@ ADMIN_TOKEN_BEFORE="$(e2e_read "${STATE}/admin_token")"
 ROLE_ID_FILE_BEFORE="$(e2e_read "${STATE}/identity/role_id")"
 SECRET_ID_FILE_BEFORE="$(e2e_read "${STATE}/identity/secret_id")"
 SEED_KV_BEFORE="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null | jq -cS '.data' 2>/dev/null || true)"
-if ! bash "${SETUP}" >"${START_LOG}" 2>&1; then
+# Phase 5: the idempotent second run exercises the positional in-place path —
+# `cd "${COPY}" && bash scripts/setup.sh .` (branch 1 positional resolving to
+# the tree itself -> pure in-place manage: .env rewrite + delegate to start.sh
+# + no secret/seed churn). Proves the full-stack manage-existing path E2E.
+if ! ( cd "${COPY}" && bash scripts/setup.sh . ) >"${START_LOG}" 2>&1; then
   echo "FAIL: scripts/setup.sh re-run exited non-zero (must be idempotent)" >&2
   echo "--- setup.sh re-run log (tail) ---" >&2
   tail -n 120 "${START_LOG}" >&2 || true
