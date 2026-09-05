@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # setup-dryrun.sh — no-docker unit/dry-run tests for scripts/setup.sh (the
-# guided single-command installer; Phase 4 + Phase 5 multi-instance + AI model).
+# guided single-command installer; Phase 4 + Phase 5 multi-instance + AI model
+# + Phase 6 per-instance COMPOSE_PROJECT_NAME persisted in .env).
 #
 # Hermetic: the tree under test is copied into a throwaway mktemp dir and
 # setup.sh is executed against THAT copy with a temp HONEY_STARTER_INSTALL_DIR
@@ -21,8 +22,8 @@
 #   * validation failures (bad HONEY_NS, bad port, bad base URL, bad model) die
 #   * missing-required-var error path (custom provider without HD_AI_BASE_URL)
 #   * no-tty guidance message
-#   * the interactive branch via HONEY_STARTER_ANSWERS_FILE, incl. the Phase 5
-#     answers-file schema with the model line (T9)
+#   * the interactive branch via HONEY_STARTER_ANSWERS_FILE, incl. the Phase 5+6
+#     answers-file schema (leading COMPOSE_PROJECT_NAME line + the model line)
 #   * HD_CONFIG_CHECK_INTERVAL only written on explicit override; otherwise
 #     absent (compose default 30m applies by omission)
 #   * Phase 5 target selection:
@@ -52,6 +53,23 @@
 #     the project + ports guidance (no .env, no delegation); a clean project,
 #     an artifact-bearing manage run, and a distinct COMPOSE_PROJECT_NAME all
 #     proceed
+#   * Phase 6 per-instance COMPOSE_PROJECT_NAME (P-series): the name is
+#     authored into .env by setup.sh — fresh installs get the derived
+#     hs-<basename>-<hash8> (deterministic from INSTALL_DIR; shared
+#     derived_proj() helper below mirrors scripts/setup.sh's
+#     derived_project_name), an env/answers value is validated (invalid DIES),
+#     a manage run keeps the persisted line / omits when absent, an
+#     env-vs-persisted change is TTY-confirmed (or NI-dies) with the data-loss
+#     language, an env-with-nothing-persisted is adopted silently (and probed),
+#     --update ignores env, and the F3 guard probes the EFFECTIVE name on every
+#     effective change (pre + post-questionnaire re-probe) — every probe test
+#     asserts the stub log is non-empty and contains the expected -p probe.
+#   * R4 NOTE (do NOT chase): T2/T3/T15/T16b are manage-flows on artifact-free
+#     seeded trees -> under the never-provisioned IS_FRESH criterion they
+#     become IS_FRESH=1 and GAIN a COMPOSE_PROJECT_NAME= line (derived,
+#     deterministic from each temp dir). This is EXPECTED, not a failure —
+#     their assertions are key-greps / source-tree-only diffs; idempotence
+#     survives because the derived name is deterministic across both runs.
 #   * branch-3 directory prompt hermetics (pty): ~/ default display (never the
 #     spilled absolute path), Enter -> re-exec -> branch-2-in-place, bare ~ ->
 #     $HOME at the prompt AND as an on-disk positional
@@ -99,6 +117,34 @@ fresh_tree() {
   cp -a "${HERE}/." "${d}/tree"
   rm -rf "${d}/tree/.git" "${d}/tree/.honey-starter" "${d}/tree/.env"
   printf '%s' "${d}/tree"
+}
+
+# derived_proj DIR -> prints the Phase 6 derived COMPOSE_PROJECT_NAME exactly
+# as scripts/setup.sh's derived_project_name produces it (this test's mirror).
+# KEEP IN SYNC with scripts/setup.sh derived_project_name() (same inputs ->
+# same output); any derivation change must update BOTH. Used by the F3c
+# derived-collision test and the P-series derived-name assertions — never
+# inline copies.
+derived_proj() {
+  local dir="$1" base b h
+  base="$(basename "${dir}")"
+  [ -n "${base}" ] || base="dir"
+  # sanitize: lowercase -> [^a-z0-9] -> "-" -> collapse runs -> strip edges ->
+  # empty -> "dir" -> truncate 20 -> strip trailing "-"
+  b="${base,,}"
+  b="$(printf '%s' "${b}" | tr -c 'a-z0-9' '-')"
+  while :; do
+    case "${b}" in
+      *--*) b="${b//--/-}" ;;
+      *) break ;;
+    esac
+  done
+  b="${b#-}"; b="${b%-}"
+  [ -n "${b}" ] || b="dir"
+  b="${b:0:20}"
+  b="${b%-}"
+  h="$(printf '%s' "${dir}" | sha256sum | cut -c1-8)"
+  printf 'hs-%s-%s' "${b}" "${h}"
 }
 
 cleanup() {
@@ -543,10 +589,10 @@ rm -rf "${T8}" "${S8}"
 # ---------------------------------------------------------------------------
 T9="$(fresh_tree)"
 S9="$(mktemp -d)"
-# Phase 5 answers-file schema: HONEY_NS, HONEY_USER, provider, MODEL
-# (openai/custom only; empty = accept default -> pin), base URL (custom only),
-# API key (openai/custom), ports. NO install-dir line.
-printf 'ansns\nansuser\ncustom\nans-custom-model\nhttps://ans.example.com/v1\nsk-answers-key\n9300\n9390\n' \
+# Phase 5+6 answers-file schema: COMPOSE_PROJECT_NAME (empty = accept the
+# derived default), HONEY_NS, HONEY_USER, provider, MODEL, base URL (custom
+# only), API key (openai/custom), ports. NO install-dir line.
+printf 'ansproj9\nansns\nansuser\ncustom\nans-custom-model\nhttps://ans.example.com/v1\nsk-answers-key\n9300\n9390\n' \
   > /tmp/setup-dryrun.answers
 set +e
 (
@@ -560,6 +606,7 @@ set +e
 RC9=$?
 set -e
 if [ "${RC9}" -eq 0 ] \
+  && grep -q '^COMPOSE_PROJECT_NAME=ansproj9$' "${T9}/.env" \
   && grep -q '^HONEY_NS=ansns$' "${T9}/.env" \
   && grep -q '^HONEY_USER=ansuser$' "${T9}/.env" \
   && grep -q '^HD_AI_MODEL=ans-custom-model$' "${T9}/.env" \
@@ -847,7 +894,7 @@ rm -rf "${TSRC16B}" "${TPRE16B}" "${S16B}"
 # ---------------------------------------------------------------------------
 # 17a. answers-file openai writes the model answer
 T17A="$(fresh_tree)"; S17A="$(mktemp -d)"
-printf 'ansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
+printf 'proj17a\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
 set +e
 (
   cd "${T17A}"
@@ -858,7 +905,7 @@ set +e
 ) >/tmp/setup-dryrun.17a.out 2>&1
 RC17A=$?
 set -e
-if [ "${RC17A}" -eq 0 ] && grep -q '^HD_AI_MODEL=ft:gpt-4o:org:custom$' "${T17A}/.env"; then
+if [ "${RC17A}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17a$' "${T17A}/.env" && grep -q '^HD_AI_MODEL=ft:gpt-4o:org:custom$' "${T17A}/.env"; then
   ok "model matrix: answers-file openai model line written (ft:gpt-4o:org:custom)"
 else
   bad "model matrix 17a rc=${RC17A}:"; tail -5 /tmp/setup-dryrun.17a.out >&2 || true
@@ -867,7 +914,7 @@ rm -rf "${T17A}" "${S17A}"
 
 # 17b. answers-file EMPTY model line = accept default -> pin written
 T17B="$(fresh_tree)"; S17B="$(mktemp -d)"
-printf 'ansns\nansuser\nopenai\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17b
+printf 'proj17b\nansns\nansuser\nopenai\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17b
 set +e
 (
   cd "${T17B}"
@@ -878,7 +925,7 @@ set +e
 ) >/tmp/setup-dryrun.17b.out 2>&1
 RC17B=$?
 set -e
-if [ "${RC17B}" -eq 0 ] && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${T17B}/.env"; then
+if [ "${RC17B}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17b$' "${T17B}/.env" && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${T17B}/.env"; then
   ok "model matrix: empty model line in the answers file -> default pin written"
 else
   bad "model matrix 17b rc=${RC17B}:"; tail -5 /tmp/setup-dryrun.17b.out >&2 || true
@@ -887,7 +934,7 @@ rm -rf "${T17B}" "${S17B}"
 
 # 17c. skip consumes NO model line (and none is written)
 T17C="$(fresh_tree)"; S17C="$(mktemp -d)"
-printf 'ansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17c
+printf 'proj17c\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17c
 set +e
 (
   cd "${T17C}"
@@ -898,7 +945,7 @@ set +e
 ) >/tmp/setup-dryrun.17c.out 2>&1
 RC17C=$?
 set -e
-if [ "${RC17C}" -eq 0 ] && ! grep -q '^HD_AI_MODEL=' "${T17C}/.env"; then
+if [ "${RC17C}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17c$' "${T17C}/.env" && ! grep -q '^HD_AI_MODEL=' "${T17C}/.env"; then
   ok "model matrix: skip consumes no model line; none written"
 else
   bad "model matrix 17c rc=${RC17C}:"; tail -5 /tmp/setup-dryrun.17c.out >&2 || true
@@ -908,7 +955,7 @@ rm -rf "${T17C}" "${S17C}"
 # 17d. skip + non-empty HD_AI_MODEL env -> override written (passthrough wins)
 T17D="$(fresh_tree)"; S17D="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-override\n' > "${T17D}/.env"
-printf 'ansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17d
+printf 'proj17d\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17d
 set +e
 (
   cd "${T17D}"
@@ -919,7 +966,7 @@ set +e
 ) >/tmp/setup-dryrun.17d.out 2>&1
 RC17D=$?
 set -e
-if [ "${RC17D}" -eq 0 ] && grep -q '^HD_AI_MODEL=custom-override$' "${T17D}/.env"; then
+if [ "${RC17D}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17d$' "${T17D}/.env" && grep -q '^HD_AI_MODEL=custom-override$' "${T17D}/.env"; then
   ok "model matrix: skip + non-empty HD_AI_MODEL -> override written (passthrough wins over all providers)"
 else
   bad "model matrix 17d rc=${RC17D}:"; tail -5 /tmp/setup-dryrun.17d.out >&2 || true
@@ -929,7 +976,7 @@ rm -rf "${T17D}" "${S17D}"
 # 17e. skip + HD_AI_MODEL= (explicit empty) + existing override -> line REMOVED
 T17E="$(fresh_tree)"; S17E="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-override\n' > "${T17E}/.env"
-printf 'ansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17e
+printf 'proj17e\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17e
 set +e
 (
   cd "${T17E}"
@@ -940,7 +987,7 @@ set +e
 ) >/tmp/setup-dryrun.17e.out 2>&1
 RC17E=$?
 set -e
-if [ "${RC17E}" -eq 0 ] && ! grep -q '^HD_AI_MODEL=' "${T17E}/.env"; then
+if [ "${RC17E}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17e$' "${T17E}/.env" && ! grep -q '^HD_AI_MODEL=' "${T17E}/.env"; then
   ok "model matrix: skip + HD_AI_MODEL= (explicit-empty) removes an existing override line"
 else
   bad "model matrix 17e rc=${RC17E}:"; tail -5 /tmp/setup-dryrun.17e.out >&2 || true
@@ -951,7 +998,7 @@ rm -rf "${T17E}" "${S17E}"
 #      is SKIPPED and the existing override is NOT kept (line removed)
 T17F="$(fresh_tree)"; S17F="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-pin\n' > "${T17F}/.env"
-printf 'ansns\nansuser\nopenai\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17f
+printf 'proj17f\nansns\nansuser\nopenai\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17f
 set +e
 (
   cd "${T17F}"
@@ -962,7 +1009,7 @@ set +e
 ) >/tmp/setup-dryrun.17f.out 2>&1
 RC17F=$?
 set -e
-if [ "${RC17F}" -eq 0 ] && ! grep -q '^HD_AI_MODEL=' "${T17F}/.env"; then
+if [ "${RC17F}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17f$' "${T17F}/.env" && ! grep -q '^HD_AI_MODEL=' "${T17F}/.env"; then
   ok "model matrix: HD_AI_MODEL= (explicit-empty) + openai skips the question and does NOT re-keep the override"
 else
   bad "model matrix 17f rc=${RC17F}:"; tail -5 /tmp/setup-dryrun.17f.out >&2 || true
@@ -983,7 +1030,7 @@ rm -rf "${T17G}" "${S17G}"
 # line (e.g. the port 9300, which would otherwise validate as a model string)
 # nor re-pin. The run exits 1 ON THE MODEL, before any .env write.
 T17H="$(fresh_tree)"; S17H="$(mktemp -d)"
-printf 'ansns\nansuser\nopenai\nbad model\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
+printf 'proj17h\nansns\nansuser\nopenai\nbad model\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
 set +e
 (
   cd "${T17H}" && env -i HOME="${HOME}" PATH="${PATH}" \
@@ -1053,8 +1100,8 @@ if command -v python3 >/dev/null 2>&1; then
   (
     cd "${T17K}" && HD_STATE_DIR="${S17K}" \
     python3 "${HERE}/test/pty-helper.py" --on-disk \
-      "${T17K}/scripts/setup.sh" "Vault KV namespace" \
-      ansns ansuser openai "bad model" 9300 9390 -- --dry-run
+      "${T17K}/scripts/setup.sh" "Compose project name" \
+      projname ansns ansuser openai "bad model" 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.17k.out 2>&1
   RC17K=$?
   set -e
@@ -1081,7 +1128,7 @@ fi
 # provider openai + the VALID model gpt-valid. Without the reset this rc was 1
 # dying on the model; with it the run completes and writes HD_AI_MODEL=gpt-valid.
 T17L="$(fresh_tree)"; S17L="$(mktemp -d)"
-printf 'bad ns one\nbad ns two\nbad ns three\nbad user one\nbad user two\nbad user three\nopenai\ngpt-valid\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17l
+printf 'proj17l\nbad ns one\nbad ns two\nbad ns three\nbad user one\nbad user two\nbad user three\nopenai\ngpt-valid\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17l
 set +e
 (
   cd "${T17L}"
@@ -1093,6 +1140,7 @@ set +e
 RC17L=$?
 set -e
 if [ "${RC17L}" -eq 0 ] \
+  && grep -q '^COMPOSE_PROJECT_NAME=proj17l$' "${T17L}/.env" \
   && grep -q '^HD_AI_MODEL=gpt-valid$' "${T17L}/.env" \
   && ! grep -q "invalid HD_AI_MODEL" /tmp/setup-dryrun.17l.out; then
   ok "model matrix: valid model never dies after invalid EARLIER answers (cross-contamination regression; HD_AI_MODEL=gpt-valid written)"
@@ -1145,7 +1193,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_INSTALL_DIR HOME="${PH19A}" HD_STATE_DIR="${S19A}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "" ansns ansuser openai modeltest sk-key-pty 9300 9390 -- --dry-run \
+        "" projname19a ansns ansuser openai modeltest sk-key-pty 9300 9390 -- --dry-run \
   ) >/tmp/setup-dryrun.19a.out 2>&1
   RC19A=$?
   set -e
@@ -1174,7 +1222,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_INSTALL_DIR HOME="${TH19B}" HD_STATE_DIR="${S19B}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "~" ansns ansuser openai modeltest2 sk-key-pty2 9301 9391 -- --dry-run \
+        "~" projname19b ansns ansuser openai modeltest2 sk-key-pty2 9301 9391 -- --dry-run \
   ) >/tmp/setup-dryrun.19b.out 2>&1
   RC19B=$?
   set -e
@@ -1234,14 +1282,27 @@ rm -rf "${T20}" "${TH20}" "${S20}" "${CWD20}"
 F3_STUB_DIR="$(mktemp -d /tmp/setup-dryrun.stub.XXXXXX)"
 cat > "${F3_STUB_DIR}/docker" <<'F3STUB'
 #!/usr/bin/env bash
-# Fake docker stub - answers ONLY setup.sh's project/state consistency guard.
-# Never placed on PATH outside the F3 test subshells below.
+# Fake docker stub - answers EXACTLY the probes guard_project_state_consistency
+# makes (plus the preflight's `docker compose version` / `docker info`), so the
+# guard is exercised as REAL (F3.3 gate satisfied) in this hermetic no-docker
+# sandbox instead of silently skipping. Driven by $DOCKER_STUB_STATE_FILE:
+#   RUNNING <project>  -> `compose ... -p <project> ps --status running`
+#                         prints the four service container ids
+#   VISIBLE <volume>   -> `docker volume inspect <volume>` succeeds
+# Every resolved probe is APPENDED to $DOCKER_STUB_LOG (env; devnull default):
+#   -p <project>       (one per `compose ... -p <p> ps ...` invocation)
+#   volume <volume>    (one per `docker volume inspect <volume>`)
+# so tests can prove the guard REALLY probed the expected effective name
+# (a vacuous pass - e.g. a skipped guard or the docker-missing skip-with-warn -
+# fails the test).
 STATE="${DOCKER_STUB_STATE_FILE:-/dev/null}"
+LOG="${DOCKER_STUB_LOG:-/dev/null}"
 if [ "$1" = "compose" ] && [ "$2" = "version" ]; then
   echo "Docker Compose version v2"
   exit 0
 fi
 if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  printf 'volume %s\n' "$3" >> "${LOG}"
   if [ -f "${STATE}" ] && grep -q "^VISIBLE ${3}$" "${STATE}"; then
     exit 0
   fi
@@ -1254,6 +1315,9 @@ if [ "$1" = "compose" ]; then
     if [ "${prev}" = "-p" ]; then proj="${a}"; fi
     prev="${a}"
   done
+  if [ -n "${proj}" ]; then
+    printf -- '-p %s\n' "${proj}" >> "${LOG}"
+  fi
   if [ -n "${proj}" ] && [ -f "${STATE}" ] && grep -q "^RUNNING ${proj}$" "${STATE}"; then
     printf '%s\n' "${proj}-daemon-1" "${proj}-ui-1" "${proj}-valkey-1" "${proj}-vault-1"
   fi
@@ -1263,21 +1327,23 @@ exit 0
 F3STUB
 chmod +x "${F3_STUB_DIR}/docker"
 
-# F3a. Collision DIE: fresh (never-provisioned) target + a running
-#      default-project stack (stub: RUNNING honey-starter + the
-#      honey-starter_vault-file volume). This is EXACTLY the user's test3 bug:
-#      test3 was a fresh target whose state dir had NO artifacts while another
-#      deployment was up under the shared default project. The guard must die
-#      fail-fast (rc != 0) with the install dir + project + remedies, BEFORE
-#      any .env write / delegation.
+# F3a (rewritten — deliberate reuse): fresh target + env COMPOSE_PROJECT_NAME
+#      =honey-starter (deliberately REUSING the shared default project) + stub
+#      RUNNING honey-starter + VISIBLE honey-starter_vault-file -> the pre-guard
+#      probes the EFFECTIVE preliminary name (setup-time env-first) and DIES
+#      naming honey-starter, no .env (the test3 repro). The stub log must prove
+#      the guard REALLY probed `-p honey-starter` (no vacuous pass).
 TF3A="$(fresh_tree)"; SF3A="$(mktemp -d)"
 printf 'RUNNING honey-starter\nVISIBLE honey-starter_vault-file\n' > /tmp/setup-dryrun.f3a.state
+: > /tmp/setup-dryrun.f3a.log
 set +e
 (
   cd "${TF3A}"
   env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3a.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.f3a.log \
     HONEY_STARTER_INSTALL_DIR="${TF3A}" HONEY_STARTER_NONINTERACTIVE=1 \
+    COMPOSE_PROJECT_NAME=honey-starter \
     HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3A}" \
     bash scripts/setup.sh --dry-run
@@ -1287,27 +1353,30 @@ set -e
 if [ "${RC3A}" -ne 0 ] \
   && grep -q "refusing to set up a NEW instance" /tmp/setup-dryrun.f3a.out \
   && grep -q "project 'honey-starter'" /tmp/setup-dryrun.f3a.out \
-  && grep -Fq "${TF3A}" /tmp/setup-dryrun.f3a.out \
-  && grep -q "COMPOSE_PROJECT_NAME" /tmp/setup-dryrun.f3a.out \
   && grep -q "unseal_key" /tmp/setup-dryrun.f3a.out \
-  && [ ! -f "${TF3A}/.env" ]; then
-  ok "F3 guard: fresh target + running default-project stack (stub) DIES with install-dir/project/ports guidance, no .env (test3 repro)"
+  && [ ! -f "${TF3A}/.env" ] \
+  && [ -s /tmp/setup-dryrun.f3a.log ] \
+  && grep -q -- "-p honey-starter" /tmp/setup-dryrun.f3a.log; then
+  ok "F3a (rewritten): fresh + env COMPOSE_PROJECT_NAME=honey-starter + running default stack DIES naming honey-starter, no .env (log proved -p probe)"
 else
-  bad "F3 collision rc=${RC3A} (want die + remedy + no .env):"
+  bad "F3 collision rc=${RC3A} (want die + -p honey-starter probe + no .env):"
   sed 's/^/    | /' /tmp/setup-dryrun.f3a.out >&2 || true
 fi
 rm -rf "${TF3A}" "${SF3A}"
+
 
 # F3b. Clean project/state: stub reports NO running containers and NO
 #      vault-file volume -> the guard must NOT fire; the dry-run proceeds and
 #      writes .env exactly as before.
 TF3B="$(fresh_tree)"; SF3B="$(mktemp -d)"
 printf '' > /tmp/setup-dryrun.f3b.state
+: > /tmp/setup-dryrun.f3b.log
 set +e
 (
   cd "${TF3B}"
   env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3b.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.f3b.log \
     HONEY_STARTER_INSTALL_DIR="${TF3B}" HONEY_STARTER_NONINTERACTIVE=1 \
     HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3B}" \
@@ -1315,7 +1384,7 @@ set +e
 ) >/tmp/setup-dryrun.f3b.out 2>&1
 RC3B=$?
 set -e
-if [ "${RC3B}" -eq 0 ] && [ -f "${TF3B}/.env" ]; then
+if [ "${RC3B}" -eq 0 ] && [ -f "${TF3B}/.env" ] && [ -s /tmp/setup-dryrun.f3b.log ]; then
   ok "F3 guard: clean project/state (stub: nothing running, no vault volume) PROCEEDS and writes .env"
 else
   bad "F3 clean rc=${RC3B} (want rc 0 + .env):"
@@ -1323,34 +1392,41 @@ else
 fi
 rm -rf "${TF3B}" "${SF3B}"
 
-# F3c. Fresh-target MATERIALIZE while a default-project stack is running ->
-#      the SAME clear die fires after the copy (fresh state dir is guaranteed
-#      empty), before any .env write / delegation at the target.
-TF3C="$(fresh_tree)"; SF3C="$(mktemp -d)"; NEW3C="$(mktemp -d)/new-inst"
-printf 'RUNNING honey-starter\n' > /tmp/setup-dryrun.f3c.state
+# F3c (rewritten — derived-collision): fresh target, NO env -> the pre-guard
+#      probes the preliminary = the DERIVED hs-<basename>-<hash8> of INSTALL_DIR,
+#      computed via the SHARED derived_proj() helper (no inline copy); stub
+#      RUNNING <derived> -> die, no .env/state; log asserts `-p <derived>`
+#      (the probe really ran).
+TF3C="$(fresh_tree)"; SF3C="$(mktemp -d)"
+DERIVED3C="$(derived_proj "${TF3C}")"
+printf 'RUNNING %s\n' "${DERIVED3C}" > /tmp/setup-dryrun.f3c.state
+: > /tmp/setup-dryrun.f3c.log
 set +e
 (
   cd "${TF3C}"
   env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3c.state \
-    HONEY_STARTER_NONINTERACTIVE=1 \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.f3c.log \
+    HONEY_STARTER_INSTALL_DIR="${TF3C}" HONEY_STARTER_NONINTERACTIVE=1 \
     HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3C}" \
-    bash scripts/setup.sh "${NEW3C}" --dry-run
+    bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.f3c.out 2>&1
 RC3C=$?
 set -e
 if [ "${RC3C}" -ne 0 ] \
   && grep -q "refusing to set up a NEW instance" /tmp/setup-dryrun.f3c.out \
-  && grep -q "project 'honey-starter'" /tmp/setup-dryrun.f3c.out \
-  && [ ! -f "${NEW3C}/.env" ] \
-  && [ ! -e "${NEW3C}/.honey-starter" ]; then
-  ok "F3 guard: fresh-target MATERIALIZE (stub: default-project stack running) DIES early; no .env / state dir at the target"
+  && grep -Fq "project '${DERIVED3C}'" /tmp/setup-dryrun.f3c.out \
+  && [ ! -f "${TF3C}/.env" ] \
+  && [ -s /tmp/setup-dryrun.f3c.log ] \
+  && grep -q -- "-p ${DERIVED3C}" /tmp/setup-dryrun.f3c.log; then
+  ok "F3c (rewritten): fresh target + running DERIVED project (hs-...-hash8) DIES, no .env (log proved -p <derived>; shared derived_proj)"
 else
-  bad "F3 materialize-collision rc=${RC3C} (want die + no .env):"
+  bad "F3 derived-collision rc=${RC3C} (want die + -p derived):"
   sed 's/^/    | /' /tmp/setup-dryrun.f3c.out >&2 || true
 fi
-rm -rf "${TF3C}" "${SF3C}" "$(dirname "${NEW3C}")"
+rm -rf "${TF3C}" "${SF3C}"
+
 
 # F3d1. Manage-in-place with state artifacts present (root_token) + stub
 #       reporting the default project running -> NO false die: an
@@ -1360,11 +1436,13 @@ TF3D1="$(fresh_tree)"; SF3D1="$(mktemp -d)"
 mkdir -p "${SF3D1}"
 printf 'root-token-dummy\n' > "${SF3D1}/root_token"
 printf 'RUNNING honey-starter\n' > /tmp/setup-dryrun.f3d1.state
+: > /tmp/setup-dryrun.f3d1.log
 set +e
 (
   cd "${TF3D1}"
   env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3d1.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.f3d1.log \
     HONEY_STARTER_INSTALL_DIR="${TF3D1}" HONEY_STARTER_NONINTERACTIVE=1 \
     HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3D1}" \
@@ -1386,11 +1464,13 @@ rm -rf "${TF3D1}" "${SF3D1}"
 #       hard-coded default, so an unrelated orphan volume cannot trip it.
 TF3D2="$(fresh_tree)"; SF3D2="$(mktemp -d)"
 printf 'RUNNING honey-starter\n' > /tmp/setup-dryrun.f3d2.state
+: > /tmp/setup-dryrun.f3d2.log
 set +e
 (
   cd "${TF3D2}"
   env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3d2.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.f3d2.log \
     COMPOSE_PROJECT_NAME=myotherproject \
     HONEY_STARTER_INSTALL_DIR="${TF3D2}" HONEY_STARTER_NONINTERACTIVE=1 \
     HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
@@ -1399,8 +1479,9 @@ set +e
 ) >/tmp/setup-dryrun.f3d2.out 2>&1
 RC3D2=$?
 set -e
-if [ "${RC3D2}" -eq 0 ] && [ -f "${TF3D2}/.env" ]; then
-  ok "F3 guard: distinct COMPOSE_PROJECT_NAME (fresh state) does NOT die on the default project's running stack / volume (project-scoped probe)"
+if [ "${RC3D2}" -eq 0 ] && [ -f "${TF3D2}/.env" ] && [ -s /tmp/setup-dryrun.f3d2.log ] \
+  && grep -q '^COMPOSE_PROJECT_NAME=myotherproject$' "${TF3D2}/.env"; then
+  ok "F3 guard: distinct COMPOSE_PROJECT_NAME (fresh state) does NOT die on the default project's running stack / volume (project-scoped probe; env name persisted)"
 else
   bad "F3 distinct-project rc=${RC3D2} (want rc 0 + .env):"
   sed 's/^/    | /' /tmp/setup-dryrun.f3d2.out >&2 || true
@@ -1408,6 +1489,540 @@ fi
 rm -rf "${TF3D2}" "${SF3D2}"
 
 echo ""
+# ---------------------------------------------------------------------------
+# P-series. Phase 6 — per-instance COMPOSE_PROJECT_NAME persisted in .env.
+# Every probe test REQUIRES: stub on PATH AND a non-empty DOCKER_STUB_LOG with
+# the expected -p probe (a vacuous pass — a docker-missing skip, an early
+# return, or a wrong name — FAILS the test). P1-P10/P14-P16 are hermetic
+# answers/env/--dry-run; P11-P13 are pty (python3-gated; skipped cleanly when
+# python3 is unavailable).
+# ---------------------------------------------------------------------------
+
+# P1. fresh NI env-unset -> the derived hs-...-hash8 is written; 2nd run is
+#     byte-identical (deterministic, idempotent); the guard probed -p <derived>.
+TP1="$(fresh_tree)"; SP1="$(mktemp -d)"
+: > /tmp/setup-dryrun.p1.log; printf '' > /tmp/setup-dryrun.p1.state
+DERIVED1="$(derived_proj "${TP1}")"
+set +e
+(
+  cd "${TP1}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p1.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p1.log \
+    HONEY_STARTER_INSTALL_DIR="${TP1}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP1}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p1a.out 2>&1
+RC1A=$?
+set -e
+cp "${TP1}/.env" /tmp/setup-dryrun.p1.env1 2>/dev/null || true
+set +e
+(
+  cd "${TP1}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p1.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p1.log \
+    HONEY_STARTER_INSTALL_DIR="${TP1}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP1}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p1b.out 2>&1
+RC1B=$?
+set -e
+if [ "${RC1A}" -eq 0 ] && [ "${RC1B}" -eq 0 ] \
+  && grep -q "^COMPOSE_PROJECT_NAME=${DERIVED1}$" "${TP1}/.env" \
+  && diff -q /tmp/setup-dryrun.p1.env1 "${TP1}/.env" >/dev/null 2>&1 \
+  && [ -s /tmp/setup-dryrun.p1.log ] \
+  && grep -q -- "-p ${DERIVED1}" /tmp/setup-dryrun.p1.log; then
+  ok "P1: fresh NI env-unset writes the derived hs-...-hash8; 2nd run byte-identical (log proved -p <derived>)"
+else
+  bad "P1 rc=${RC1A}/${RC1B} (want derived line + idempotent + -p probe):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p1a.out >&2 || true
+fi
+rm -rf "${TP1}" "${SP1}"
+
+# P2. fresh NI env COMPOSE_PROJECT_NAME=myproj -> written; guard probed -p myproj.
+TP2="$(fresh_tree)"; SP2="$(mktemp -d)"
+: > /tmp/setup-dryrun.p2.log; printf '' > /tmp/setup-dryrun.p2.state
+set +e
+(
+  cd "${TP2}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p2.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p2.log \
+    HONEY_STARTER_INSTALL_DIR="${TP2}" HONEY_STARTER_NONINTERACTIVE=1 \
+    COMPOSE_PROJECT_NAME=myproj \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP2}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p2.out 2>&1
+RC2=$?
+set -e
+if [ "${RC2}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=myproj$' "${TP2}/.env" \
+  && [ -s /tmp/setup-dryrun.p2.log ] && grep -q -- "-p myproj" /tmp/setup-dryrun.p2.log; then
+  ok "P2: fresh NI env COMPOSE_PROJECT_NAME=myproj written; log proved -p myproj"
+else
+  bad "P2 rc=${RC2} (want myproj written + -p myproj probe):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p2.out >&2 || true
+fi
+rm -rf "${TP2}" "${SP2}"
+
+# P3. fresh answers-file leading line ansproj -> written (post-guard re-probe
+#     proves the answered name was probed).
+TP3="$(fresh_tree)"; SP3="$(mktemp -d)"
+printf 'ansproj\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p3.answers
+: > /tmp/setup-dryrun.p3.log; printf '' > /tmp/setup-dryrun.p3.state
+set +e
+(
+  cd "${TP3}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p3.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p3.log \
+    HONEY_STARTER_INSTALL_DIR="${TP3}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.p3.answers HD_STATE_DIR="${SP3}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p3.out 2>&1
+RC3=$?
+set -e
+if [ "${RC3}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=ansproj$' "${TP3}/.env" \
+  && [ -s /tmp/setup-dryrun.p3.log ] && grep -q -- "-p ansproj" /tmp/setup-dryrun.p3.log; then
+  ok "P3: answers-file leading line ansproj written; post-guard probed -p ansproj"
+else
+  bad "P3 rc=${RC3} (want ansproj + -p ansproj probe):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p3.out >&2 || true
+fi
+rm -rf "${TP3}" "${SP3}"
+
+# P4. fresh answers-file EMPTY leading line -> the derived default is written.
+TP4="$(fresh_tree)"; SP4="$(mktemp -d)"
+printf '\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p4.answers
+: > /tmp/setup-dryrun.p4.log; printf '' > /tmp/setup-dryrun.p4.state
+DERIVED4="$(derived_proj "${TP4}")"
+set +e
+(
+  cd "${TP4}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p4.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p4.log \
+    HONEY_STARTER_INSTALL_DIR="${TP4}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.p4.answers HD_STATE_DIR="${SP4}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p4.out 2>&1
+RC4=$?
+set -e
+if [ "${RC4}" -eq 0 ] && grep -q "^COMPOSE_PROJECT_NAME=${DERIVED4}$" "${TP4}/.env" \
+  && [ -s /tmp/setup-dryrun.p4.log ] && grep -q -- "-p ${DERIVED4}" /tmp/setup-dryrun.p4.log; then
+  ok "P4: answers-file empty leading line -> derived default written (log proved -p <derived>)"
+else
+  bad "P4 rc=${RC4} (want derived written):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p4.out >&2 || true
+fi
+rm -rf "${TP4}" "${SP4}"
+
+# P5. fresh NI invalid env name (uppercase/dot) -> dies with the charset
+#     message; no .env (single consolidated check).
+TP5="$(fresh_tree)"; SP5="$(mktemp -d)"
+set +e
+(
+  cd "${TP5}" && HONEY_STARTER_INSTALL_DIR="${TP5}" HONEY_STARTER_NONINTERACTIVE=1 \
+  COMPOSE_PROJECT_NAME='Bad.Name' \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP5}" \
+  bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p5.out 2>&1
+RC5=$?
+set -e
+if [ "${RC5}" -eq 1 ] && grep -q "invalid COMPOSE_PROJECT_NAME" /tmp/setup-dryrun.p5.out \
+  && [ ! -f "${TP5}/.env" ]; then
+  ok "P5: invalid env name (NI) DIES with the charset message; no .env"
+else
+  bad "P5 rc=${RC5} (want die + charset message + no .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p5.out >&2 || true
+fi
+rm -rf "${TP5}" "${SP5}"
+
+# P6. fresh answers-file INVALID leading line -> dies on the project (the
+#     charset message), no .env.
+TP6="$(fresh_tree)"; SP6="$(mktemp -d)"
+printf 'BadProj!\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p6.answers
+set +e
+(
+  cd "${TP6}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${TP6}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.p6.answers HD_STATE_DIR="${SP6}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p6.out 2>&1
+RC6=$?
+set -e
+if [ "${RC6}" -eq 1 ] && grep -q "invalid COMPOSE_PROJECT_NAME" /tmp/setup-dryrun.p6.out \
+  && [ ! -f "${TP6}/.env" ]; then
+  ok "P6: answers-file invalid leading line DIES on the project (rc 1, no .env)"
+else
+  bad "P6 rc=${RC6} (want the invalid-project die + no .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p6.out >&2 || true
+fi
+rm -rf "${TP6}" "${SP6}"
+
+# P7. manage + persisted persistedfoo + env unset -> line kept, never re-asked /
+#     re-derived (the artifacts early-return means no probe: log stays EMPTY).
+TP7="$(fresh_tree)"; SP7="$(mktemp -d)"; mkdir -p "${SP7}"
+printf 'root-token-dummy\n' > "${SP7}/root_token"
+printf 'PROVISION_NS=starter\nPROVISION_USER=admin\n' > "${SP7}/provision.env"
+printf 'COMPOSE_PROJECT_NAME=persistedfoo\n' > "${TP7}/.env"
+: > /tmp/setup-dryrun.p7.log; printf '' > /tmp/setup-dryrun.p7.state
+set +e
+(
+  cd "${TP7}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p7.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p7.log \
+    HONEY_STARTER_INSTALL_DIR="${TP7}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP7}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p7.out 2>&1
+RC7=$?
+set -e
+if [ "${RC7}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=persistedfoo$' "${TP7}/.env" \
+  && ! grep -q "Compose project name (COMPOSE_PROJECT_NAME)" /tmp/setup-dryrun.p7.out; then
+  ok "P7: manage + persisted name + env unset -> line KEPT, never re-asked/re-derived"
+else
+  bad "P7 rc=${RC7} (want kept line, no re-ask):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p7.out >&2 || true
+fi
+rm -rf "${TP7}" "${SP7}"
+
+# P8. manage + NO persisted line + env unset -> NO COMPOSE_PROJECT_NAME= after
+#     re-run (lib.sh default honey-starter applies by omission; migration-safe).
+TP8="$(fresh_tree)"; SP8="$(mktemp -d)"; mkdir -p "${SP8}"
+printf 'root-token-dummy\n' > "${SP8}/root_token"
+printf 'PROVISION_NS=starter\nPROVISION_USER=admin\n' > "${SP8}/provision.env"
+: > /tmp/setup-dryrun.p8.log; printf '' > /tmp/setup-dryrun.p8.state
+set +e
+(
+  cd "${TP8}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p8.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p8.log \
+    HONEY_STARTER_INSTALL_DIR="${TP8}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP8}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p8.out 2>&1
+RC8=$?
+set -e
+if [ "${RC8}" -eq 0 ] && ! grep -q '^COMPOSE_PROJECT_NAME=' "${TP8}/.env"; then
+  ok "P8: manage + no persisted line + env unset -> ABSENT after re-run (default by omission)"
+else
+  bad "P8 rc=${RC8} (want no COMPOSE_PROJECT_NAME= line):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p8.out >&2 || true
+  grep '^COMPOSE_PROJECT_NAME=' "${TP8}/.env" 2>/dev/null | sed 's/^/    | /' >&2 || true
+fi
+rm -rf "${TP8}" "${SP8}"
+
+# P9. manage ADOPT (Error-2 regression): artifacts + env hs-copy2 + NOTHING
+#     persisted + NI -> rc 0, .env GAINS the line, no confirm/warn; the guard
+#     probed the adopted name (-p hs-copy2) with RENAMING=1.
+TP9="$(fresh_tree)"; SP9="$(mktemp -d)"; mkdir -p "${SP9}"
+printf 'root-token-dummy\n' > "${SP9}/root_token"
+printf 'PROVISION_NS=starter\nPROVISION_USER=admin\n' > "${SP9}/provision.env"
+: > /tmp/setup-dryrun.p9.log; printf '' > /tmp/setup-dryrun.p9.state
+set +e
+(
+  cd "${TP9}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p9.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p9.log \
+    HONEY_STARTER_INSTALL_DIR="${TP9}" HONEY_STARTER_NONINTERACTIVE=1 \
+    COMPOSE_PROJECT_NAME=hs-copy2 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9100 HD_UI_HOST_PORT=8190 HD_STATE_DIR="${SP9}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p9.out 2>&1
+RC9X=$?
+set -e
+if [ "${RC9X}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=hs-copy2$' "${TP9}/.env" \
+  && ! grep -q "Continue with the change" /tmp/setup-dryrun.p9.out \
+  && [ -s /tmp/setup-dryrun.p9.log ] && grep -q -- "-p hs-copy2" /tmp/setup-dryrun.p9.log; then
+  ok "P9: env-with-nothing-persisted ADOPTED silently (rc 0, .env gains hs-copy2, no confirm; -p hs-copy2 probed)"
+else
+  bad "P9 adopt rc=${RC9X} (want silent adopt + -p hs-copy2 probe):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p9.out >&2 || true
+fi
+rm -rf "${TP9}" "${SP9}"
+
+# P10. fresh RAW tree with .env COMPOSE_PROJECT_NAME=rawfoo + env envbar ->
+#      preliminary = envbar (setup-time env-first); stub RUNNING rawfoo only ->
+#      proceeds (probes envbar); .env written envbar.
+TP10="$(fresh_tree)"; SP10="$(mktemp -d)"
+printf 'COMPOSE_PROJECT_NAME=rawfoo\n' > "${TP10}/.env"
+: > /tmp/setup-dryrun.p10.log; printf 'RUNNING rawfoo\n' > /tmp/setup-dryrun.p10.state
+set +e
+(
+  cd "${TP10}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p10.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p10.log \
+    HONEY_STARTER_INSTALL_DIR="${TP10}" HONEY_STARTER_NONINTERACTIVE=1 \
+    COMPOSE_PROJECT_NAME=envbar \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP10}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p10.out 2>&1
+RC10=$?
+set -e
+if [ "${RC10}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=envbar$' "${TP10}/.env" \
+  && [ -s /tmp/setup-dryrun.p10.log ] && grep -q -- "-p envbar" /tmp/setup-dryrun.p10.log \
+  && ! grep -q "refusing to set up" /tmp/setup-dryrun.p10.out; then
+  ok "P10: fresh raw tree .env rawfoo + env envbar -> env wins (preliminary=-p envbar probed; running rawfoo does NOT die)"
+else
+  bad "P10 rc=${RC10} (want envbar written + -p envbar probe):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p10.out >&2 || true
+fi
+rm -rf "${TP10}" "${SP10}"
+
+# P11. B1 false-negative (pty): artifacts + persisted otherproj + env myproj +
+#      stub RUNNING otherproj; respond n -> decline -> the guard re-probes the
+#      KEPT name otherproj -> collision DIE; .env unchanged; log has
+#      -p otherproj, NOT -p myproj.
+if command -v python3 >/dev/null 2>&1; then
+  TP11="$(fresh_tree)"; SP11="$(mktemp -d)"; mkdir -p "${SP11}"
+  printf 'root-token-dummy\n' > "${SP11}/root_token"
+  printf 'PROVISION_NS=ansns\nPROVISION_USER=ansuser\n' > "${SP11}/provision.env"
+  printf 'COMPOSE_PROJECT_NAME=otherproj\nHONEY_NS=ansns\nHONEY_USER=ansuser\nHD_API_HOST_PORT=9300\nHD_UI_HOST_PORT=9390\n' > "${TP11}/.env"
+  printf 'RUNNING otherproj\n' > /tmp/setup-dryrun.p11.state
+  : > /tmp/setup-dryrun.p11.log
+  set +e
+  (
+    cd "${TP11}"
+    env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
+      -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+      DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p11.state \
+      DOCKER_STUB_LOG=/tmp/setup-dryrun.p11.log \
+      COMPOSE_PROJECT_NAME=myproj \
+      HD_STATE_DIR="${SP11}" \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TP11}/scripts/setup.sh" "Continue with the change?" \
+        n ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.p11.out 2>&1
+  RC11=$?
+  set -e
+  if [ "${RC11}" -ne 0 ] \
+    && grep -q "cannot use project 'otherproj'" /tmp/setup-dryrun.p11.out \
+    && grep -q '^COMPOSE_PROJECT_NAME=otherproj$' "${TP11}/.env" \
+    && grep -q -- "-p otherproj" /tmp/setup-dryrun.p11.log \
+    && ! grep -q -- "-p myproj" /tmp/setup-dryrun.p11.log; then
+    ok "P11: decline (n) re-probes the KEPT name -> collision DIES; .env unchanged; log -p otherproj only"
+  else
+    bad "P11 rc=${RC11} (want decline -> probe otherproj -> die):"
+    sed 's/^/    | /' /tmp/setup-dryrun.p11.out >&2 || true
+  fi
+  rm -rf "${TP11}" "${SP11}"
+else
+  ok "P11 SKIPPED (python3 unavailable)"
+fi
+
+# P12. B1 false-positive (pty): same as P11 but stub RUNNING myproj; respond n
+#      -> the guard probes otherproj (FREE) -> proceeds; .env keeps otherproj;
+#      log has -p otherproj, NOT -p myproj (no false die on the env name).
+if command -v python3 >/dev/null 2>&1; then
+  TP12="$(fresh_tree)"; SP12="$(mktemp -d)"; mkdir -p "${SP12}"
+  printf 'root-token-dummy\n' > "${SP12}/root_token"
+  printf 'PROVISION_NS=ansns\nPROVISION_USER=ansuser\n' > "${SP12}/provision.env"
+  printf 'COMPOSE_PROJECT_NAME=otherproj\nHONEY_NS=ansns\nHONEY_USER=ansuser\nHD_API_HOST_PORT=9300\nHD_UI_HOST_PORT=9390\n' > "${TP12}/.env"
+  printf 'RUNNING myproj\n' > /tmp/setup-dryrun.p12.state
+  : > /tmp/setup-dryrun.p12.log
+  set +e
+  (
+    cd "${TP12}"
+    env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
+      -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+      DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p12.state \
+      DOCKER_STUB_LOG=/tmp/setup-dryrun.p12.log \
+      COMPOSE_PROJECT_NAME=myproj \
+      HD_STATE_DIR="${SP12}" \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TP12}/scripts/setup.sh" "Continue with the change?" \
+        n ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.p12.out 2>&1
+  RC12=$?
+  set -e
+  if [ "${RC12}" -eq 0 ] \
+    && grep -q '^COMPOSE_PROJECT_NAME=otherproj$' "${TP12}/.env" \
+    && grep -q -- "-p otherproj" /tmp/setup-dryrun.p12.log \
+    && ! grep -q -- "-p myproj" /tmp/setup-dryrun.p12.log; then
+    ok "P12: decline (n) probes the KEPT name (otherproj free) -> proceeds; .env keeps otherproj; no false die"
+  else
+    bad "P12 rc=${RC12} (want decline -> probe otherproj -> proceed):"
+    sed 's/^/    | /' /tmp/setup-dryrun.p12.out >&2 || true
+  fi
+  rm -rf "${TP12}" "${SP12}"
+else
+  ok "P12 SKIPPED (python3 unavailable)"
+fi
+
+# P13. rename ACCEPT (pty): respond y -> guard probes myproj (free) -> .env is
+#      WRITTEN with myproj; log -p myproj.
+if command -v python3 >/dev/null 2>&1; then
+  TP13="$(fresh_tree)"; SP13="$(mktemp -d)"; mkdir -p "${SP13}"
+  printf 'root-token-dummy\n' > "${SP13}/root_token"
+  printf 'PROVISION_NS=ansns\nPROVISION_USER=ansuser\n' > "${SP13}/provision.env"
+  printf 'COMPOSE_PROJECT_NAME=otherproj\nHONEY_NS=ansns\nHONEY_USER=ansuser\nHD_API_HOST_PORT=9300\nHD_UI_HOST_PORT=9390\n' > "${TP13}/.env"
+  printf '' > /tmp/setup-dryrun.p13.state
+  : > /tmp/setup-dryrun.p13.log
+  set +e
+  (
+    cd "${TP13}"
+    env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
+      -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+      DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p13.state \
+      DOCKER_STUB_LOG=/tmp/setup-dryrun.p13.log \
+      COMPOSE_PROJECT_NAME=myproj \
+      HD_STATE_DIR="${SP13}" \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TP13}/scripts/setup.sh" "Continue with the change?" \
+        y ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.p13.out 2>&1
+  RC13=$?
+  set -e
+  if [ "${RC13}" -eq 0 ] \
+    && grep -q '^COMPOSE_PROJECT_NAME=myproj$' "${TP13}/.env" \
+    && grep -q -- "-p myproj" /tmp/setup-dryrun.p13.log; then
+    ok "P13: rename ACCEPT (y) -> -p myproj probed (free) -> .env written myproj"
+  else
+    bad "P13 rc=${RC13} (want accept -> write myproj):"
+    sed 's/^/    | /' /tmp/setup-dryrun.p13.out >&2 || true
+  fi
+  rm -rf "${TP13}" "${SP13}"
+else
+  ok "P13 SKIPPED (python3 unavailable)"
+fi
+
+# P14. rename NI DIES: artifacts + persisted otherproj + env myproj +
+#      NONINTERACTIVE=1 -> die with the data-loss message; .env unchanged;
+#      log EMPTY (dies at resolution, before the guard).
+TP14="$(fresh_tree)"; SP14="$(mktemp -d)"; mkdir -p "${SP14}"
+printf 'root-token-dummy\n' > "${SP14}/root_token"
+printf 'PROVISION_NS=starter\nPROVISION_USER=admin\n' > "${SP14}/provision.env"
+printf 'COMPOSE_PROJECT_NAME=otherproj\n' > "${TP14}/.env"
+: > /tmp/setup-dryrun.p14.log; printf '' > /tmp/setup-dryrun.p14.state
+set +e
+(
+  cd "${TP14}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p14.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p14.log \
+    HONEY_STARTER_INSTALL_DIR="${TP14}" HONEY_STARTER_NONINTERACTIVE=1 \
+    COMPOSE_PROJECT_NAME=myproj \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP14}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p14.out 2>&1
+RC14=$?
+set -e
+if [ "${RC14}" -ne 0 ] && grep -q "data loss" /tmp/setup-dryrun.p14.out \
+  && grep -q '^COMPOSE_PROJECT_NAME=otherproj$' "${TP14}/.env" \
+  && [ ! -s /tmp/setup-dryrun.p14.log ]; then
+  ok "P14: env-vs-persisted rename in NI DIES with the data-loss message; .env unchanged; no probe (log empty)"
+else
+  bad "P14 rc=${RC14} (want data-loss die, no probe):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p14.out >&2 || true
+fi
+rm -rf "${TP14}" "${SP14}"
+
+# P15. --update no-warn: artifacts + persisted foo + env bar +
+#      HONEY_STARTER_UPDATE_IN_PROGRESS=1 -> rc 0, .env keeps foo, no
+#      confirm/data-loss warning (env ignored).
+TP15="$(fresh_tree)"; SP15="$(mktemp -d)"; mkdir -p "${SP15}"
+printf 'root-token-dummy\n' > "${SP15}/root_token"
+printf 'PROVISION_NS=starter\nPROVISION_USER=admin\n' > "${SP15}/provision.env"
+printf 'COMPOSE_PROJECT_NAME=foo\n' > "${TP15}/.env"
+: > /tmp/setup-dryrun.p15.log
+set +e
+(
+  cd "${TP15}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/dev/null DOCKER_STUB_LOG=/tmp/setup-dryrun.p15.log \
+    HONEY_STARTER_INSTALL_DIR="${TP15}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_STARTER_UPDATE_IN_PROGRESS=1 COMPOSE_PROJECT_NAME=bar \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP15}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p15.out 2>&1
+RC15=$?
+set -e
+if [ "${RC15}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=foo$' "${TP15}/.env" \
+  && ! grep -q "Continue with the change" /tmp/setup-dryrun.p15.out \
+  && ! grep -q "data loss" /tmp/setup-dryrun.p15.out; then
+  ok "P15: --update ignores COMPOSE_PROJECT_NAME env (keeps persisted foo; no warn/confirm)"
+else
+  bad "P15 rc=${RC15} (want kept foo, no warn):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p15.out >&2 || true
+fi
+rm -rf "${TP15}" "${SP15}"
+
+# P16. post-questionnaire re-probe: fresh answers a DIFFERENT valid name
+#      (typedname) than the derived preliminary. The pre-guard probes the
+#      derived name (free); the post-guard re-probes typedname — and the test
+#      covers BOTH outcomes in ONE check: when typedname is free the run
+#      proceeds and writes it (-p typedname in the log), and when typedname is
+#      RUNNING it dies pre-write, no .env.
+TP16="$(fresh_tree)"; SP16="$(mktemp -d)"
+printf 'typedname\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16.answers
+DERIVED16="$(derived_proj "${TP16}")"
+# Scenario 1: nothing running -> rc 0, .env typedname, log has -p typedname
+: > /tmp/setup-dryrun.p16a.log; printf '' > /tmp/setup-dryrun.p16a.state
+set +e
+(
+  cd "${TP16}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p16a.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p16a.log \
+    HONEY_STARTER_INSTALL_DIR="${TP16}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.p16.answers HD_STATE_DIR="${SP16}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p16a.out 2>&1
+RC16A=$?
+cp "${TP16}/.env" /tmp/setup-dryrun.p16a.env 2>/dev/null || true
+set -e
+# Scenario 2: typedname RUNNING -> die pre-write, no .env
+TP16B="$(fresh_tree)"; SP16B="$(mktemp -d)"
+printf 'typedname\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16b.answers
+: > /tmp/setup-dryrun.p16b.log; printf 'RUNNING typedname\n' > /tmp/setup-dryrun.p16b.state
+set +e
+(
+  cd "${TP16B}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p16b.state \
+    DOCKER_STUB_LOG=/tmp/setup-dryrun.p16b.log \
+    HONEY_STARTER_INSTALL_DIR="${TP16B}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.p16b.answers HD_STATE_DIR="${SP16B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.p16b.out 2>&1
+RC16B=$?
+set -e
+if [ "${RC16A}" -eq 0 ] \
+  && grep -q '^COMPOSE_PROJECT_NAME=typedname$' "${TP16}/.env" \
+  && [ -s /tmp/setup-dryrun.p16a.log ] \
+  && grep -q -- "-p ${DERIVED16}" /tmp/setup-dryrun.p16a.log \
+  && grep -q -- "-p typedname" /tmp/setup-dryrun.p16a.log \
+  && [ "${RC16B}" -ne 0 ] \
+  && [ ! -f "${TP16B}/.env" ] \
+  && grep -q "refusing to set up a NEW instance" /tmp/setup-dryrun.p16b.out \
+  && grep -q -- "-p typedname" /tmp/setup-dryrun.p16b.log; then
+  ok "P16: post-questionnaire re-probe — answers a DIFFERENT name; -p typedname probed free -> written; when typedname runs -> dies pre-write"
+else
+  bad "P16 rc=${RC16A}/${RC16B} (want both re-probe outcomes):"
+  sed 's/^/    | /' /tmp/setup-dryrun.p16a.out >&2 || true
+  sed 's/^/    | /' /tmp/setup-dryrun.p16b.out >&2 || true
+fi
+rm -rf "${TP16}" "${SP16}" "${TP16B}" "${SP16B}"
+
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="
 else

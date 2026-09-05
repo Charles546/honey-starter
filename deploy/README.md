@@ -117,26 +117,39 @@ is a three-branch rule:
    `~` means `$HOME`) — after the fail-fast preflight, before the download.
 
 To run two instances simultaneously, use **separate directories** with distinct
-`HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and export an env-only `COMPOSE_PROJECT_NAME`
-(it is never stored in `.env`; `scripts/lib.sh` defaults it to `honey-starter`).
-A port collision surfaces loudly at `docker compose up` — `start.sh`'s
-best-effort port preflight cannot catch a `COMPOSE_PROJECT_NAME`-scoped
-collision, so pick distinct ports up front.
+`HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and their **own per-instance compose
+project**: `setup.sh` PERSISTS `COMPOSE_PROJECT_NAME` into each instance's
+`.env` (fresh installs get the derived `hs-<basename>-<hash8>`, or whatever
+the questionnaire/env chose). **Runtime precedence is `.env` > exported env >
+`honey-starter`** (`scripts/lib.sh` defaults to `honey-starter` only when
+neither is set). A port collision surfaces loudly at `docker compose up` —
+`start.sh`'s best-effort port preflight cannot catch a
+`COMPOSE_PROJECT_NAME`-scoped collision, so pick distinct ports up front.
 
-**Export the project name, don't just set it.** `COMPOSE_PROJECT_NAME`,
-`HD_API_HOST_PORT` and `HD_UI_HOST_PORT` are per-*process* environment: start
-every `setup.sh` / `start.sh` / `make` invocation for an instance with its own
-values **exported** (not merely assigned on one command line you expect to
-stick). Teardown is scoped per project: `docker compose down -v -p <project>`.
+**Project name on existing instances.** An existing (provisioned) instance is
+**never auto-renamed**: manage reads its persisted `.env` name silently and
+keeps it. An exported `COMPOSE_PROJECT_NAME` with nothing persisted is
+**silently adopted** (and the F3 guard probes the adopted name). An exported
+name that DIFFERS from a persisted value requires an **explicit TTY confirm**:
+changing the project re-initializes Vault — it builds a NEW `<new>_vault-file`
+volume and OVERWRITES `root_token`/`unseal_key` in the state dir, and the old
+`<old>_vault-file` secrets are no longer addressed (**data loss**). To change
+it, first stop the instance (`docker compose -p <old> down -v`) or keep the
+old name; non-interactive runs **die** with this warning instead of
+confirming. `--update` ignores the exported name entirely (keeps the
+persisted/absent value). Teardown is scoped per project:
+`docker compose down -v -p <project>`; `docker compose ls` lists the distinct
+projects.
 
-**Early collision guard.** Because the default project is shared, setting up a
-NEW instance (or a fresh materialized/downloaded target) while another
-deployment is up under the default `honey-starter` project now **dies early**
-in `setup.sh` with this guidance — it can no longer re-attach the other
-deployment's initialized `honey-starter_vault-file` volume (Vault comes back
-sealed) and fail mid-start in `start.sh` on `vault is sealed but
-<fresh state>/unseal_key is missing/empty`. Stop that deployment first, or give
-the new instance its own project + ports, or (if the running stack is this
+**Early collision guard.** The F3 guard probes the EFFECTIVE project name on
+every effective change: setting up a NEW instance (or a fresh
+materialized/downloaded target) while another deployment is up under that
+project (e.g. the shared default `honey-starter`), or renaming/adopting onto
+an occupied project, now **dies early** in `setup.sh` with guidance — it can
+no longer re-attach another deployment's initialized `*_vault-file` volume
+(Vault comes back sealed) and fail mid-start in `start.sh` on `vault is
+sealed but <fresh state>/unseal_key is missing/empty`. Stop that deployment
+first, or choose a distinct project + ports, or (if the running stack is this
 instance's own, re-managing from a new dir) point `HD_STATE_DIR` at the owning
 instance's `.honey-starter`.
 
@@ -171,6 +184,29 @@ target's own `start.sh` runs — safe.
   `make start`. `OPENROUTER_API_KEY` is still accepted in the non-interactive
   env contract; `start.sh` seeds it into Vault harmlessly until the rendered
   agent config points at openrouter.
+
+**Answers-file schema (`HONEY_STARTER_ANSWERS_FILE`, Phase 6 — leading line
+added).** Exact order, one per line:
+
+```
+1  COMPOSE_PROJECT_NAME    (lowercase; empty = accept the derived default)
+2  HONEY_NS
+3  HONEY_USER
+4  HONEY_AI_PROVIDER
+5  HD_AI_MODEL             (openai/custom only; empty = pin default)
+6  HD_AI_BASE_URL          (custom only)
+7  API key                 (openai/custom; empty = keep/add-later)
+8  HD_API_HOST_PORT
+9  HD_UI_HOST_PORT
+10 final Y/n                (full non-dry runs only)
+```
+
+A fresh (never-provisioned) install consumes the leading project-name line
+(invalid DIES; empty = derived default); a manage-in-place run consumes and
+DISCARDS it (the persisted name is never re-asked / re-derived, and an
+exhausted file never pushes the slot to the missing list). Existing answer
+files MUST gain the leading line (same breakage class as the Phase 5 model
+line).
 
 **`HD_AI_MODEL` (Phase 5 — the AI model question).** For openai/custom,
 setup.sh asks *AI model* with a default of `gpt-5.4-mini` (the pin). Three-way
