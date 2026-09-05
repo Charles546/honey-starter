@@ -97,20 +97,69 @@ installer (`scripts/setup.sh`, Phase 4) is the entry point:
 curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
 ```
 
-The piped copy is a self-contained bootstrap (preflight → download → verify →
-extract into `~/honey-starter` → re-exec); the on-disk copy runs a short
-questionnaire, writes the repo-root `.env` (chmod 600) and delegates to
+The piped copy is a self-contained bootstrap (preflight → resolve the
+install dir → download → verify → extract → re-exec); the on-disk copy runs a
+short questionnaire, writes the repo-root `.env` (chmod 600) and delegates to
 `scripts/start.sh`. See the repository README → *Install in one line* and
 `bash scripts/setup.sh --help`.
+
+**Multiple instances (Phase 5).** The same command SETS UP a NEW instance at a
+given directory or RE-SETS UP (manages) an EXISTING instance. Target selection
+is a three-branch rule:
+
+1. **`<dir>` argument given** — existing instance there: manage it; otherwise
+   set up a NEW instance there.
+2. **no `<dir>`, script inside a tree** — manage that instance in place.
+3. **no `<dir>`, standalone/piped** — `HONEY_STARTER_INSTALL_DIR` (consulted
+   ONLY here) or `~/honey-starter`; interactive shells get the single
+   `Install directory [~/honey-starter]` prompt (shown in its `~/` form
+   whenever it is under `$HOME`; a typed `~/x` expands to `$HOME/x`, and a bare
+   `~` means `$HOME`) — after the fail-fast preflight, before the download.
+
+To run two instances simultaneously, use **separate directories** with distinct
+`HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and export an env-only `COMPOSE_PROJECT_NAME`
+(it is never stored in `.env`; `scripts/lib.sh` defaults it to `honey-starter`).
+A port collision surfaces loudly at `docker compose up` — `start.sh`'s
+best-effort port preflight cannot catch a `COMPOSE_PROJECT_NAME`-scoped
+collision, so pick distinct ports up front.
+
+**Export the project name, don't just set it.** `COMPOSE_PROJECT_NAME`,
+`HD_API_HOST_PORT` and `HD_UI_HOST_PORT` are per-*process* environment: start
+every `setup.sh` / `start.sh` / `make` invocation for an instance with its own
+values **exported** (not merely assigned on one command line you expect to
+stick). Teardown is scoped per project: `docker compose down -v -p <project>`.
+
+**Early collision guard.** Because the default project is shared, setting up a
+NEW instance (or a fresh materialized/downloaded target) while another
+deployment is up under the default `honey-starter` project now **dies early**
+in `setup.sh` with this guidance — it can no longer re-attach the other
+deployment's initialized `honey-starter_vault-file` volume (Vault comes back
+sealed) and fail mid-start in `start.sh` on `vault is sealed but
+<fresh state>/unseal_key is missing/empty`. Stop that deployment first, or give
+the new instance its own project + ports, or (if the running stack is this
+instance's own, re-managing from a new dir) point `HD_STATE_DIR` at the owning
+instance's `.honey-starter`.
+
+**New vs existing.** An existing instance is managed in place: its `.env`
+prefills the questionnaire and its `HONEY_NS`/`HONEY_USER` provision guards
+apply. A non-empty directory that is not a honey-starter tree makes setup.sh die
+"not a honey-starter tree" (never destructive). A fresh target materialized
+from an on-disk run **never inherits `.git/.env/.honey-starter`** — it cannot
+clone the source deployment's secrets/state (intentional; the source tree is
+only ever copied, never moved). If a newer invoked setup.sh manages an older
+target tree, the read-modify-write `.env` writer preserves unknown keys and the
+target's own `start.sh` runs — safe.
 
 **Questionnaire scope.** The interactive AI provider prompt offers **openai**
 (default) | **custom** (an OpenAI-compatible endpoint) | **skip** only:
 
-* `openai` → writes `OPENAI_API_KEY`; leaves `HD_AI_BASE_URL`/`HD_AI_MODEL`
-  unset unless you supply them (the engine falls back to
+* `openai` → writes `OPENAI_API_KEY` + an `HD_AI_MODEL` pin; leaves
+  `HD_AI_BASE_URL` unset unless supplied (the engine falls back to
   `https://api.openai.com/v1` / `gpt-5.4-mini`).
 * `custom` → writes a required, validated `HD_AI_BASE_URL` (http(s)://) plus
-  `OPENAI_API_KEY`; it never silently defaults the base URL.
+  `OPENAI_API_KEY` + an `HD_AI_MODEL` pin; it never silently defaults the base
+  URL (the default `gpt-5.4-mini` may not exist on your endpoint — type your
+  own model when prompted).
 * `skip` → no key/base lines; `start.sh` seeds placeholders; add the key to
   `.env` and re-run later.
 * `openrouter` is **never prompted**. The openrouter *engine* exists in
@@ -122,6 +171,36 @@ questionnaire, writes the repo-root `.env` (chmod 600) and delegates to
   `make start`. `OPENROUTER_API_KEY` is still accepted in the non-interactive
   env contract; `start.sh` seeds it into Vault harmlessly until the rendered
   agent config points at openrouter.
+
+**`HD_AI_MODEL` (Phase 5 — the AI model question).** For openai/custom,
+setup.sh asks *AI model* with a default of `gpt-5.4-mini` (the pin). Three-way
+env semantics:
+
+* `HD_AI_MODEL=<value>` (non-empty) — override written, wins
+  (passthrough, all providers).
+* `HD_AI_MODEL=` (explicitly empty) — definitive **no-pin**: the existing
+  override is not kept, the line is removed, and the question is skipped.
+* `HD_AI_MODEL` unset + openai/custom — the question is asked; Enter / an
+  empty answers-file line / a non-interactive run all accept the default and
+  WRITE `gpt-5.4-mini`.
+* provider `skip` — no question; an existing line is kept when env is unset,
+  removed when explicitly empty, replaced when non-empty.
+
+An **invalid** model (whitespace/control, or characters outside
+`[A-Za-z0-9._:/@+-]`) **dies** regardless of the input source — environment,
+answers file, or a typed answer at the prompt. It is never silently replaced
+by the pin nor by a later line (e.g. a port), so a typo'd model never
+silently becomes `gpt-5.4-mini`.
+
+**Upgrade churn note:** on the first post-upgrade re-run, a fresh openai/custom
+install gains an explicit `HD_AI_MODEL=gpt-5.4-mini` line. This is
+**runtime-identical** — the compose file already injects `HD_AI_MODEL` when
+`.env` leaves it unset. To reach the bare "engine default / no pin", run once
+with `HD_AI_MODEL=` (removes the line) or delete the line by hand; no-pin is not
+sticky — a later run with the env unset re-pins. Quirk (doc only):
+`.env.AI_MODEL` is shared by the openai default engine and the openrouter
+engine (`qwen/qwen3.5-9b` default); in compose `HD_AI_MODEL` is always set, so
+openrouter's own default is already dead.
 
 **Security note.** The AI key exists in `.env` (chmod 600) *only* as a
 provisioning input: `setup.sh` never echoes it (masked in the summary), unsets
