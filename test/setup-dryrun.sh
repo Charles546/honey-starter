@@ -46,6 +46,12 @@
 #     file AND a typed answer (pty); a VALID model NEVER dies (cross-
 #     contamination guard: an invalid EARLIER prompt must not poison the model
 #     block's global flags)
+#   * F3 project/state consistency guard: with a fake `docker` stub on PATH
+#     (satisfying the docker gate), a NEW (artifact-less) instance colliding
+#     with a running default-project stack / vault-file volume DIES early with
+#     the project + ports guidance (no .env, no delegation); a clean project,
+#     an artifact-bearing manage run, and a distinct COMPOSE_PROJECT_NAME all
+#     proceed
 #   * branch-3 directory prompt hermetics (pty): ~/ default display (never the
 #     spilled absolute path), Enter -> re-exec -> branch-2-in-place, bare ~ ->
 #     $HOME at the prompt AND as an on-disk positional
@@ -1213,6 +1219,193 @@ else
   sed 's/^/    | /' /tmp/setup-dryrun.20.out >&2 || true
 fi
 rm -rf "${T20}" "${TH20}" "${S20}" "${CWD20}"
+
+# ---------------------------------------------------------------------------
+# F3. Project/state consistency guard (scripts/setup.sh's early collision
+#     die). Uses a fake `docker` stub on PATH that answers EXACTLY the probes
+#     guard_project_state_consistency makes (plus the preflight's `docker
+#     compose version` / `docker info`), so the guard is exercised as REAL
+#     (F3.3 gate satisfied) in this hermetic no-docker sandbox instead of
+#     silently skipping. The stub is driven by $DOCKER_STUB_STATE_FILE:
+#       RUNNING <project>  -> `compose ... -p <project> ps --status running`
+#                             prints the four service container ids
+#       VISIBLE <volume>   -> `docker volume inspect <volume>` succeeds
+# ---------------------------------------------------------------------------
+F3_STUB_DIR="$(mktemp -d /tmp/setup-dryrun.stub.XXXXXX)"
+cat > "${F3_STUB_DIR}/docker" <<'F3STUB'
+#!/usr/bin/env bash
+# Fake docker stub - answers ONLY setup.sh's project/state consistency guard.
+# Never placed on PATH outside the F3 test subshells below.
+STATE="${DOCKER_STUB_STATE_FILE:-/dev/null}"
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then
+  echo "Docker Compose version v2"
+  exit 0
+fi
+if [ "$1" = "volume" ] && [ "$2" = "inspect" ]; then
+  if [ -f "${STATE}" ] && grep -q "^VISIBLE ${3}$" "${STATE}"; then
+    exit 0
+  fi
+  exit 1
+fi
+if [ "$1" = "compose" ]; then
+  proj=""
+  prev=""
+  for a in "$@"; do
+    if [ "${prev}" = "-p" ]; then proj="${a}"; fi
+    prev="${a}"
+  done
+  if [ -n "${proj}" ] && [ -f "${STATE}" ] && grep -q "^RUNNING ${proj}$" "${STATE}"; then
+    printf '%s\n' "${proj}-daemon-1" "${proj}-ui-1" "${proj}-valkey-1" "${proj}-vault-1"
+  fi
+  exit 0
+fi
+exit 0
+F3STUB
+chmod +x "${F3_STUB_DIR}/docker"
+
+# F3a. Collision DIE: fresh (never-provisioned) target + a running
+#      default-project stack (stub: RUNNING honey-starter + the
+#      honey-starter_vault-file volume). This is EXACTLY the user's test3 bug:
+#      test3 was a fresh target whose state dir had NO artifacts while another
+#      deployment was up under the shared default project. The guard must die
+#      fail-fast (rc != 0) with the install dir + project + remedies, BEFORE
+#      any .env write / delegation.
+TF3A="$(fresh_tree)"; SF3A="$(mktemp -d)"
+printf 'RUNNING honey-starter\nVISIBLE honey-starter_vault-file\n' > /tmp/setup-dryrun.f3a.state
+set +e
+(
+  cd "${TF3A}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3a.state \
+    HONEY_STARTER_INSTALL_DIR="${TF3A}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3A}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.f3a.out 2>&1
+RC3A=$?
+set -e
+if [ "${RC3A}" -ne 0 ] \
+  && grep -q "refusing to set up a NEW instance" /tmp/setup-dryrun.f3a.out \
+  && grep -q "project 'honey-starter'" /tmp/setup-dryrun.f3a.out \
+  && grep -Fq "${TF3A}" /tmp/setup-dryrun.f3a.out \
+  && grep -q "COMPOSE_PROJECT_NAME" /tmp/setup-dryrun.f3a.out \
+  && grep -q "unseal_key" /tmp/setup-dryrun.f3a.out \
+  && [ ! -f "${TF3A}/.env" ]; then
+  ok "F3 guard: fresh target + running default-project stack (stub) DIES with install-dir/project/ports guidance, no .env (test3 repro)"
+else
+  bad "F3 collision rc=${RC3A} (want die + remedy + no .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.f3a.out >&2 || true
+fi
+rm -rf "${TF3A}" "${SF3A}"
+
+# F3b. Clean project/state: stub reports NO running containers and NO
+#      vault-file volume -> the guard must NOT fire; the dry-run proceeds and
+#      writes .env exactly as before.
+TF3B="$(fresh_tree)"; SF3B="$(mktemp -d)"
+printf '' > /tmp/setup-dryrun.f3b.state
+set +e
+(
+  cd "${TF3B}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3b.state \
+    HONEY_STARTER_INSTALL_DIR="${TF3B}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.f3b.out 2>&1
+RC3B=$?
+set -e
+if [ "${RC3B}" -eq 0 ] && [ -f "${TF3B}/.env" ]; then
+  ok "F3 guard: clean project/state (stub: nothing running, no vault volume) PROCEEDS and writes .env"
+else
+  bad "F3 clean rc=${RC3B} (want rc 0 + .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.f3b.out >&2 || true
+fi
+rm -rf "${TF3B}" "${SF3B}"
+
+# F3c. Fresh-target MATERIALIZE while a default-project stack is running ->
+#      the SAME clear die fires after the copy (fresh state dir is guaranteed
+#      empty), before any .env write / delegation at the target.
+TF3C="$(fresh_tree)"; SF3C="$(mktemp -d)"; NEW3C="$(mktemp -d)/new-inst"
+printf 'RUNNING honey-starter\n' > /tmp/setup-dryrun.f3c.state
+set +e
+(
+  cd "${TF3C}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3c.state \
+    HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3C}" \
+    bash scripts/setup.sh "${NEW3C}" --dry-run
+) >/tmp/setup-dryrun.f3c.out 2>&1
+RC3C=$?
+set -e
+if [ "${RC3C}" -ne 0 ] \
+  && grep -q "refusing to set up a NEW instance" /tmp/setup-dryrun.f3c.out \
+  && grep -q "project 'honey-starter'" /tmp/setup-dryrun.f3c.out \
+  && [ ! -f "${NEW3C}/.env" ] \
+  && [ ! -e "${NEW3C}/.honey-starter" ]; then
+  ok "F3 guard: fresh-target MATERIALIZE (stub: default-project stack running) DIES early; no .env / state dir at the target"
+else
+  bad "F3 materialize-collision rc=${RC3C} (want die + no .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.f3c.out >&2 || true
+fi
+rm -rf "${TF3C}" "${SF3C}" "$(dirname "${NEW3C}")"
+
+# F3d1. Manage-in-place with state artifacts present (root_token) + stub
+#       reporting the default project running -> NO false die: an
+#       already-provisioned instance rightfully owns the default project (its
+#       unseal key lives in ITS state dir), so the guard must skip.
+TF3D1="$(fresh_tree)"; SF3D1="$(mktemp -d)"
+mkdir -p "${SF3D1}"
+printf 'root-token-dummy\n' > "${SF3D1}/root_token"
+printf 'RUNNING honey-starter\n' > /tmp/setup-dryrun.f3d1.state
+set +e
+(
+  cd "${TF3D1}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3d1.state \
+    HONEY_STARTER_INSTALL_DIR="${TF3D1}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3D1}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.f3d1.out 2>&1
+RC3D1=$?
+set -e
+if [ "${RC3D1}" -eq 0 ] && [ -f "${TF3D1}/.env" ]; then
+  ok "F3 guard: manage-in-place with state artifacts (root_token) does NOT false-die on a running default project"
+else
+  bad "F3 manage-with-artifacts rc=${RC3D1} (want rc 0 + .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.f3d1.out >&2 || true
+fi
+rm -rf "${TF3D1}" "${SF3D1}"
+
+# F3d2. Distinct COMPOSE_PROJECT_NAME (fresh state) + stub reporting ONLY the
+#       default project running -> NO false die: the guard must probe the
+#       PROJECT-SCOPED project + volume (${compose_p}_vault-file), never a
+#       hard-coded default, so an unrelated orphan volume cannot trip it.
+TF3D2="$(fresh_tree)"; SF3D2="$(mktemp -d)"
+printf 'RUNNING honey-starter\n' > /tmp/setup-dryrun.f3d2.state
+set +e
+(
+  cd "${TF3D2}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3d2.state \
+    COMPOSE_PROJECT_NAME=myotherproject \
+    HONEY_STARTER_INSTALL_DIR="${TF3D2}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HD_API_HOST_PORT=9100 HD_UI_HOST_PORT=8190 HD_STATE_DIR="${SF3D2}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.f3d2.out 2>&1
+RC3D2=$?
+set -e
+if [ "${RC3D2}" -eq 0 ] && [ -f "${TF3D2}/.env" ]; then
+  ok "F3 guard: distinct COMPOSE_PROJECT_NAME (fresh state) does NOT die on the default project's running stack / volume (project-scoped probe)"
+else
+  bad "F3 distinct-project rc=${RC3D2} (want rc 0 + .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.f3d2.out >&2 || true
+fi
+rm -rf "${TF3D2}" "${SF3D2}"
 
 echo ""
 if [ "${FAIL}" -eq 0 ]; then

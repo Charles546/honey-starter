@@ -36,6 +36,24 @@ directories** with their own ports; to run two simultaneously, set distinct
 `HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and an env-only `COMPOSE_PROJECT_NAME`
 (export it before running — it is never stored in `.env`).
 
+**Compose project (env-only, default `honey-starter`).** `COMPOSE_PROJECT_NAME`
+is per-process environment, never stored in `.env`; `scripts/lib.sh` defaults
+it to `honey-starter`, so **every instance that runs simultaneously needs its
+own exported `COMPOSE_PROJECT_NAME` and distinct
+`HD_API_HOST_PORT`/`HD_UI_HOST_PORT`** — export them before every `setup.sh` /
+`start.sh` / `make` invocation for that instance. Teardown is scoped to one
+project: `docker compose down -v -p <project>`.
+
+**Early collision guard.** Because the default project is shared, setting up a
+NEW instance while another deployment is up under the default `honey-starter`
+project now **dies early** with this guidance — it can no longer re-attach the
+other deployment's initialized `honey-starter_vault-file` volume (Vault comes
+back sealed) and fail mid-start on a missing `unseal_key` in `start.sh`. Stop
+that deployment first, or give the new instance its own project + ports, or
+(if the running stack is this instance's own and you are re-managing from a
+different directory) point `HD_STATE_DIR` at the owning instance's
+`.honey-starter`.
+
 **Target selection (3 branches):**
 
 1. **`<dir>` argument given** — operate on that directory. An EXISTING

@@ -118,9 +118,27 @@ is a three-branch rule:
 
 To run two instances simultaneously, use **separate directories** with distinct
 `HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and export an env-only `COMPOSE_PROJECT_NAME`
-(it is never stored in `.env`). A port collision surfaces loudly at `docker
-compose up` — `start.sh`'s best-effort port preflight cannot catch a
-`COMPOSE_PROJECT_NAME`-scoped collision, so pick distinct ports up front.
+(it is never stored in `.env`; `scripts/lib.sh` defaults it to `honey-starter`).
+A port collision surfaces loudly at `docker compose up` — `start.sh`'s
+best-effort port preflight cannot catch a `COMPOSE_PROJECT_NAME`-scoped
+collision, so pick distinct ports up front.
+
+**Export the project name, don't just set it.** `COMPOSE_PROJECT_NAME`,
+`HD_API_HOST_PORT` and `HD_UI_HOST_PORT` are per-*process* environment: start
+every `setup.sh` / `start.sh` / `make` invocation for an instance with its own
+values **exported** (not merely assigned on one command line you expect to
+stick). Teardown is scoped per project: `docker compose down -v -p <project>`.
+
+**Early collision guard.** Because the default project is shared, setting up a
+NEW instance (or a fresh materialized/downloaded target) while another
+deployment is up under the default `honey-starter` project now **dies early**
+in `setup.sh` with this guidance — it can no longer re-attach the other
+deployment's initialized `honey-starter_vault-file` volume (Vault comes back
+sealed) and fail mid-start in `start.sh` on `vault is sealed but
+<fresh state>/unseal_key is missing/empty`. Stop that deployment first, or give
+the new instance its own project + ports, or (if the running stack is this
+instance's own, re-managing from a new dir) point `HD_STATE_DIR` at the owning
+instance's `.honey-starter`.
 
 **New vs existing.** An existing instance is managed in place: its `.env`
 prefills the questionnaire and its `HONEY_NS`/`HONEY_USER` provision guards
