@@ -134,12 +134,131 @@ PROJECT_NAME_MAX=32
 # never moved, so the user can re-run setup from it against other targets).
 MATERIALIZE_EXCLUDES=(--exclude='./.git' --exclude='./.env' --exclude='./.honey-starter')
 
-# --- output helpers ----------------------------------------------------------
-info() { printf '%s\n' "$*"; }
-note() { printf 'NOTE: %s\n' "$*"; }
-warn() { printf 'WARNING: %s\n' "$*" >&2; }
-die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-usage_die() { printf 'ERROR: %s\n' "$*" >&2; printf 'Try --help for usage.\n' >&2; exit 2; }
+# --- output helpers (Phase A rich-output foundation) --------------------------
+# Rich-output detection: enabled ONLY when fd 1 is a real terminal AND no
+# color-disable env var is PRESENT (no-color.org convention: any value,
+# INCLUDING EMPTY, disables — checked with `[ -z "${VAR+x}" ]`, never
+# `[ -z "$VAR" ]` which treats an empty value as unset) AND TERM is set and
+# not "dumb". Computed ONCE and cached in RICH_OUTPUT; every msg_* helper
+# re-invokes rich_output_enabled(). The gate is on STDOUT only — INTENTIONAL
+# and conservative: prompts/die messages go to stderr, so when stdout is a
+# redirected file but stderr is a tty, detection says OFF and prompts render
+# UNSTYLED. That is the SAFE direction (styled output appears only when fd 1
+# is a tty — consistent with `make setup-dryrun` captures being plain because
+# non-pty tests redirect fd 1). Do NOT "fix" this to also probe stdin/stderr.
+RICH_OUTPUT=0
+RICH_OUTPUT_UNCACHED=1
+rich_output_enabled() {
+  if [ "${RICH_OUTPUT_UNCACHED}" -eq 1 ]; then
+    RICH_OUTPUT_UNCACHED=0
+    if [ -t 1 ] \
+      && [ -z "${NO_COLOR+x}" ] \
+      && [ -z "${HONEY_STARTER_NO_COLOR+x}" ] \
+      && [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ]; then
+      RICH_OUTPUT=1
+    else
+      RICH_OUTPUT=0
+    fi
+  fi
+  [ "${RICH_OUTPUT}" -eq 1 ]
+}
+
+# ANSI SGR codes + status glyphs. Emitted as literal bytes (bash passes UTF-8
+# through unchanged even under LC_ALL=C; the only garble risk is the terminal
+# consumer, which is exactly what the fallback excludes). The msg_* helpers
+# render the ORIGINAL line text byte-for-byte in both modes: rich mode only
+# PREPENDS the style+glyph and appends ONE trailing reset — it NEVER
+# interleaves ESC / glyph with the message tokens ([ok], ERROR:, WARNING:,
+# NOTE:, === … ===, prompt labels) and NEVER rewrites message text (the strict
+# prefix-only rule).
+C_RESET=$'\033[0m'
+C_BOLD=$'\033[1m'
+C_UNDERLINE=$'\033[4m'
+C_RED=$'\033[31m'
+C_GREEN=$'\033[32m'
+C_YELLOW=$'\033[33m'
+C_CYAN=$'\033[36m'
+E_OK="✅"
+E_FAIL="❌"
+E_WARN="⚠"
+E_INFO="ℹ"
+E_SECTION="🚀"
+E_KEY="🔑"
+
+msg_ok() {
+  if rich_output_enabled; then
+    printf '%s%s %s%s\n' "${C_GREEN}" "${E_OK}" "$*" "${C_RESET}"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+msg_fail() {
+  if rich_output_enabled; then
+    printf '%s%s %s%s\n' "${C_RED}" "${E_FAIL}" "$*" "${C_RESET}" >&2
+  else
+    printf '%s\n' "$*" >&2
+  fi
+}
+msg_warn() {
+  if rich_output_enabled; then
+    printf '%s%s %s%s\n' "${C_YELLOW}" "${E_WARN}" "$*" "${C_RESET}" >&2
+  else
+    printf '%s\n' "$*" >&2
+  fi
+}
+msg_info() {
+  if [ -z "$*" ]; then
+    printf '\n'
+    return 0
+  fi
+  if rich_output_enabled; then
+    printf '%s%s %s%s\n' "${C_CYAN}" "${E_INFO}" "$*" "${C_RESET}"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+msg_note() { msg_info "$*"; }
+msg_section() {
+  if rich_output_enabled; then
+    printf '%s%s%s %s%s\n' "${C_BOLD}" "${C_CYAN}" "${E_SECTION}" "$*" "${C_RESET}"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+# msg_input: prompt labels (bold; the label/default text stays byte-contiguous —
+# a single bold prefix + one trailing reset, NEVER between label tokens).
+msg_input() {
+  if rich_output_enabled; then
+    printf '%s%s%s' "${C_BOLD}" "$*" "${C_RESET}"
+  else
+    printf '%s' "$*"
+  fi
+}
+# msg_key: key/secret prompt label — 🔑 + bold on the label line; the label
+# text stays byte-contiguous (one bold prefix + one trailing reset, never
+# between label tokens).
+msg_key() {
+  if rich_output_enabled; then
+    printf '%s%s %s%s' "${C_BOLD}" "${E_KEY}" "$*" "${C_RESET}"
+  else
+    printf '%s' "$*"
+  fi
+}
+# msg_highlight: bold+underline for install dir / state dir / project paths.
+msg_highlight() {
+  if rich_output_enabled; then
+    printf '%s%s%s%s\n' "${C_BOLD}" "${C_UNDERLINE}" "$*" "${C_RESET}"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+
+info() { msg_info "$*"; }
+note() { msg_note "NOTE: $*"; }
+warn() { msg_warn "WARNING: $*"; }
+die() { msg_fail "ERROR: $*"; exit 1; }
+usage_die() { msg_fail "ERROR: $*"; printf 'Try --help for usage.\n' >&2; exit 2; }
+
 
 print_help() {
   cat <<'HELP'
@@ -402,6 +521,10 @@ Environment variables (all optional):
   HONEY_STARTER_ANSWERS_FILE   path to a newline-delimited answers file
   HONEY_STARTER_AUTO_INSTALL   set to 1 to auto-approve Debian-family tool
                                installs (jq/openssl/htpasswd)
+  HONEY_STARTER_NO_COLOR       set (any value, even empty) to disable rich
+                               output (emoji/color) even on a color-capable
+                               terminal; plain-text output is always emitted
+                               for pipes/logs/non-tty and TERM=dumb
   HONEY_NS                     Vault KV namespace prefix (default starter)
   HONEY_USER                   admin subject (default admin)
   HONEY_AI_PROVIDER            openai | custom | skip (default openai)
@@ -714,8 +837,8 @@ preflight_os() {
   if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     die "bash 4 or newer is required (found ${BASH_VERSION:-unknown})"
   fi
-  info "  [ok] Linux $(uname -r)"
-  info "  [ok] bash ${BASH_VERSION%%(*}"
+  msg_ok "  [ok] Linux $(uname -r)"
+  msg_ok "  [ok] bash ${BASH_VERSION%%(*}"
 }
 
 preflight_download_tools() {
@@ -729,7 +852,7 @@ preflight_download_tools() {
       warn "required command not found: ${cmd}"
       missing=1
     else
-      info "  [ok] ${cmd}"
+      msg_ok "  [ok] ${cmd}"
     fi
   done
   if [ "${missing}" -eq 1 ]; then
@@ -757,9 +880,9 @@ preflight_docker() {
     have_compose=0
   fi
   if [ "${have_docker}" -eq 1 ] && [ "${have_compose}" -eq 1 ]; then
-    info "  [ok] docker + compose v2"
+    msg_ok "  [ok] docker + compose v2"
     if docker info >/dev/null 2>&1; then
-      info "  [ok] docker daemon reachable (docker info)"
+      msg_ok "  [ok] docker daemon reachable (docker info)"
       detect_can_root
       if [ "${CAN_ROOT}" -eq 0 ]; then
         note "no root/sudo capability detected; scripts/start.sh will write identity files 0644"
@@ -772,7 +895,7 @@ preflight_docker() {
         warn "docker daemon not reachable as the current user (dry-run continues for render-only validation)"
         return 0
       fi
-      echo "ERROR: the docker daemon is not reachable as the current user." >&2
+      msg_fail "ERROR: the docker daemon is not reachable as the current user."
       echo "       If docker is installed but your user is not in the docker group:" >&2
       echo "         sudo usermod -aG docker \$USER" >&2
       echo "       then log out and back in (or: newgrp docker) and re-run." >&2
@@ -791,7 +914,7 @@ preflight_docker() {
   fi
   local distro
   distro="$(os_distro_id)"
-  echo "ERROR: docker with compose v2 is required and is NOT auto-installed." >&2
+  msg_fail "ERROR: docker with compose v2 is required and is NOT auto-installed."
   echo "       Install it manually, then re-run. Distro-specific guidance:" >&2
   case "${distro}" in
     debian|ubuntu)
@@ -826,7 +949,7 @@ preflight_optional_tools() {
   local missing=() cmd pkglist distro
   for cmd in jq openssl htpasswd; do
     if command -v "${cmd}" >/dev/null 2>&1; then
-      info "  [ok] ${cmd}"
+      msg_ok "  [ok] ${cmd}"
     else
       missing+=("${cmd}")
     fi
@@ -855,7 +978,7 @@ preflight_optional_tools() {
         fi
       elif [ "${HAVE_TTY}" -eq 1 ] && [ "${NONINTERACTIVE}" -eq 0 ]; then
         local ans
-        printf 'setup.sh needs: %s. Install with apt now? [y/N] ' "${pkglist}" >&2
+        msg_input "setup.sh needs: ${pkglist}. Install with apt now? [y/N] " >&2
         IFS= read -r -u "${TTY_FD}" ans || ans=n
         case "${ans}" in
           y|Y|yes|YES)
@@ -1043,7 +1166,7 @@ ask_install_dir() {
     display="~/${display#"${HOME}/"}"
   fi
   if { exec {tfd}<>/dev/tty; } 2>/dev/null; then
-    printf 'Install directory [%s] ' "${display}" >&2
+    msg_input "Install directory [${display}] " >&2
     if IFS= read -r -u "${tfd}" ans && [ -n "${ans}" ]; then
       default="${ans}"
       if [ "${default}" = "~" ] && [ -n "${HOME:-}" ]; then
@@ -1096,7 +1219,7 @@ download_and_install() {
       cleanup_tmp
       die "sha256 mismatch for the downloaded tarball: expected ${HONEY_STARTER_EXPECT_SHA256}, got ${actual}"
     fi
-    info "  [ok] sha256 verified"
+    msg_ok "  [ok] sha256 verified"
   fi
   if [ "${update}" -eq 1 ] && [ -d "${dir}" ]; then
     info "--- extracting over existing tree (tar merges; it never deletes stale files)"
@@ -1256,7 +1379,11 @@ read_answer() {
   fi
   if [ "${HAVE_TTY}" -eq 1 ]; then
     if [ -n "${prompt}" ]; then
-      printf '%s' "${prompt}" >&2
+      if [ "${secret}" -eq 1 ]; then
+        msg_key "${prompt}" >&2
+      else
+        msg_input "${prompt}" >&2
+      fi
     fi
     if [ "${secret}" -eq 1 ]; then
       IFS= read -rs -u "${TTY_FD}" line || true
@@ -1284,18 +1411,18 @@ prompt_setting() {
   if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
     while :; do
       if [ "${secret}" -eq 1 ]; then
-        printf '%s ' "${label}" >&2
+        msg_key "${label} " >&2
       elif [ -n "${default}" ]; then
         case "${label}" in
           *])
-            printf '%s ' "${label}" >&2
+            msg_input "${label} " >&2
             ;;
           *)
-            printf '%s [%s] ' "${label}" "${default}" >&2
+            msg_input "${label} [${default}] " >&2
             ;;
         esac
       else
-        printf '%s ' "${label}" >&2
+        msg_input "${label} " >&2
       fi
       if ! read_answer "${varname}" "" "${secret}" "${varname}"; then
         MISSING_VARS+=("${varname}")
@@ -1585,7 +1712,7 @@ resolve_existing_project() {
   # answers-file line (an answers-file-only run already died above), never
   # re-read through prompt_setting.
   prompt="Changing the compose project re-initializes Vault: this instance will initialize a NEW ${env_p}_vault-file volume and OVERWRITE root_token/unseal_key in ${STATE_DIR}; the current secrets under ${cur_p}_vault-file are no longer addressed (data loss). To change it, first stop this instance (docker compose -p ${cur_p} down -v) or keep ${cur_p}. Continue with the change? [y/N] "
-  printf '%s' "${prompt}" >&2
+  msg_input "${prompt}" >&2
   if ! IFS= read -r -u "${TTY_FD}" ans; then
     ans="n"
   fi
@@ -2059,23 +2186,23 @@ masked_line() {
 show_effective() {
   local line
   info ""
-  info "=== effective configuration (secrets masked) ==="
+  msg_section "=== effective configuration (secrets masked) ==="
   for line in "${OUT_LINES[@]}"; do
     masked_line "${line}"
   done
   info ""
-  info "install dir:   ${INSTALL_DIR}"
-  info "state dir:     ${STATE_DIR}"
+  msg_highlight "install dir:   ${INSTALL_DIR}"
+  msg_highlight "state dir:     ${STATE_DIR}"
   if [ -n "${EFFECTIVE_PROJECT}" ]; then
-    info "compose project: ${EFFECTIVE_PROJECT}"
+    msg_highlight "compose project: ${EFFECTIVE_PROJECT}"
   else
-    info "compose project: (default: honey-starter)"
+    msg_highlight "compose project: (default: honey-starter)"
   fi
   info "AI provider:   ${EFFECTIVE_PROVIDER}"
   if [ -n "${EXPLICIT_OPENAI_KEY}" ] || [ -n "$(cur_value OPENAI_API_KEY)" ]; then
     info "API key:       set (never echoed)"
   else
-    info "API key:       not set yet — add to .env and re-run (placeholder flow)"
+    info "API key:       not set yet - add to .env and re-run (placeholder flow)"
   fi
 }
 
@@ -2260,7 +2387,7 @@ on_disk_main() {
     INSTALL_DIR="${SCRIPT_TREE}" # branch 2 - manage the invoked tree in place
   fi
 
-  info "=== honey-starter guided installer (on-disk copy) ==="
+  msg_section "=== honey-starter guided installer (on-disk copy) ==="
 
   # fail-fast preflight BEFORE any prompt / download / materialize
   preflight_os
@@ -2290,7 +2417,7 @@ on_disk_main() {
   export HONEY_STARTER_INSTALL_DIR="${INSTALL_DIR}"
 
   if [ "${DO_UPDATE}" -eq 1 ]; then
-    info "=== honey-starter: update (${INSTALL_DIR}) ==="
+    msg_section "=== honey-starter: update (${INSTALL_DIR}) ==="
     # copy then re-extract: the target tree was ensured above (materialized
     # new from the invoked tree when it did not exist); now pull the release
     # over it so the fresh instance runs the latest code
@@ -2322,8 +2449,8 @@ on_disk_main() {
     IS_FRESH=1
   fi
 
-  info "install dir: ${INSTALL_DIR}"
-  info "state dir:   ${STATE_DIR}"
+  msg_highlight "install dir: ${INSTALL_DIR}"
+  msg_highlight "state dir:   ${STATE_DIR}"
 
   # Req 5: validate a fresh-run env COMPOSE_PROJECT_NAME EARLY (before any
   # guard probe) so an invalid name never reaches the docker probe; existing
@@ -2430,7 +2557,7 @@ bootstrap_main() {
   fi
   INSTALL_DIR="${dir}"
 
-  info "=== honey-starter guided installer (bootstrap copy) ==="
+  msg_section "=== honey-starter guided installer (bootstrap copy) ==="
 
   # fail-fast preflight BEFORE any prompt or download
   preflight_os
@@ -2449,7 +2576,7 @@ bootstrap_main() {
     INSTALL_DIR="${dir}"
   fi
 
-  info "install dir: ${dir}"
+  msg_highlight "install dir: ${dir}"
   export HONEY_STARTER_INSTALL_DIR="${dir}"
   INSTALL_DIR="${dir}"
 
