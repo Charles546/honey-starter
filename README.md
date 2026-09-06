@@ -128,6 +128,16 @@ new `HD_AI_MODEL` question and the `HONEY_STARTER_ANSWERS_FILE` replay option).
 Re-running on an existing install skips the download and reuses the tree in
 place.
 
+**Output styling (rich-output foundation).** `setup.sh` uses emoji/color rich
+output when **fd 1 is a real terminal** and `TERM` is set to a color-capable
+value (e.g. `xterm-256color`) — on pipes, redirected logs, non-tty runs and
+`TERM=dumb` the output is always **plain** (the safe direction: a redirected
+installer never emits escape bytes or emoji). Set `NO_COLOR` (no-color.org) or
+`HONEY_STARTER_NO_COLOR` to any value — **including empty** — to force plain
+output even on a color-capable terminal (presence semantics). Rich styling is
+**prefix-only**: message text is never rewritten, and prompt labels stay
+byte-contiguous.
+
 Questionnaire scope: the interactive AI provider prompt offers **openai**
 (default) | **custom** (OpenAI-compatible endpoint) | **skip** only —
 `openrouter` is never offered interactively (see

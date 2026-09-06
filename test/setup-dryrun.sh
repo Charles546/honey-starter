@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # setup-dryrun.sh — no-docker unit/dry-run tests for scripts/setup.sh (the
 # guided single-command installer; Phase 4 + Phase 5 multi-instance + AI model
-# + Phase 6 per-instance COMPOSE_PROJECT_NAME persisted in .env).
+# + Phase 6 per-instance COMPOSE_PROJECT_NAME persisted in .env + Phase A
+# rich-output foundation: emoji/color detection + prefix-only message styling
+# with a plain fallback).
 #
 # Hermetic: the tree under test is copied into a throwaway mktemp dir and
 # setup.sh is executed against THAT copy with a temp HONEY_STARTER_INSTALL_DIR
@@ -80,6 +82,12 @@
 #     spilled absolute path), Enter -> re-exec -> branch-2-in-place, bare ~ ->
 #     $HOME at the prompt AND as an on-disk positional
 #   * argument parsing: `--` end-of-flags, two positionals die, unknown option
+#   * Phase A rich-output foundation: fd-1-tty + NO_COLOR-presence + TERM
+#     detection, emoji/color prefix-only styling — A1/A2/A3/A4 prove the plain
+#     fallback (redirected / TERM=dumb / NO_COLOR=1 / NO_COLOR= empty) emits
+#     NO ESC bytes and NO emoji, and a color tty adds ESC+emoji while every
+#     message substring stays byte-contiguous (A5 = the pre-existing 84
+#     checks still passing in the same run — the real regression gate).
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
@@ -1104,7 +1112,7 @@ if command -v python3 >/dev/null 2>&1; then
   T17K="$(fresh_tree)"; S17K="$(mktemp -d)"
   set +e
   (
-    cd "${T17K}" && HD_STATE_DIR="${S17K}" \
+    cd "${T17K}" && HD_STATE_DIR="${S17K}" TERM=dumb \
     python3 "${HERE}/test/pty-helper.py" --on-disk \
       "${T17K}/scripts/setup.sh" "Compose project name" \
       projname ansns ansuser openai "bad model" 9300 9390 -- --dry-run
@@ -1196,7 +1204,7 @@ if command -v python3 >/dev/null 2>&1; then
   CWD19A="$(mktemp -d)"
   set +e
   ( cd "${CWD19A}" && env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
-      -u HONEY_STARTER_INSTALL_DIR HOME="${PH19A}" HD_STATE_DIR="${S19A}" \
+      -u HONEY_STARTER_INSTALL_DIR HOME="${PH19A}" TERM=dumb HD_STATE_DIR="${S19A}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
         "" projname19a ansns ansuser openai modeltest sk-key-pty 9300 9390 -- --dry-run \
@@ -1225,7 +1233,7 @@ if command -v python3 >/dev/null 2>&1; then
   CWD19B="$(mktemp -d)"
   set +e
   ( cd "${CWD19B}" && env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
-      -u HONEY_STARTER_INSTALL_DIR HOME="${TH19B}" HD_STATE_DIR="${S19B}" \
+      -u HONEY_STARTER_INSTALL_DIR HOME="${TH19B}" TERM=dumb HD_STATE_DIR="${S19B}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
         "~" projname19b ansns ansuser openai modeltest2 sk-key-pty2 9301 9391 -- --dry-run \
@@ -1854,7 +1862,7 @@ if command -v python3 >/dev/null 2>&1; then
       DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p12.state \
       DOCKER_STUB_LOG=/tmp/setup-dryrun.p12.log \
       COMPOSE_PROJECT_NAME=myproj \
-      HD_STATE_DIR="${SP12}" \
+      HD_STATE_DIR="${SP12}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP12}/scripts/setup.sh" "Continue with the change?" \
         n ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
@@ -1893,7 +1901,7 @@ if command -v python3 >/dev/null 2>&1; then
       DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p13.state \
       DOCKER_STUB_LOG=/tmp/setup-dryrun.p13.log \
       COMPOSE_PROJECT_NAME=myproj \
-      HD_STATE_DIR="${SP13}" \
+      HD_STATE_DIR="${SP13}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP13}/scripts/setup.sh" "Continue with the change?" \
         y ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
@@ -2032,6 +2040,160 @@ else
   sed 's/^/    | /' /tmp/setup-dryrun.p16b.out >&2 || true
 fi
 rm -rf "${TP16}" "${SP16}" "${TP16B}" "${SP16B}"
+
+
+# ---------------------------------------------------------------------------
+# A-series. Phase A rich-output foundation — detection + prefix-only styling.
+# The only styling setup.sh adds is a PREFIX on each styled line: ESC/emoji
+# are NEVER interleaved with the message tokens and message text is NEVER
+# rewritten, so the A-series substring asserts prove the prefix-only rule.
+# Detection is gated on fd 1 being a tty (the SAFE direction), so a
+# redirected run is ALWAYS plain; on a real pty, TERM=dumb / NO_COLOR
+# (presence semantics) disable rich output, and only a color TERM with no
+# disable-var turns it on. The pty cases defensively -u the OTHER
+# color-disabling vars so a dev machine's exported NO_COLOR cannot skew them.
+# ---------------------------------------------------------------------------
+
+# A1. Redirected run (fd 1 NOT a tty) -> the rich fallback is PLAIN: no ESC
+#     bytes and no non-ASCII bytes (emoji) in the captured log — even when
+#     TERM claims a color-capable terminal (the gate is on fd 1 only).
+TA1="$(fresh_tree)"; SA1="$(mktemp -d)"
+set +e
+(
+  cd "${TA1}"
+  HONEY_STARTER_INSTALL_DIR="${TA1}" \
+  HONEY_STARTER_NONINTERACTIVE=1 \
+  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  OPENAI_API_KEY=sk-a1key \
+  HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
+  HD_STATE_DIR="${SA1}" \
+  TERM=xterm-256color \
+  bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.a1.out 2>&1
+RC_A1=$?
+set -e
+if [ "${RC_A1}" -eq 0 ] \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.a1.out \
+  && ! LC_ALL=C grep -q '[^ -~]' /tmp/setup-dryrun.a1.out; then
+  ok "A1: redirected (non-tty) run is PLAIN — no ESC bytes, no emoji, even with TERM=xterm-256color"
+else
+  bad "A1 rc=${RC_A1} (want plain output, no ESC / no non-ASCII):"
+  sed 's/^/    | /' /tmp/setup-dryrun.a1.out >&2 || true
+fi
+rm -rf "${TA1}" "${SA1}"
+
+# A2. pty (fd 1 IS a tty) with TERM=dumb -> still PLAIN (no ESC bytes), while
+#     the label text still matches (plain mode emits the exact original text).
+if command -v python3 >/dev/null 2>&1; then
+  TA2="$(fresh_tree)"; SA2="$(mktemp -d)"
+  set +e
+  (
+    cd "${TA2}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR \
+      -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
+      -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SA2}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TA2}/scripts/setup.sh" "Compose project name" \
+        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.a2.out 2>&1
+  RC_A2=$?
+  set -e
+  if [ "${RC_A2}" -eq 0 ] \
+    && ! grep -q $'\x1b' /tmp/setup-dryrun.a2.out \
+    && grep -q 'Compose project name (COMPOSE_PROJECT_NAME)' /tmp/setup-dryrun.a2.out; then
+    ok "A2: pty + TERM=dumb -> PLAIN (no ESC bytes; label text still matches)"
+  else
+    bad "A2 rc=${RC_A2} (want plain pty output under TERM=dumb):"
+    sed 's/^/    | /' /tmp/setup-dryrun.a2.out >&2 || true
+  fi
+  rm -rf "${TA2}" "${SA2}"
+else
+  ok "A2 SKIPPED (python3 unavailable)"
+fi
+
+# A3. pty + TERM=xterm-256color -> RICH: ESC + emoji PRESENT, AND a message
+#     substring STILL matches (proves the prefix-only rule: the label text is
+#     byte-contiguous — ESC/emoji are a prefix, never interleaved).
+if command -v python3 >/dev/null 2>&1; then
+  TA3="$(fresh_tree)"; SA3="$(mktemp -d)"
+  set +e
+  (
+    cd "${TA3}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR \
+      -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
+      -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SA3}" TERM=xterm-256color \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TA3}/scripts/setup.sh" "Compose project name" \
+        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.a3.out 2>&1
+  RC_A3=$?
+  set -e
+  if [ "${RC_A3}" -eq 0 ] \
+    && grep -q $'\x1b' /tmp/setup-dryrun.a3.out \
+    && LC_ALL=C grep -q $'\xf0\x9f\x9a\x80' /tmp/setup-dryrun.a3.out \
+    && grep -q 'Compose project name (COMPOSE_PROJECT_NAME)' /tmp/setup-dryrun.a3.out; then
+    ok "A3: pty + TERM=xterm-256color -> RICH (ESC + rocket emoji present) while the message substring still matches (prefix-only)"
+  else
+    bad "A3 rc=${RC_A3} (want rich output + contiguous label):"
+    sed 's/^/    | /' /tmp/setup-dryrun.a3.out >&2 || true
+  fi
+  rm -rf "${TA3}" "${SA3}"
+else
+  ok "A3 SKIPPED (python3 unavailable)"
+fi
+
+# A4. NO_COLOR presence semantics (no-color.org): set NO_COLOR=1 -> plain, AND
+#     NO_COLOR= (EMPTY value, still SET) -> plain — PRESENCE disables, never
+#     the value. Both pty runs use TERM=xterm-256color so NO_COLOR is the
+#     SOLE disabling factor.
+if command -v python3 >/dev/null 2>&1; then
+  TA4A="$(fresh_tree)"; SA4A="$(mktemp -d)"
+  set +e
+  (
+    cd "${TA4A}"
+    env -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      NO_COLOR=1 HOME="${HOME}" HD_STATE_DIR="${SA4A}" TERM=xterm-256color \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TA4A}/scripts/setup.sh" "Compose project name" \
+        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.a4a.out 2>&1
+  RC_A4A=$?
+  set -e
+  if [ "${RC_A4A}" -eq 0 ] && ! grep -q $'\x1b' /tmp/setup-dryrun.a4a.out; then
+    ok "A4a: NO_COLOR=1 on a color-capable tty -> PLAIN (no ESC)"
+  else
+    bad "A4a rc=${RC_A4A} (want plain under NO_COLOR=1):"
+    sed 's/^/    | /' /tmp/setup-dryrun.a4a.out >&2 || true
+  fi
+  rm -rf "${TA4A}" "${SA4A}"
+
+  TA4B="$(fresh_tree)"; SA4B="$(mktemp -d)"
+  set +e
+  (
+    cd "${TA4B}"
+    env -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      NO_COLOR= HOME="${HOME}" HD_STATE_DIR="${SA4B}" TERM=xterm-256color \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TA4B}/scripts/setup.sh" "Compose project name" \
+        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.a4b.out 2>&1
+  RC_A4B=$?
+  set -e
+  if [ "${RC_A4B}" -eq 0 ] && ! grep -q $'\x1b' /tmp/setup-dryrun.a4b.out; then
+    ok "A4b: NO_COLOR= (EMPTY value, still SET) -> PLAIN (presence semantics, not value)"
+  else
+    bad "A4b rc=${RC_A4B} (want plain under NO_COLOR= empty):"
+    sed 's/^/    | /' /tmp/setup-dryrun.a4b.out >&2 || true
+  fi
+  rm -rf "${TA4B}" "${SA4B}"
+else
+  ok "A4 SKIPPED (python3 unavailable)"
+fi
+
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="
