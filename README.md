@@ -19,7 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scrip
 
 `scripts/setup.sh` is the guided installer (Phase 4). The piped copy is a
 self-contained bootstrap: it runs a fail-fast preflight (Linux, bash 4+, curl +
-tar, docker + compose v2 + a reachable daemon — a host with no viable docker is
+tar + sha256sum, docker + compose v2 + a reachable daemon — a host with no
+viable docker is
 never prompted and never triggers a download), resolves the install directory,
 downloads the release tarball from codeload, verifies the layout, extracts it
 atomically into `~/honey-starter` (or `$HONEY_STARTER_INSTALL_DIR`), and
@@ -32,27 +33,42 @@ start` below.
 
 The same command SETS UP a NEW instance at a given directory or RE-SETS UP
 (manages) an EXISTING instance. Multiple instances coexist as **separate
-directories** with their own ports; to run two simultaneously, set distinct
-`HD_API_HOST_PORT`/`HD_UI_HOST_PORT` and an env-only `COMPOSE_PROJECT_NAME`
-(export it before running — it is never stored in `.env`).
+directories** with their own ports and their **own per-instance compose
+project**, persisted by `setup.sh` into each instance's `.env`. Fresh installs
+get the deterministic derived name `hs-<basename>-<hash8>` (or whatever the
+questionnaire/env chose); distinct `HD_API_HOST_PORT`/`HD_UI_HOST_PORT` are
+still required for simultaneous instances (distinct ports are not
+auto-detected).
 
-**Compose project (env-only, default `honey-starter`).** `COMPOSE_PROJECT_NAME`
-is per-process environment, never stored in `.env`; `scripts/lib.sh` defaults
-it to `honey-starter`, so **every instance that runs simultaneously needs its
-own exported `COMPOSE_PROJECT_NAME` and distinct
-`HD_API_HOST_PORT`/`HD_UI_HOST_PORT`** — export them before every `setup.sh` /
-`start.sh` / `make` invocation for that instance. Teardown is scoped to one
-project: `docker compose down -v -p <project>`.
+**Compose project (per-instance, persisted in `.env`).** `setup.sh` writes
+`COMPOSE_PROJECT_NAME` into each instance's repo-root `.env`. **Runtime
+precedence is `.env` > exported env > `honey-starter`** (`scripts/lib.sh`
+defaults to `honey-starter` only when neither is set). Fresh (never
+provisioned) installs are asked for a project name (first questionnaire item,
+default = the derived name); **existing instances are NEVER auto-renamed** —
+manage reads the persisted name silently. An exported name on an existing
+instance is **silently adopted** when nothing is persisted, and requires an
+**explicit TTY confirm** (with a Vault data-loss warning) when it differs from
+the persisted value — non-interactive runs **die** instead. `--update` ignores
+the exported name entirely (keeps the persisted/absent value). Teardown is
+scoped to one project: `docker compose down -v -p <project>`, and
+`docker compose ls` lists the distinct projects.
 
-**Early collision guard.** Because the default project is shared, setting up a
-NEW instance while another deployment is up under the default `honey-starter`
-project now **dies early** with this guidance — it can no longer re-attach the
-other deployment's initialized `honey-starter_vault-file` volume (Vault comes
-back sealed) and fail mid-start on a missing `unseal_key` in `start.sh`. Stop
-that deployment first, or give the new instance its own project + ports, or
-(if the running stack is this instance's own and you are re-managing from a
-different directory) point `HD_STATE_DIR` at the owning instance's
-`.honey-starter`.
+**Changing a provisioning instance's project re-initializes Vault**: it builds
+a NEW `<new>_vault-file` volume and overwrites `root_token`/`unseal_key` in
+the state dir — the old `<old>_vault-file` secrets are no longer addressed
+(**data loss**). To change it, first stop the instance
+(`docker compose -p <old> down -v`) or keep the old name.
+
+**Early collision guard.** The F3 guard probes the EFFECTIVE project name on
+every effective change: setting up a NEW instance while another deployment is
+up under that project (e.g. the shared default `honey-starter`), or renaming /
+adopting onto an occupied project, **dies early** with guidance — it can no
+longer re-attach another deployment's initialized `*_vault-file` volume (Vault
+comes back sealed) and fail mid-start on a missing `unseal_key` in `start.sh`.
+Stop that deployment first, or choose a distinct project + ports, or (if the
+running stack is this instance's own and you are re-managing from a different
+directory) point `HD_STATE_DIR` at the owning instance's `.honey-starter`.
 
 **Target selection (3 branches):**
 
@@ -131,8 +147,8 @@ silently replaced by the pin nor by a later line.
   validate bcrypt token hashes for the `auth-simple` driver and the B1
   validation contract. No Go toolchain is needed.
 - **shellcheck** — required by the `make lint` / `make validate` gate.
-- **bash**, **openssl**, **curl**, **jq** — basic scripting, key generation,
-  and the smoke test
+- **bash**, **openssl**, **curl**, **sha256sum**, **jq** — basic scripting,
+  key generation, release verification and the smoke test
 
 ## What It Ships
 
@@ -184,8 +200,8 @@ make start        # or: bash scripts/start.sh
 It is **idempotent and safe to re-run**:
 
 1. **Preflight** — Linux-only guard; requires `docker` + compose v2, `curl`,
-   `jq`, `openssl`, `htpasswd`; best-effort host-port conflict check for the
-   published API/UI ports.
+   `sha256sum`, `jq`, `openssl`, `htpasswd`; best-effort host-port conflict
+   check for the published API/UI ports.
 2. **Load `.env`** (repo root) if present, honoring the documented env
    contract (`HD_*` template-fed, plain env direct, `HD_STATE_DIR`,
    `COMPOSE_FILE`).

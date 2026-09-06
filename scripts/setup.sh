@@ -3,8 +3,13 @@
 # execution modes, and (Phase 5) THREE target-selection branches so the same
 # command SETS UP a NEW instance at a given directory or RE-SETS UP (manages)
 # an EXISTING instance in place. Multiple instances coexist as separate
-# directories (run them simultaneously with distinct ports + an env-only
-# COMPOSE_PROJECT_NAME).
+# directories with distinct ports. COMPOSE_PROJECT_NAME is PER-INSTANCE and
+# PERSISTED in each instance's .env by setup.sh (fresh installs get the derived
+# hs-<basename>-<hash8>, or whatever the questionnaire/env chose); runtime
+# precedence is .env > exported env > honey-starter. Existing instances are
+# NEVER auto-renamed; an env-supplied change on an existing instance requires
+# an explicit confirm (data-loss warning) or dies in non-interactive runs; an
+# exported name with nothing persisted is silently adopted (and probed).
 #
 #   1. BOOTSTRAP copy  — standalone/piped (BASH_SOURCE is empty under
 #      `curl ... | bash` / `bash -s`, or the file is not inside a tree with
@@ -87,11 +92,17 @@ INSTALLED_TREE_FILES=(
   deploy/docker-compose.yaml
   bootstrap/init.yaml
 )
-# Managed .env keys (rewritten in place each run): HONEY_NS, HONEY_USER,
-# HD_AI_BASE_URL, HD_AI_MODEL, HD_API_HOST_PORT, HD_UI_HOST_PORT, the derived
-# HD_UI_URL, and HD_CONFIG_CHECK_INTERVAL -- the last written ONLY when
-# explicitly supplied (env or an existing .env line), otherwise absent so the
-# compose default of 30m applies by construction (never 1m).
+# Managed .env keys (rewritten in place each run):
+#   * COMPOSE_PROJECT_NAME (Phase 6) — per-instance: SET on fresh
+#     (never-provisioned) installs (env -> answers -> typed -> derived default)
+#     and on a confirmed/adopted rename of an existing one; KEPT verbatim on a
+#     no-change manage run (absent stays absent so the lib.sh honey-starter
+#     default applies by omission, migration-safe).
+#   * HONEY_NS, HONEY_USER, HD_AI_BASE_URL, HD_AI_MODEL, HD_API_HOST_PORT,
+#     HD_UI_HOST_PORT, the derived HD_UI_URL, and HD_CONFIG_CHECK_INTERVAL --
+#     the last written ONLY when explicitly supplied (env or an existing .env
+#     line), otherwise absent so the compose default of 30m applies by
+#     construction (never 1m).
 #
 # Secret .env keys (replaced ONLY on an explicit value; with no
 # explicit value an existing line is left untouched; with no explicit value and
@@ -105,6 +116,16 @@ SECRET_KEYS=(OPENAI_API_KEY OPENROUTER_API_KEY)
 # .env.AI_MODEL`). setup.sh writing the explicit line is runtime-identical
 # (compose already injects HD_AI_MODEL when .env leaves it unset).
 MODEL_DEFAULT="gpt-5.4-mini"
+
+# Per-instance COMPOSE_PROJECT_NAME derivation (Phase 6): fresh (never
+# provisioned) installs get hs-<sanitized-basename>-<hash8>, deterministic from
+# the resolved INSTALL_DIR (never SCRIPT_TREE, so two instances materialized
+# from the same invoked tree hash differently). PROJECT_NAME_MAX bounds the
+# generated name at 3 + 20 + 1 + 8 = 32 (compose allows [a-z0-9_-], max 63).
+PROJECT_PREFIX="hs-"
+PROJECT_BASENAME_MAX=20
+PROJECT_HASH_LEN=8
+PROJECT_NAME_MAX=32
 
 # Tree entries excluded when an on-disk run materializes a NEW instance from
 # the invoked tree (tar --exclude patterns). A fresh target NEVER inherits
@@ -128,8 +149,12 @@ Installs a complete Honeydipper instance (Valkey + file-backed Vault + daemon
 + web UI) on a Linux docker host with one command and a short questionnaire.
 The same script SETS UP a NEW instance at a given directory or RE-SETS UP
 (manages) an EXISTING instance in place; multiple instances coexist as
-separate directories (run them simultaneously with distinct ports + an
-env-only COMPOSE_PROJECT_NAME).
+separate directories with distinct ports. The compose project
+(COMPOSE_PROJECT_NAME) is PER-INSTANCE and PERSISTED in each instance's .env
+by setup.sh: fresh installs get the derived hs-<basename>-<hash8> (or whatever
+the questionnaire/env chose), existing instances are NEVER auto-renamed, and
+an env-supplied change on an existing instance requires an explicit confirm
+(data-loss warning) or dies in non-interactive runs.
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
@@ -221,7 +246,15 @@ Install dir:
 
 Questionnaire (interactive; a question is asked ONLY when its environment
 variable is unset, and on an existing install every default is prefilled from
-the current .env; Enter accepts the [default]):
+the current .env; Enter accepts the [default]). The compose project name is
+item 0 and is asked ONLY on a never-provisioned (fresh) instance; manage
+runs NEVER ask it:
+  0. COMPOSE_PROJECT_NAME  per-instance; lowercase; charset
+                      [a-z0-9_-] (start/end alnum). FRESH ONLY: default =
+                      the derived hs-<basename>-<hash8> of the install dir
+                      (Enter accepts it); an env value wins over the .env
+                      prefill. Existing instances: never asked, never
+                      re-derived (see "Compose project" below).
   1. HONEY_NS         Vault KV namespace prefix; default starter; single Vault
                       path segment ([A-Za-z0-9._-]+); MUST stay constant for
                       the life of a deployment (start.sh refuses changes).
@@ -241,16 +274,18 @@ the current .env; Enter accepts the [default]):
                       (default 8090), integers 1-65535, confirmed together.
 
   HONEY_STARTER_ANSWERS_FILE (when set) supplies the answers first,
-  newline-delimited, in exactly the order above. Provider-conditional lines:
-  model (4) only for openai/custom; base URL (5) only for custom; API key (6)
-  only for openai/custom; an empty model line means "accept the default"
-  (pins gpt-5.4-mini). There is NO install-dir line - the answers file's
-  physical location is indication enough; target a non-default directory with
-  a positional argument (setup.sh <dir>). The final Y/n confirmation is the
-  last line of a full non-dry run. Otherwise answers come from a real
-  /dev/tty (opened explicitly). If neither is available and the run is not
-  non-interactive, setup.sh exits with guidance - it never silently defaults
-  and never hangs.
+  newline-delimited, in exactly the order above: the leading
+  COMPOSE_PROJECT_NAME line (lowercase; empty = accept the derived default;
+  a manage-in-place run consumes and DISCARDS this slot - never prompts for
+  it), then HONEY_NS, HONEY_USER, provider, model (only for openai/custom),
+  base URL (5, only for custom), API key (only for openai/custom), ports, and
+  the final Y/n for a full non-dry run. There is NO install-dir line - the
+  answers file's physical location is indication enough; target a
+  non-default directory with a positional argument (setup.sh <dir>). An
+  exhausted answers file in a manage run must not push the project slot to
+  the missing list. Otherwise answers come from a real /dev/tty (opened
+  explicitly). If neither is available and the run is not non-interactive,
+  setup.sh exits with guidance - it never silently defaults and never hangs.
 
 HD_AI_MODEL semantics (three-way; the model is a non-secret pin):
   * HD_AI_MODEL=<value> (non-empty) -> override, written to .env, wins over
@@ -322,27 +357,43 @@ Non-interactive mode:
     final newline; the file ends with a newline and is chmod 600. First
     creation emits a `# Generated by scripts/setup.sh` header.
 
-Simultaneous instances & the compose project (COMPOSE_PROJECT_NAME):
-  COMPOSE_PROJECT_NAME is ENV-ONLY (never stored in .env) and defaults to
-  honey-starter. Every instance that runs SIMULTANEOUSLY needs its own
-  exported COMPOSE_PROJECT_NAME AND distinct HD_API_HOST_PORT /
-  HD_UI_HOST_PORT, exported (not merely assigned) before EVERY setup / start /
-  make invocation for that instance. Teardown is scoped per project:
-  `docker compose down -v -p <project>`.
-  Because the default project is shared, setting up a NEW instance (or a fresh
-  materialized/downloaded target) while another deployment is still up under
-  the default project now DIES EARLY with this guidance - it can no longer
-  silently bind to the other deployment's running containers + the initialized
-  honey-starter_vault-file volume and then fail mid-start on a missing unseal
-  key in start.sh.
+Compose project (COMPOSE_PROJECT_NAME) - per-instance, persisted in .env:
+  setup.sh writes COMPOSE_PROJECT_NAME into each instance's repo-root .env.
+  FRESH installs get the derived hs-<sanitized-basename>-<hash8> (deterministic
+  from the resolved install dir; Enter accepts it, or type/env your own);
+  EXISTING instances are never auto-renamed - manage reads the persisted name
+  silently. Runtime precedence is .env > exported env > honey-starter.
+  Distinct HD_API_HOST_PORT / HD_UI_HOST_PORT remain mandatory for
+  SIMULTANEOUS instances (distinct ports are not auto-detected).
+  Changing a PROVISIONED instance's project re-initializes Vault: it builds a
+  NEW <new>_vault-file volume and OVERWRITES root_token/unseal_key in
+  <state dir> - the old <old>_vault-file secrets are no longer addressed
+  (DATA LOSS). To change it: stop the instance first
+  (`docker compose -p <old> down -v`) or keep <old>. An env-supplied project
+  with NOTHING persisted is silently adopted (and the guard probes the
+  adopted name); `--update` ignores COMPOSE_PROJECT_NAME env entirely (keeps
+  the persisted/absent value).
+  The F3 project/state guard probes the EFFECTIVE project name on every
+  effective change: a NEW instance (or a rename/adopt) that would collide
+  with a running stack / existing <proj>_vault-file volume DIES EARLY with
+  guidance instead of silently binding to another deployment's containers +
+  initialized Vault volume and failing mid-start on a missing unseal key.
 
 Preflight (fail-fast, before any prompt or download):
-  Linux guard -> bash >= 4 -> curl + tar -> docker + compose v2 -> `docker
-  info` reachability -> docker-group/sudo capability. jq/openssl/htpasswd
-  presence and the optional install offer happen on the on-disk copy, still
-  before the questionnaire. docker/compose are never auto-installed.
+  Linux guard -> bash >= 4 -> curl + tar + sha256sum -> docker + compose v2 ->
+  `docker info` reachability -> docker-group/sudo capability. jq/openssl/
+  htpasswd presence and the optional install offer happen on the on-disk copy,
+  still before the questionnaire. docker/compose are never auto-installed.
 
 Environment variables (all optional):
+  COMPOSE_PROJECT_NAME         setup-time override: fresh installs use it
+                               (validated; invalid DIES); on an existing
+                               instance with a persisted name it requires an
+                               explicit TTY confirm (data-loss warning) or
+                               dies in non-interactive runs; with nothing
+                               persisted it is silently adopted. `--update`
+                               ignores it. Runtime precedence is .env >
+                               exported env > honey-starter.
   HONEY_STARTER_INSTALL_DIR    install dir (branch 3 only; default ~/honey-starter)
   HONEY_STARTER_REF            branch or tag to fetch (default main)
   HONEY_STARTER_EXPECT_SHA256  require this sha256 of the downloaded tarball
@@ -669,7 +720,11 @@ preflight_os() {
 
 preflight_download_tools() {
   local missing=0
-  for cmd in curl tar; do
+  # sha256sum is HARD-required (Phase 6): the per-instance COMPOSE_PROJECT_NAME
+  # is derived from a sha256 of the resolved install dir, so a host without it
+  # cannot run the guided installer. Linux-only: coreutils / busybox both
+  # provide it.
+  for cmd in curl tar sha256sum; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
       warn "required command not found: ${cmd}"
       missing=1
@@ -679,11 +734,11 @@ preflight_download_tools() {
   done
   if [ "${missing}" -eq 1 ]; then
     case "$(os_distro_id)" in
-      debian|ubuntu) die "install curl + tar first, e.g.: sudo apt-get update && sudo apt-get install -y curl tar" ;;
-      rhel|fedora|centos|rocky|almalinux) die "install curl + tar first, e.g.: sudo dnf install -y curl tar" ;;
-      arch) die "install curl + tar first, e.g.: sudo pacman -S --noconfirm curl tar" ;;
-      alpine) die "install curl + tar first, e.g.: apk add --no-cache curl tar" ;;
-      *) die "install curl + tar, then re-run" ;;
+      debian|ubuntu) die "install curl + tar + sha256sum first, e.g.: sudo apt-get update && sudo apt-get install -y curl tar coreutils" ;;
+      rhel|fedora|centos|rocky|almalinux) die "install curl + tar + sha256sum first, e.g.: sudo dnf install -y curl tar coreutils" ;;
+      arch) die "install curl + tar + sha256sum first, e.g.: sudo pacman -S --noconfirm curl tar coreutils" ;;
+      alpine) die "install curl + tar + sha256sum first, e.g.: apk add --no-cache curl tar coreutils" ;;
+      *) die "install curl + tar + sha256sum, then re-run" ;;
     esac
   fi
   if [ -n "${HONEY_STARTER_EXPECT_SHA256:-}" ] && ! command -v sha256sum >/dev/null 2>&1; then
@@ -1315,6 +1370,16 @@ valid_model() {
     *) return 0 ;;
   esac
 }
+valid_project_name() {
+  # Docker compose project name charset: [a-z0-9][a-z0-9_-]*[a-z0-9] (lowercase
+  # alnum start/end, inner [a-z0-9_-]; the docker docs' max is 63). Generated
+  # names are additionally bounded at PROJECT_NAME_MAX (32); user-supplied
+  # names up to 63 are accepted.
+  case "$1" in
+    ''|*[!a-z0-9_-]*|[-_]*|*[-_]) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 valid_yesno() {
   case "$1" in
     y|Y|yes|YES|n|N|no|NO) return 0 ;;
@@ -1348,12 +1413,29 @@ EFFECTIVE_API_PORT=""
 EFFECTIVE_UI_PORT=""
 EFFECTIVE_UI_URL=""
 EFFECTIVE_CONFIG_INTERVAL=""
+# Phase 6 per-instance COMPOSE_PROJECT_NAME state. IS_FRESH is computed ONCE in
+# on_disk_main right after read_provision (Req 2: fresh = never-provisioned, i.e.
+# ! state_dir_has_artifacts). RENAMING (writer) is 1 for a confirmed rename or a
+# silent adopt (ADOPT=1); DECLINED marks a declined env-vs-persisted change
+# (a NO-CHANGE: the writer keeps the persisted line, so the guard must NOT
+# re-probe the kept name); GUARD_RENAMING is what the F3 guard receives — 1
+# ONLY for a real project change (adopt / confirm-y), so the artifacts
+# early-return is suppressed and the EFFECTIVE name is truly probed (see guard).
+# A declined change keeps GUARD_RENAMING=0: the artifacts shield the kept name
+# (the instance rightfully owns its project) and a manage re-run with an
+# exported differing env never false-fires on its own running stack.
+EFFECTIVE_PROJECT=""
+IS_FRESH=0
+RENAMING=0
+ADOPT=0
+DECLINED=0
+GUARD_RENAMING=0
 # Set by prompt_setting when it sees an INVALID answer (any input source) so a
 # caller can distinguish "the documented default applied" from "invalid input
-# was seen then retried/defaulted". Consulted ONLY by the HD_AI_MODEL block,
-# which resets both before its own question: the documented contract is an
-# INVALID MODEL DIES (env, answers file, or typed) — it must never silently
-# adopt a retry line or re-pin.
+# was seen then retried/defaulted". Consulted by the COMPOSE_PROJECT_NAME and
+# HD_AI_MODEL blocks, each of which resets both before its own question: the
+# documented contract is INVALID INPUT DIES (env, answers file, or typed) — it
+# must never silently adopt a retry line or re-derive.
 INVALID_SEEN=0
 INVALID_VALUE=""
 
@@ -1377,8 +1459,215 @@ infer_provider_default() {
   fi
 }
 
+# --- per-instance COMPOSE_PROJECT_NAME derivation (Phase 6) -----------------
+# sanitize_project_basename BASENAME -> prints the sanitized, truncated
+# component (or "dir" when nothing survives). Lowercase; every char outside
+# [a-z0-9] becomes "-"; runs collapse; leading/trailing "-" stripped; empty ->
+# "dir"; truncated to PROJECT_BASENAME_MAX with a trailing "-" re-stripped.
+# Pure function (no state), used by derived_project_name and (via the shared
+# helper contract) by test/setup-dryrun.sh.
+sanitize_project_basename() {
+  local b="$1" out="" t
+  b="${b,,}"
+  b="$(printf '%s' "${b}" | tr -c 'a-z0-9' '-')"
+  while :; do
+    t="${b//--/-}"
+    [ "${t}" = "${b}" ] && break
+    b="${t}"
+  done
+  b="${b#-}"; b="${b%-}"
+  if [ -z "${b}" ]; then
+    b="dir"
+  fi
+  b="${b:0:${PROJECT_BASENAME_MAX}}"
+  b="${b%-}"
+  printf '%s' "${b}"
+}
+
+# derived_project_name INSTALL_DIR -> prints the deterministic fresh default
+# hs-<sanitized-basename>-<hash8>. The hash is the first PROJECT_HASH_LEN hex
+# chars of sha256(INSTALL_DIR) — the RESOLVED (post-dispatch) absolute target
+# path, NEVER SCRIPT_TREE, so two instances materialized from the same invoked
+# tree hash differently. Length 3+20+1+8 = 32 (PROJECT_NAME_MAX). Defensive
+# die if sha256sum is missing (preflight already requires it).
+# KEEP IN SYNC with test/setup-dryrun.sh derived_proj() (same inputs ->
+# same output); any derivation change must update BOTH.
+derived_project_name() {
+  local dir="$1" base b h name
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    die "sha256sum is required to derive the per-instance COMPOSE_PROJECT_NAME (install coreutils/busybox and re-run)"
+  fi
+  base="$(basename "${dir}")"
+  [ -n "${base}" ] || base="dir"
+  b="$(sanitize_project_basename "${base}")"
+  h="$(printf '%s' "${dir}" | sha256sum | cut -c1-${PROJECT_HASH_LEN})"
+  name="${PROJECT_PREFIX}${b}-${h}"
+  if [ "${#name}" -gt "${PROJECT_NAME_MAX}" ]; then
+    die "internal: derived project name '${name}' exceeds ${PROJECT_NAME_MAX} chars"
+  fi
+  printf '%s' "${name}"
+}
+
+# preliminary_project_name -> prints the would-be project name BEFORE the
+# questionnaire, without prompting. Order documented (never change silently):
+#   * IS_FRESH=1 (never-provisioned): env first, then .env prefill, then the
+#     derived default — setup-time env-first, matching every other
+#     questionnaire key (e.g. HONEY_NS). The .env prefill of a raw (never
+#     provisioned) tree is treated as a prefill only, so a setup-time env
+#     wins over it.
+#   * IS_FRESH=0 (provisioned): .env first, then env, then "honey-starter" —
+#     runtime-effective, matching lib.sh precedence (lib.sh sources .env at
+#     top, then :=honey-starter default).
+preliminary_project_name() {
+  if [ "${IS_FRESH}" -eq 1 ]; then
+    if [ "${HONEY_STARTER_UPDATE_IN_PROGRESS:-0}" = "1" ]; then
+      # --update on a fresh (never-provisioned) target: COMPOSE_PROJECT_NAME
+      # env is ignored AND the .env prefill is not adopted — the derived
+      # default applies (Req 6), matching what the questionnaire would answer.
+      derived_project_name "${INSTALL_DIR}"
+    else
+      first_nonempty "${COMPOSE_PROJECT_NAME:-}" "$(cur_value COMPOSE_PROJECT_NAME)" "$(derived_project_name "${INSTALL_DIR}")"
+    fi
+  else
+    first_nonempty "$(cur_value COMPOSE_PROJECT_NAME)" "${COMPOSE_PROJECT_NAME:-}" "honey-starter"
+  fi
+}
+
+# resolve_existing_project: Req 7 — the EXISTING-instance env-change decision,
+# called from warn_state_up_front AFTER read_provision (IS_FRESH=0), BEFORE any
+# guard. Sets EFFECTIVE_PROJECT / RENAMING / ADOPT / GUARD_RENAMING / DECLINED.
+#   * env unset                      -> EFFECTIVE_PROJECT = persisted (or
+#                                      empty -> "honey-starter"); no event.
+#   * env set, persisted empty       -> ADOPT silently (RENAMING=1): the
+#                                      adopted name is written and probed.
+#   * env set, persisted equal       -> no change (keep).
+#   * env set, persisted different   -> TTY-only hard confirm (data-loss
+#                                      language, Req 8); answers-file-only or
+#                                      NONINTERACTIVE runs DIE. Confirm-y ->
+#                                      RENAMING=1, EFFECTIVE = env; confirm-n ->
+#                                      a NO-CHANGE: DECLINED=1, keep persisted,
+#                                      RENAMING=0 + GUARD_RENAMING=0 (the guard
+#                                      early-returns on the artifacts — it must
+#                                      never force-probe the kept name).
+#   * --update (HONEY_STARTER_UPDATE_IN_PROGRESS=1): env IGNORED; keep
+#     persisted; never warn / confirm / adopt.
+resolve_existing_project() {
+  local env_p cur_p prompt default ans
+  RENAMING=0; ADOPT=0; DECLINED=0; GUARD_RENAMING=0
+  EFFECTIVE_PROJECT="$(first_nonempty "$(cur_value COMPOSE_PROJECT_NAME)" "honey-starter")"
+  # --update: env ignored (flag exported by the DO_UPDATE re-exec before the
+  # second run; scrubbed at delegation). Keep persisted/absent; never warn.
+  [ "${HONEY_STARTER_UPDATE_IN_PROGRESS:-0}" = "1" ] && return 0
+  env_p="${COMPOSE_PROJECT_NAME:-}"
+  if [ -z "${env_p}" ]; then
+    return 0
+  fi
+  valid_project_name "${env_p}" || die "invalid COMPOSE_PROJECT_NAME: '${env_p}' (lowercase [a-z0-9][a-z0-9_-]*[a-z0-9]; no leading/trailing -). Fix it and re-run."
+  cur_p="$(cur_value COMPOSE_PROJECT_NAME)"
+  if [ -z "${cur_p}" ]; then
+    # env set + nothing persisted -> adopt silently (set; the guard probes the
+    # adopted name with RENAMING=1, so a live collision under it still dies)
+    ADOPT=1; RENAMING=1; GUARD_RENAMING=1
+    EFFECTIVE_PROJECT="${env_p}"
+    return 0
+  fi
+  if [ "${cur_p}" = "${env_p}" ]; then
+    return 0
+  fi
+  # env differs from a persisted value: TTY-only hard confirm (answers-file
+  # only / NI DIE with the same data-loss message). Cannot use
+  # abort_or_continue_prompt as-is: that helper falls back to 'default'
+  # silently in NI and consumes an answers line; Req 8 demands a hard die.
+  if [ "${NONINTERACTIVE}" -eq 1 ] || [ "${HAVE_TTY}" -eq 0 ]; then
+    die "changing the compose project re-initializes Vault: this instance will initialize a NEW ${env_p}_vault-file volume and OVERWRITE root_token/unseal_key in ${STATE_DIR}; the current secrets under ${cur_p}_vault-file are no longer addressed (data loss). To change it, first stop this instance (docker compose -p ${cur_p} down -v) or keep ${cur_p}. (COMPOSE_PROJECT_NAME=${env_p} was exported; run interactively to confirm the change.)"
+  fi
+  # TTY-only confirm (Req 8): read the /dev/tty DIRECTLY — never consume an
+  # answers-file line (an answers-file-only run already died above), never
+  # re-read through prompt_setting.
+  prompt="Changing the compose project re-initializes Vault: this instance will initialize a NEW ${env_p}_vault-file volume and OVERWRITE root_token/unseal_key in ${STATE_DIR}; the current secrets under ${cur_p}_vault-file are no longer addressed (data loss). To change it, first stop this instance (docker compose -p ${cur_p} down -v) or keep ${cur_p}. Continue with the change? [y/N] "
+  printf '%s' "${prompt}" >&2
+  if ! IFS= read -r -u "${TTY_FD}" ans; then
+    ans="n"
+  fi
+  case "${ans}" in
+    y|Y|yes|YES)
+      RENAMING=1; GUARD_RENAMING=1
+      EFFECTIVE_PROJECT="${env_p}"
+      ;;
+    *)
+      # declined: a NO-CHANGE — the writer keeps the persisted line
+      # (RENAMING stays 0) and the guard must NOT re-probe the kept name
+      # (GUARD_RENAMING=0): the artifacts early-return shields it (this
+      # instance rightfully owns its project), so a manage re-run with an
+      # exported differing env + decline never false-fires on its own stack.
+      DECLINED=1; RENAMING=0; GUARD_RENAMING=0
+      EFFECTIVE_PROJECT="${cur_p}"
+      ;;
+  esac
+}
+
 run_questionnaire() {
-  local p base_default key_default msg model_default
+  local p base_default key_default msg model_default project_default
+
+  # --- COMPOSE_PROJECT_NAME (FIRST item; FRESH-only) --------------------------
+  # A never-provisioned instance gets the per-instance name persisted in .env:
+  # env (validated) -> answers/tty -> derived default. The .env prefill of a
+  # raw (never-provisioned) tree is the PROMPT DEFAULT only — a setup-time
+  # env still wins (preliminary_project_name env-first). A manage-in-place run
+  # (IS_FRESH=0) NEVER asks and NEVER re-derives: the leading answers slot is
+  # consumed and DISCARDED (a direct read, never via read_answer — no
+  # tty-fallthrough, and an exhausted file must not push to MISSING_VARS;
+  # Req 12). Resolved by resolve_existing_project in warn_state_up_front; here
+  # we only keep a fresh-run effective value in sync.
+  if [ "${IS_FRESH}" -eq 1 ]; then
+    if [ "${HONEY_STARTER_UPDATE_IN_PROGRESS:-0}" != "1" ] && [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+      valid_project_name "${COMPOSE_PROJECT_NAME}" \
+        || die "invalid COMPOSE_PROJECT_NAME: '${COMPOSE_PROJECT_NAME}' (lowercase [a-z0-9][a-z0-9_-]*[a-z0-9]; no leading/trailing -). Fix it and re-run."
+      EFFECTIVE_PROJECT="${COMPOSE_PROJECT_NAME}"
+      # env wins over the answers/tty slot: the leading answers-file line is
+      # consumed and DISCARDED so the rest of the questionnaire stays aligned.
+      if [ "${HAVE_ANSWERS}" -eq 1 ]; then
+        IFS= read -r -u "${ANSWERS_FD}" _ || true
+      fi
+    else
+      if [ "${HONEY_STARTER_UPDATE_IN_PROGRESS:-0}" = "1" ]; then
+        # --update on a fresh target: env ignored -> the derived default applies
+        project_default="$(derived_project_name "${INSTALL_DIR}")"
+      else
+        project_default="$(first_nonempty "$(cur_value COMPOSE_PROJECT_NAME)" "$(derived_project_name "${INSTALL_DIR}")")"
+      fi
+      # the project question is scoped to never-provisioned instances, asked
+      # FIRST, default shown in [brackets]. Empty answers/Enter = the derived
+      # default (never an error).
+      if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
+        INVALID_SEEN=0
+        INVALID_VALUE=""
+        if prompt_setting COMPOSE_PROJECT_NAME \
+          "Compose project name (COMPOSE_PROJECT_NAME)" \
+          "${project_default}" 0 valid_project_name; then
+          EFFECTIVE_PROJECT="${REPLY}"
+        else
+          EFFECTIVE_PROJECT="${project_default}"
+        fi
+        if [ "${INVALID_SEEN}" -eq 1 ]; then
+          die "invalid COMPOSE_PROJECT_NAME: '${INVALID_VALUE}' (lowercase [a-z0-9][a-z0-9_-]*[a-z0-9]; no leading/trailing -). Fix it and re-run."
+        fi
+      else
+        # NI / auto-NI: the documented default applies (derived). An
+        # env-supplied value was handled above; an explicit empty env is not
+        # accepted for user intent here — the derived default applies.
+        EFFECTIVE_PROJECT="${project_default}"
+      fi
+      valid_project_name "${EFFECTIVE_PROJECT}" \
+        || die "invalid COMPOSE_PROJECT_NAME: '${EFFECTIVE_PROJECT}' (lowercase [a-z0-9][a-z0-9_-]*[a-z0-9]; no leading/trailing -)."
+    fi
+  else
+    # manage / existing: the name was resolved pre-questionnaire; consume and
+    # discard the leading answers slot (Req 12) — never prompt, never re-derive.
+    if [ "${HAVE_ANSWERS}" -eq 1 ]; then
+      IFS= read -r -u "${ANSWERS_FD}" _ || true
+    fi
+  fi
 
   # --- HONEY_NS (prompt when env unset; default = current .env or starter) ---
   if [ -z "${HONEY_NS:-}" ]; then
@@ -1641,6 +1930,26 @@ build_env_content() {
     WVAL["${k}"]="${v}"
   }
 
+  # COMPOSE_PROJECT_NAME writer modes (Req 1):
+  #   * IS_FRESH=1 (never-provisioned)          -> set EFFECTIVE_PROJECT
+  #   * IS_FRESH=0 + confirmed rename (RENAMING=1, ADOPT=0) -> set confirmed value
+  #   * IS_FRESH=0 + adopt (ADOPT=1)            -> set env value SILENTLY (guard
+  #                                                probed it with RENAMING=1)
+  #   * IS_FRESH=0 + no change                  -> keep (preserve the line
+  #                                                verbatim; absent -> nothing;
+  #                                                lib.sh default applies by
+  #                                                omission; migration-safe)
+  # Effective no-change value (for the guard) is .env-first to match lib.sh.
+  if [ "${IS_FRESH}" -eq 1 ]; then
+    set_action COMPOSE_PROJECT_NAME set "${EFFECTIVE_PROJECT}"
+  elif [ "${ADOPT}" -eq 1 ] || [ "${RENAMING}" -eq 1 ]; then
+    # confirmed rename (RENAMING=1) or silent adopt (ADOPT=1, which also sets
+    # RENAMING=1): both SET the effective name; the guard probed it with
+    # RENAMING=1 in either case.
+    set_action COMPOSE_PROJECT_NAME set "${EFFECTIVE_PROJECT}"
+  else
+    set_action COMPOSE_PROJECT_NAME keep ""
+  fi
   set_action HONEY_NS set "${EFFECTIVE_NS}"
   set_action HONEY_USER set "${EFFECTIVE_USER}"
   if [ -n "${EFFECTIVE_BASE_URL}" ]; then
@@ -1757,6 +2066,11 @@ show_effective() {
   info ""
   info "install dir:   ${INSTALL_DIR}"
   info "state dir:     ${STATE_DIR}"
+  if [ -n "${EFFECTIVE_PROJECT}" ]; then
+    info "compose project: ${EFFECTIVE_PROJECT}"
+  else
+    info "compose project: (default: honey-starter)"
+  fi
   info "AI provider:   ${EFFECTIVE_PROVIDER}"
   if [ -n "${EXPLICIT_OPENAI_KEY}" ] || [ -n "$(cur_value OPENAI_API_KEY)" ]; then
     info "API key:       set (never echoed)"
@@ -1814,29 +2128,29 @@ abort_or_continue_prompt() {
   return 0
 }
 
-# guard_project_state_consistency: fail-fast protection so a NEW (never
-# provisioned) instance can never silently bind to a DIFFERENT deployment's
-# running containers + initialized Vault volume under the SHARED default
-# compose project. COMPOSE_PROJECT_NAME is ENV-ONLY (never stored in .env) and
-# lib.sh defaults it to honey-starter, so any instance that does not export
-# its own collides on project "honey-starter" and the volume
-# "honey-starter_vault-file". A fresh target's state dir has NO artifacts; if a
-# running default-project stack (or that vault-file volume) already exists,
-# proceeding is GUARANTEED to re-attach the volume -> Vault comes up SEALED ->
-# start.sh dies "vault is sealed but <fresh state>/unseal_key is
-# missing/empty" (the key only ever exists in THIS instance's state dir, which
-# is empty). Die fail-fast with the remedies instead (an interactive
-# warn+confirm would only walk the user into the same dead end). Fires for ALL
-# on-disk runs (materialize, manage, in-place) once the target's state dir is
-# resolved and BEFORE the questionnaire / .env write / delegation. NEVER dies
-# on a missing docker (skip-with-warn); only the collision dies.
+# guard_project_state_consistency PROJECT RENAMING: fail-fast protection so a
+# NEW (never-provisioned) instance can never silently bind to a DIFFERENT
+# deployment's running containers + initialized Vault volume, and so a
+# rename/adopt can never bind to an occupied project name. The PROJECT is
+# passed IN (the EFFECTIVE project name) — the guard NEVER re-reads
+# ${COMPOSE_PROJECT_NAME:-honey-starter} internally. RENAMING=1 suppresses the
+# artifacts early-return (an adopt / confirmed-rename must truly probe the
+# effective name — artifacts justify the OLD name only). A DECLINED change is a
+# NO-CHANGE and does NOT re-probe: its artifacts shield the kept name. Probe:
+#   docker compose -f <INSTALL_DIR>/deploy/docker-compose.yaml -p <p>
+#     ps --status running -q daemon ui valkey vault
+#   docker volume inspect <p>_vault-file
+# Two die variants (fresh-collision / rename-collision), both WITHOUT the old
+# "env-only / never stored" wording. NEVER dies on a missing docker
+# (skip-with-warn); only the collision dies.
 guard_project_state_consistency() {
-  local compose_p running ps_out vol_name
-  compose_p="${COMPOSE_PROJECT_NAME:-honey-starter}"   # MUST mirror lib.sh's default
-  if state_dir_has_artifacts; then
-    # Already-provisioned instance: the compose project and its volumes are
-    # rightfully THIS instance's own (the unseal key / admin token / identity
-    # live here). Never false-trigger on a managing / idempotent re-run.
+  local compose_p="$1" renaming="${2:-0}" running ps_out vol_name
+  compose_p="${compose_p:-honey-starter}"
+  if [ "${renaming}" -eq 0 ] && state_dir_has_artifacts; then
+    # Already-provisioned instance and NO project event: the compose project
+    # and its volumes are rightfully THIS instance's own (the unseal key /
+    # admin token / identity live here). Never false-trigger on a managing /
+    # idempotent re-run.
     return 0
   fi
   if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
@@ -1850,21 +2164,39 @@ guard_project_state_consistency() {
   running="$(printf '%s' "${ps_out}" | tr -d '[:space:]')"
   vol_name="${compose_p}_vault-file"
   if [ -n "${running}" ] || docker volume inspect "${vol_name}" >/dev/null 2>&1; then
-    die "$(printf '%s\n' \
-      "refusing to set up a NEW instance at ${INSTALL_DIR}: another deployment is already running under compose project '${compose_p}' (this instance would use the SAME project and the '${vol_name}' volume, because COMPOSE_PROJECT_NAME is env-only and defaults to honey-starter)." \
-      "Proceeding would re-attach that deployment's initialized Vault volume (it comes back SEALED) while this fresh instance has NO unseal key - start.sh would fail mid-start with 'vault is sealed but ${STATE_DIR}/unseal_key is missing/empty'." \
-      "Nothing was started, written, or stopped by this run." \
-      "Remedy (a): stop the running deployment first - from ITS install dir run: bash scripts/down.sh  (or: docker compose -f <its-deploy>/docker-compose.yaml -p ${compose_p} down); then re-run." \
-      "Remedy (b): give THIS instance its own project + ports, then re-run:  export COMPOSE_PROJECT_NAME=<project>; export HD_API_HOST_PORT=<port>; export HD_UI_HOST_PORT=<port>." \
-      "If the running stack IS this instance's own (you are re-managing it from a different directory): point HD_STATE_DIR at the owning instance's state dir (export HD_STATE_DIR=<install>/.honey-starter) or run setup.sh from inside that directory." \
-    )"
+    if [ "${renaming}" -eq 1 ]; then
+      die "$(printf '%s\n' \
+        "cannot use project '${compose_p}' for this instance: another deployment already runs under '${compose_p}' (or the '${vol_name}' volume exists)." \
+        "No project change was written; the instance keeps addressing its current Vault volume/secrets." \
+        "Choose a distinct name, or stop the other deployment first (docker compose -p <other> down -v), then re-run." \
+        "Nothing was started, written, or stopped by this run." \
+      )"
+    else
+      die "$(printf '%s\n' \
+        "refusing to set up a NEW instance at ${INSTALL_DIR}: another deployment is already running under compose project '${compose_p}' (or the '${vol_name}' volume exists)." \
+        "Proceeding would re-attach that deployment's initialized Vault volume (it comes back SEALED) while this fresh instance has NO unseal key - start.sh would fail mid-start with 'vault is sealed but ${STATE_DIR}/unseal_key is missing/empty'." \
+        "Nothing was started, written, or stopped by this run." \
+        "Remedy: choose a distinct COMPOSE_PROJECT_NAME, or stop the other deployment first (docker compose -f <its-deploy>/docker-compose.yaml -p ${compose_p} down), then re-run." \
+        "Run this instance with distinct ports too: export HD_API_HOST_PORT=<port>; export HD_UI_HOST_PORT=<port>." \
+      )"
+    fi
   fi
 }
-
 # warn_state_up_front: called BEFORE the questionnaire, with the would-be
 # (env > .env > default) values, once prompt sources are open.
 warn_state_up_front() {
   local ans=""
+  # Phase 6 B1: existing-instance env-change decision FIRST (before any guard) —
+  # sets EFFECTIVE_PROJECT / RENAMING / ADOPT / DECLINED / GUARD_RENAMING for
+  # provisioned instances; fresh instances (IS_FRESH=1) skip it (their project
+  # is resolved by the questionnaire / preliminary). --update never reaches
+  # here (env ignored, keep persisted).
+  if [ "${IS_FRESH}" -eq 0 ]; then
+    resolve_existing_project
+    if [ "${DECLINED}" -eq 1 ]; then
+      note "keeping the persisted compose project '${EFFECTIVE_PROJECT}' (the exported COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-} was not applied)."
+    fi
+  fi
   if state_dir_has_artifacts && [ ! -f "${PROVISION_FILE}" ]; then
     warn "state dir ${STATE_DIR} exists (root token etc.) but provision.env is absent"
     warn "-> no completed provisioning is recorded; a HONEY_NS/HONEY_USER change is not yet guarded by start.sh"
@@ -1902,7 +2234,11 @@ guard_after_questionnaire() {
 # MUST source the .env setup.sh just wrote (that is how it receives the keys).
 delegate_to_start() {
   local key
-  local -a scrubbed=(env -u HONEY_STARTER_NO_ENV)
+  # Scrub env at the delegation boundary: start.sh sources the 600-mode .env
+  # it is given, so COMPOSE_PROJECT_NAME (and the update flag) must come from
+  # THERE — never inherited env — making .env-beats-env precedence explicit at
+  # the boundary (Phase 6).
+  local -a scrubbed=(env -u HONEY_STARTER_NO_ENV -u HONEY_STARTER_UPDATE_IN_PROGRESS -u COMPOSE_PROJECT_NAME)
   for key in "${SECRET_KEYS[@]}"; do
     scrubbed+=(-u "${key}")
   done
@@ -1959,6 +2295,12 @@ on_disk_main() {
     # new from the invoked tree when it did not exist); now pull the release
     # over it so the fresh instance runs the latest code
     download_and_install "${INSTALL_DIR}" 1
+    # Phase 6: the re-exec drops --update; HONEY_STARTER_UPDATE_IN_PROGRESS=1
+    # is what the second run sees. Under it, COMPOSE_PROJECT_NAME env is
+    # IGNORED for existing instances (keep persisted/absent; never warn /
+    # confirm / adopt); fresh targets take the derived default. The flag is
+    # scrubbed at delegation.
+    export HONEY_STARTER_UPDATE_IN_PROGRESS=1
     reload_on_disk_without_update_flags "$@"
   fi
 
@@ -1967,21 +2309,49 @@ on_disk_main() {
   resolve_state_dir
   read_provision
 
+  # Phase 6 Req 2: IS_FRESH = never-provisioned (no state artifacts),
+  # computed ONCE here (single source of truth). Covers materialize-new,
+  # bootstrap first-install after re-exec, and manage-of-raw-tree (all have
+  # artifact-less state dirs); genuinely provisioned instances never re-ask.
+  # NOTE: HD_STATE_DIR must be exported on every run (existing contract) or a
+  # provisioned instance with a custom state dir could look fresh and be
+  # re-asked.
+  if state_dir_has_artifacts; then
+    IS_FRESH=0
+  else
+    IS_FRESH=1
+  fi
+
   info "install dir: ${INSTALL_DIR}"
   info "state dir:   ${STATE_DIR}"
 
-  # F3: pre-delegate project/state consistency guard - fail fast when a NEW
-  # (artifact-less) instance would silently bind to ANOTHER deployment's
-  # running default-project stack / initialized vault-file volume and then die
-  # in start.sh on a missing unseal key. Runs for ALL on-disk flows
-  # (materialize, manage, in-place) before the questionnaire / .env write /
-  # delegation.
-  guard_project_state_consistency
+  # Req 5: validate a fresh-run env COMPOSE_PROJECT_NAME EARLY (before any
+  # guard probe) so an invalid name never reaches the docker probe; existing
+  # instances validate it in resolve_existing_project.
+  if [ "${IS_FRESH}" -eq 1 ] && [ "${HONEY_STARTER_UPDATE_IN_PROGRESS:-0}" != "1" ] && [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+    valid_project_name "${COMPOSE_PROJECT_NAME}" \
+      || die "invalid COMPOSE_PROJECT_NAME: '${COMPOSE_PROJECT_NAME}' (lowercase [a-z0-9][a-z0-9_-]*[a-z0-9]; no leading/trailing -). Fix it and re-run."
+  fi
 
-  # up-front desync / partial-state warnings (would-be values, against the
-  # CHOSEN tree — the target decision precedes this, so its "before ns/user
-  # answers" guarantee holds)
+  # up-front desync / partial-state warnings + the Phase 6 B1 existing-instance
+  # env-change decision (sets EFFECTIVE_PROJECT / RENAMING / ADOPT / DECLINED /
+  # GUARD_RENAMING for provisioned instances; fresh instances resolve their
+  # project in the questionnaire). --update never warns. The target decision
+  # precedes this, so its "before ns/user answers" guarantee holds.
   warn_state_up_front
+
+  # F3 pre-guard (Phase 6 B1): probe the name the runtime will actually use.
+  #   * fresh     -> preliminary (env > .env prefill > derived), RENAMING=0
+  #   * existing  -> EFFECTIVE_PROJECT (resolved ABOVE, before any guard), with
+  #                  GUARD_RENAMING (=1 for adopt / confirm-y, so the artifacts
+  #                  early-return is suppressed and the effective name is truly
+  #                  probed; =0 for a no-change manage re-run AND for a declined
+  #                  change — both keep the persisted name shielded by artifacts)
+  if [ "${IS_FRESH}" -eq 1 ]; then
+    guard_project_state_consistency "$(preliminary_project_name)" 0
+  else
+    guard_project_state_consistency "${EFFECTIVE_PROJECT}" "${GUARD_RENAMING}"
+  fi
 
   # questionnaire (env values / chosen-tree .env prefill / documented
   # defaults; prompts only when a source exists and the env var is unset)
@@ -1990,6 +2360,15 @@ on_disk_main() {
 
   # hard desync guard on the final effective values
   guard_after_questionnaire
+
+  # F3 post-guard (Phase 6 B1 re-probe): a never-provisioned instance whose
+  # effective (typed/answered) project name DIFFERS from the preliminary one
+  # (e.g. the user answered a different name than the derived default) must be
+  # re-probed under the EFFECTIVE name BEFORE any write — a live collision
+  # under it dies here, pre-write, no .env.
+  if [ "${IS_FRESH}" -eq 1 ] && [ "${EFFECTIVE_PROJECT}" != "$(preliminary_project_name)" ]; then
+    guard_project_state_consistency "${EFFECTIVE_PROJECT}" 0
+  fi
 
   # build + preview the effective .env, then write it
   build_env_content
