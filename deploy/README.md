@@ -177,10 +177,17 @@ target's own `start.sh` runs — safe.
   `https://api.openai.com/v1` / `gpt-5.4-mini`).
 * `custom` → writes a required, validated `HD_AI_BASE_URL` (http(s)://) plus
   `OPENAI_API_KEY` + an `HD_AI_MODEL` pin; it never silently defaults the base
-  URL (the default `gpt-5.4-mini` may not exist on your endpoint — type your
-  own model when prompted).
+  URL (the default `gpt-5.4-mini` may not exist on your endpoint — choose
+  *type your own* at the model menu and type the model).
 * `skip` → no key/base lines; `start.sh` seeds placeholders; add the key to
   `.env` and re-run later.
+* On a real TTY with no answers file the provider and model questions
+  render as **numbered select-from-list menus** (pick by number, type the
+  exact value, or Enter for the default). The model menu adds a trailing
+  *type your own* option for any other model; an **out-of-range number**
+  (e.g. provider `9` or model `99`) is warned about and re-asked — it is
+  **never adopted** as a value. Answers-file / non-interactive runs never
+  render the menus; they consume the raw values exactly as before.
 * `openrouter` is **never prompted**. The openrouter *engine* exists in
   `bootstrap/engines.yaml` (`base_url` fixed to `https://openrouter.ai/api/v1`,
   Vault key field `openrouter_api_key`) but no shipped agent references it —
@@ -224,7 +231,9 @@ env semantics:
   override is not kept, the line is removed, and the question is skipped.
 * `HD_AI_MODEL` unset + openai/custom — the question is asked; Enter / an
   empty answers-file line / a non-interactive run all accept the default and
-  WRITE `gpt-5.4-mini`.
+  WRITE `gpt-5.4-mini`. On a real TTY with no answers file the question is a
+  numbered menu of common models plus *type your own*; an out-of-range
+  integer (e.g. `99`) is warned about and re-asked, never adopted.
 * provider `skip` — no question; an existing line is kept when env is unset,
   removed when explicitly empty, replaced when non-empty.
 
