@@ -124,9 +124,11 @@ MODEL_DEFAULT="gpt-5.4-mini"
 # "common models" list offered interactively. The documented pin default is
 # always shown in the model prompt (Enter accepts it even when it is not
 # listed) and a trailing "type your own" option covers any other model.
-# MENU_TYPE_OWN is the sentinel used inside the menu item list; it contains '_'
-# so it can never collide with a valid_model string (valid_model charset has
-# no '_').
+# MENU_TYPE_OWN is the sentinel used inside the model menu item list. It is
+# never adopted as a model value: a literal "type your own" typed at the menu
+# matches the menu item and routes to prompt_type_own_model, which validates
+# and returns the user's own free-string model (the sentinel itself is
+# consumed by that routing and never written to .env).
 AI_PROVIDER_MENU=(openai custom skip)
 AI_MODEL_MENU=(gpt-5.4 gpt-5.4-mini gpt-4o gpt-4o-mini o3 o4-mini)
 MENU_TYPE_OWN="__type_your_own__"

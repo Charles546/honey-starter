@@ -97,16 +97,19 @@
 #     warned + retried and NEVER written (valid_model would otherwise accept
 #     '99' — the trap Phase B closes); B6 answers-file raw-value regression:
 #     raw values pass through unmodified with NO menu rendered and no ESC
-#     bytes (pre-Phase-B byte-identical).
+#     bytes (pre-Phase-B byte-identical); B7 "type your own" at the model
+#     menu routes to a free-string sub-prompt — an invalid typed model is
+#     warned + re-asked, a valid free-string model is written, and the
+#     sentinel is never adopted.
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 95 checks total: the 89 pre-Phase-B checks + the 6 Phase B menu checks
-# (B1-B6).
+# 96 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# (B1-B7).
 #
 # python3 is OPTIONAL and used only by the pty harness (test/pty-helper.py) for
 # the interactive branch-3 prompt / typed-invalid-model tests (17k/19/20) and
-# the Phase B menu hermetics (B1-B5); when python3 is absent those checks are
+# the Phase B menu hermetics (B1-B5, B7); when python3 is absent those checks are
 # skipped cleanly. setup.sh itself never needs python3.
 set -euo pipefail
 
@@ -921,7 +924,7 @@ rm -rf "${TSRC16B}" "${TPRE16B}" "${S16B}"
 # ---------------------------------------------------------------------------
 # 17a. answers-file openai writes the model answer
 T17A="$(fresh_tree)"; S17A="$(mktemp -d)"
-printf 'proj17a\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
+printf 'proj17a\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
 set +e
 (
   cd "${T17A}"
@@ -932,8 +935,8 @@ set +e
 ) >/tmp/setup-dryrun.17a.out 2>&1
 RC17A=$?
 set -e
-if [ "${RC17A}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17a$' "${T17A}/.env" && grep -q '^HD_AI_MODEL=gpt-4o$' "${T17A}/.env"; then
-  ok "model matrix: answers-file openai model line written (gpt-4o)"
+if [ "${RC17A}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17a$' "${T17A}/.env" && grep -q '^HD_AI_MODEL=ft:gpt-4o:org:custom$' "${T17A}/.env"; then
+  ok "model matrix: answers-file openai model line written (ft:gpt-4o:org:custom)"
 else
   bad "model matrix 17a rc=${RC17A}:"; tail -5 /tmp/setup-dryrun.17a.out >&2 || true
 fi
@@ -2219,8 +2222,12 @@ fi
 #    answers-file raw-value regression: with an answers file the flat
 #    raw-value path is used — NO menu is rendered and behavior is
 #    byte-identical to pre-Phase-B (an unlisted-but-valid model passes through
-#    untouched, whereas interactively it would need "type your own"). Each pty
-#    invocation passes TERM=dumb explicitly (Phase A approved addendum).
+#    untouched, whereas interactively it would need "type your own"), and B7
+#    the "type your own" route at the model menu: option 7 selects the
+#    free-string sub-prompt, an invalid typed model (contains a space) is
+#    warned + retried, then a valid free-string model is accepted and written
+#    (the sentinel is never adopted). Each pty invocation passes TERM=dumb
+#    explicitly (Phase A approved addendum).
 #    python3-gated; skipped cleanly when python3 is unavailable.
 if command -v python3 >/dev/null 2>&1; then
   # B1. select provider by number (2=custom) and model by number (3=gpt-4o).
@@ -2348,8 +2355,37 @@ if command -v python3 >/dev/null 2>&1; then
     sed 's/^/    | /' /tmp/setup-dryrun.b5.out >&2 || true
   fi
   rm -rf "${TB5}" "${SB5}"
+  # B7. "type your own" at the model menu: selecting option 7 routes to the
+  #     type-your-own sub-prompt; an invalid typed model (contains a space) is
+  #     warned + re-asked, then a valid free-string model is accepted and
+  #     written. Loop terminates; the sentinel __type_your_own__ is never
+  #     adopted.
+  TB7="$(fresh_tree)"; SB7="$(mktemp -d)"
+  set +e
+  (
+    cd "${TB7}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SB7}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TB7}/scripts/setup.sh" "Compose project name" \
+        projb7 ansns ansuser openai 7 "bad model" my-custom-model sk-b7 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.b7.out 2>&1
+  RC_B7=$?
+  set -e
+  if [ "${RC_B7}" -eq 0 ] \
+    && grep -q "invalid HD_AI_MODEL: 'bad model'" /tmp/setup-dryrun.b7.out \
+    && grep -q '^HD_AI_MODEL=my-custom-model$' "${TB7}/.env" \
+    && ! grep -q '^HD_AI_MODEL=__type_your_own__$' "${TB7}/.env"; then
+    ok "B7: type your own — invalid 'bad model' warned/retried, my-custom-model written (sentinel never adopted)"
+  else
+    bad "B7 rc=${RC_B7} (want type-your-own route: bad model retried, my-custom-model written):"
+    sed 's/^/    | /' /tmp/setup-dryrun.b7.out >&2 || true
+  fi
+  rm -rf "${TB7}" "${SB7}"
+
 else
-  ok "Phase B select-from-list menu hermetics SKIPPED (python3 unavailable)"
+  ok "Phase B select-from-list menu hermetics (B1-B5, B7) SKIPPED (python3 unavailable)"
 fi
 
 # B6. answers-file raw-value regression (pre-Phase-B path): with an answers
