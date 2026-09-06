@@ -117,6 +117,21 @@ SECRET_KEYS=(OPENAI_API_KEY OPENROUTER_API_KEY)
 # (compose already injects HD_AI_MODEL when .env leaves it unset).
 MODEL_DEFAULT="gpt-5.4-mini"
 
+# Phase B interactive select-from-list menus (setup.sh UX). The menus are a
+# TTY-only convenience layered on the SAME raw answer values the answers-file /
+# non-interactive paths have always consumed: AI_PROVIDER_MENU holds the exact
+# HONEY_AI_PROVIDER values (openai|custom|skip) and AI_MODEL_MENU is a curated
+# "common models" list offered interactively. The documented pin default is
+# always shown in the model prompt (Enter accepts it even when it is not
+# listed) and a trailing "type your own" option covers any other model.
+# MENU_TYPE_OWN is the sentinel used inside the menu item list; it contains '_'
+# so it can never collide with a valid_model string (valid_model charset has
+# no '_').
+AI_PROVIDER_MENU=(openai custom skip)
+AI_MODEL_MENU=(gpt-5.4 gpt-5.4-mini gpt-4o gpt-4o-mini o3 o4-mini)
+MENU_TYPE_OWN="__type_your_own__"
+MENU_TYPE_OWN_LABEL="type your own"
+
 # Per-instance COMPOSE_PROJECT_NAME derivation (Phase 6): fresh (never
 # provisioned) installs get hs-<sanitized-basename>-<hash8>, deterministic from
 # the resolved INSTALL_DIR (never SCRIPT_TREE, so two instances materialized
@@ -1457,6 +1472,125 @@ prompt_setting() {
   return 1
 }
 
+# --- Phase B select-from-list menus (interactive only) ------------------------
+# Custom number-driven menus — deliberately NOT bash's `select` builtin (it
+# reads from stdin, the wrong stream for this installer's /dev/tty +
+# answers-file plumbing, and its rendering cannot be routed through the Phase A
+# msg_* helpers). Menus are rendered ONLY on a real TTY with no answers file;
+# answers-file / HONEY_STARTER_NONINTERACTIVE runs never reach them and keep
+# consuming raw values through the pre-Phase-B flat prompts.
+#
+# prompt_menu VARNAME LABEL DEFAULT RESOLVE_FN ITEM...
+#   Renders LABEL + the numbered ITEM list through the msg_* helpers, then
+#   reads a selection from the TTY (via read_answer) and maps it:
+#     * empty input              -> REPLY=DEFAULT   (Enter accepts the default)
+#     * an integer in 1..N       -> REPLY=<ITEM[i]> (in-range number)
+#     * input equal to an ITEM   -> REPLY=<ITEM>    (exact-value match)
+#     * anything else            -> RESOLVE_FN "$input"; when it returns 0 the
+#                                    resolver accepted (it set REPLY); otherwise
+#                                    a generic warning is printed and the menu
+#                                    re-renders (retry). RESOLVE_FN may also
+#                                    die for domain rules. '-' = always reject.
+#   Returns 0 with REPLY set, or 1 when no input could be read.
+prompt_menu() {
+  local varname="$1" label="$2" default="$3" resolve_fn="$4" n raw ans i item
+  shift 4
+  n=$#
+  while :; do
+    msg_input "${label}:" >&2
+    printf '\n' >&2
+    i=0
+    for item in "$@"; do
+      i=$((i + 1))
+      if [ "${item}" = "${MENU_TYPE_OWN}" ]; then
+        msg_input "  ${i}) ${MENU_TYPE_OWN_LABEL}" >&2
+      else
+        msg_input "  ${i}) ${item}" >&2
+      fi
+      printf '\n' >&2
+    done
+    msg_input "select a number, an exact value, or Enter for the default [${default}] " >&2
+    if ! read_answer "${varname}" "" 0 "${varname}"; then
+      MISSING_VARS+=("${varname}")
+      return 1
+    fi
+    raw="${REPLY}"
+    if [ -z "${raw}" ]; then
+      REPLY="${default}"
+      return 0
+    fi
+    case "${raw}" in
+      ''|*[!0-9]*) ;; # not an integer -> fall through to exact-match/resolver
+      *)
+        if [ "${raw}" -ge 1 ] 2>/dev/null && [ "${raw}" -le "${n}" ] 2>/dev/null; then
+          i=0
+          for item in "$@"; do
+            i=$((i + 1))
+            if [ "${i}" -eq "${raw}" ]; then
+              REPLY="${item}"
+              return 0
+            fi
+          done
+        fi
+        # an INTEGER that is out of menu range (e.g. 99) is warned + retried,
+        # NEVER adopted as a value (valid_model would otherwise accept it)
+        warn "invalid selection '${raw}': enter a number 1-${n}, an exact value, or press Enter for the default"
+        continue
+        ;;
+    esac
+    for item in "$@"; do
+      if [ "${item}" = "${raw}" ]; then
+        REPLY="${item}"
+        return 0
+      fi
+    done
+    if [ "${resolve_fn}" != "-" ] && "${resolve_fn}" "${raw}"; then
+      return 0
+    fi
+    warn "invalid selection '${raw}': enter a number 1-${n}, an exact value, or press Enter for the default"
+  done
+}
+
+# resolve_model_menu_unlisted RAW: the model menu's RESOLVE_FN. The approved
+# mapping: a free-text model typed at the interactive menu is ONLY accepted via
+# the explicit "type your own" option — a raw model string at the menu (exact
+# listed-value matches are already handled inside prompt_menu) is unparseable
+# input and keeps the existing invalid-HD_AI_MODEL die, byte for byte. The
+# literal "type your own" label is also accepted as a synonym for the option.
+resolve_model_menu_unlisted() {
+  if [ "$1" = "${MENU_TYPE_OWN_LABEL}" ]; then
+    REPLY="${MENU_TYPE_OWN}"
+    return 0
+  fi
+  die "invalid HD_AI_MODEL: '$1' (no whitespace/control; charset [A-Za-z0-9._:/@+-]). Fix the model and re-run."
+}
+
+# prompt_type_own_model VARNAME DEFAULT: the sub-prompt behind the model menu's
+# "type your own" option — reads a free-form model string from the TTY and
+# validates it with valid_model (warning + re-asking until valid). Empty input
+# (Enter / EOF) abandons the custom string and keeps DEFAULT. REPLY holds the
+# value on success; returns 0, or 1 when no value could be obtained.
+prompt_type_own_model() {
+  local varname="$1" default="$2" raw=""
+  while :; do
+    msg_input "type your own model (HD_AI_MODEL) " >&2
+    if ! read_answer "${varname}" "" 0 "${varname}"; then
+      REPLY="${default}"
+      return 1
+    fi
+    raw="${REPLY}"
+    if [ -z "${raw}" ]; then
+      REPLY="${default}"
+      return 0
+    fi
+    if valid_model "${raw}"; then
+      REPLY="${raw}"
+      return 0
+    fi
+    warn "invalid HD_AI_MODEL: '${raw}' (no whitespace/control; charset [A-Za-z0-9._:/@+-])"
+  done
+}
+
 # --- validators (start.sh charset rules duplicated; NOT refactored) -----------
 valid_ns() {
   case "$1" in
@@ -1825,7 +1959,22 @@ run_questionnaire() {
     p="$(infer_provider_default)"
     # only ask when we actually have a prompt source; else the inferred default
     # applies (NI / auto-NI never prompt)
-    if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
+    if [ "${NONINTERACTIVE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
+      # TTY-only select-from-list menu (Phase B): a real terminal with NO
+      # answers file. Select by number (1-3), by typing the exact value
+      # (openai|custom|skip), or Enter for the inferred default. Answers-file /
+      # NI runs never reach this path — they keep the flat raw-value prompt.
+      if prompt_menu HONEY_AI_PROVIDER \
+        "AI provider (openai | custom (OpenAI-compatible endpoint) | skip)" \
+        "${p}" - "${AI_PROVIDER_MENU[@]}"; then
+        EFFECTIVE_PROVIDER="${REPLY}"
+      else
+        MISSING_VARS+=(HONEY_AI_PROVIDER)
+      fi
+    elif [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
+      # answers-file / flat interactive path (unchanged pre-Phase-B behavior):
+      # the raw provider value is consumed exactly as today through the plain
+      # prompt — the select-from-list menu is TTY-only and never rendered here.
       if prompt_setting HONEY_AI_PROVIDER \
         "AI provider (openai | custom (OpenAI-compatible endpoint) | skip)" \
         "${p}" 0 valid_provider; then
@@ -1878,14 +2027,48 @@ run_questionnaire() {
         # source); a VALID model never dies.
         INVALID_SEEN=0
         INVALID_VALUE=""
-        if prompt_setting HD_AI_MODEL "AI model (HD_AI_MODEL)" \
-          "${model_default}" 0 valid_model; then
-          EFFECTIVE_MODEL="${REPLY}"
+        if [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
+          # TTY-only curated select-from-list menu (Phase B): an in-range
+          # integer = menu index; an exact listed-value match = that value; an
+          # integer OUT of menu range (e.g. 99) is warned + retried and NEVER
+          # written as a model (valid_model would otherwise accept '99' — the
+          # exact trap the plan avoids); Enter accepts the pin default. A
+          # free-string model is ONLY accepted via the explicit "type your own"
+          # option; any other free text keeps the standard invalid-HD_AI_MODEL
+          # die (byte-identical message).
+          if prompt_menu HD_AI_MODEL "AI model (HD_AI_MODEL)" \
+            "${model_default}" resolve_model_menu_unlisted \
+            "${AI_MODEL_MENU[@]}" "${MENU_TYPE_OWN}"; then
+            if [ "${REPLY}" = "${MENU_TYPE_OWN}" ]; then
+              if prompt_type_own_model HD_AI_MODEL "${model_default}"; then
+                EFFECTIVE_MODEL="${REPLY}"
+              else
+                EFFECTIVE_MODEL="${model_default}"
+              fi
+            else
+              EFFECTIVE_MODEL="${REPLY}"
+            fi
+          else
+            # HD_AI_MODEL has a documented default (the pin) and is
+            # intentionally NOT part of all_answers_supplied / MISSING_VARS: a
+            # prompt failure falls back to the default rather than a
+            # missing-required-value error.
+            EFFECTIVE_MODEL="${model_default}"
+          fi
         else
-          # HD_AI_MODEL has a documented default (the pin) and is intentionally
-          # NOT part of all_answers_supplied / MISSING_VARS: a prompt failure
-          # falls back to the default rather than a missing-required-value error.
-          EFFECTIVE_MODEL="${model_default}"
+          # answers-file / flat interactive path (unchanged pre-Phase-B
+          # behavior): the raw model value is consumed exactly as today — an
+          # invalid value still dies below via INVALID_SEEN.
+          if prompt_setting HD_AI_MODEL "AI model (HD_AI_MODEL)" \
+            "${model_default}" 0 valid_model; then
+            EFFECTIVE_MODEL="${REPLY}"
+          else
+            # HD_AI_MODEL has a documented default (the pin) and is
+            # intentionally NOT part of all_answers_supplied / MISSING_VARS: a
+            # prompt failure falls back to the default rather than a
+            # missing-required-value error.
+            EFFECTIVE_MODEL="${model_default}"
+          fi
         fi
         # Documented contract: an INVALID MODEL DIES regardless of the input
         # source -- env (validated earlier), answers file, or typed. Without

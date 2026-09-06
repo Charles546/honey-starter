@@ -3,7 +3,8 @@
 # guided single-command installer; Phase 4 + Phase 5 multi-instance + AI model
 # + Phase 6 per-instance COMPOSE_PROJECT_NAME persisted in .env + Phase A
 # rich-output foundation: emoji/color detection + prefix-only message styling
-# with a plain fallback).
+# with a plain fallback + Phase B TTY-only select-from-list menus for the AI
+# provider / AI model questions).
 #
 # Hermetic: the tree under test is copied into a throwaway mktemp dir and
 # setup.sh is executed against THAT copy with a temp HONEY_STARTER_INSTALL_DIR
@@ -86,15 +87,27 @@
 #     detection, emoji/color prefix-only styling — A1/A2/A3/A4 prove the plain
 #     fallback (redirected / TERM=dumb / NO_COLOR=1 / NO_COLOR= empty) emits
 #     NO ESC bytes and NO emoji, and a color tty adds ESC+emoji while every
-#     message substring stays byte-contiguous (A5 = the pre-existing 84
-#     checks still passing in the same run — the real regression gate).
+#     message substring stays byte-contiguous (the A-series runs inside the
+#     full pre-Phase-B suite — the real regression gate).
+#   * Phase B TTY-only select-from-list menus: on a real TTY with NO answers
+#     file the AI-provider / AI-model questions render number-driven menus —
+#     B1 select by number; B2 Enter accepts the default; B3 typed exact
+#     value; B4 invalid provider input (out-of-range number) -> warn + retry
+#     -> valid selection succeeds; B5 an out-of-range MODEL integer (99) is
+#     warned + retried and NEVER written (valid_model would otherwise accept
+#     '99' — the trap Phase B closes); B6 answers-file raw-value regression:
+#     raw values pass through unmodified with NO menu rendered and no ESC
+#     bytes (pre-Phase-B byte-identical).
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
+# 95 checks total: the 89 pre-Phase-B checks + the 6 Phase B menu checks
+# (B1-B6).
+#
 # python3 is OPTIONAL and used only by the pty harness (test/pty-helper.py) for
-# the interactive branch-3 prompt / typed-invalid-model tests (17k/19/20);
-# when python3 is absent those checks are skipped cleanly. setup.sh itself
-# never needs python3.
+# the interactive branch-3 prompt / typed-invalid-model tests (17k/19/20) and
+# the Phase B menu hermetics (B1-B5); when python3 is absent those checks are
+# skipped cleanly. setup.sh itself never needs python3.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -908,7 +921,7 @@ rm -rf "${TSRC16B}" "${TPRE16B}" "${S16B}"
 # ---------------------------------------------------------------------------
 # 17a. answers-file openai writes the model answer
 T17A="$(fresh_tree)"; S17A="$(mktemp -d)"
-printf 'proj17a\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
+printf 'proj17a\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
 set +e
 (
   cd "${T17A}"
@@ -919,8 +932,8 @@ set +e
 ) >/tmp/setup-dryrun.17a.out 2>&1
 RC17A=$?
 set -e
-if [ "${RC17A}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17a$' "${T17A}/.env" && grep -q '^HD_AI_MODEL=ft:gpt-4o:org:custom$' "${T17A}/.env"; then
-  ok "model matrix: answers-file openai model line written (ft:gpt-4o:org:custom)"
+if [ "${RC17A}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17a$' "${T17A}/.env" && grep -q '^HD_AI_MODEL=gpt-4o$' "${T17A}/.env"; then
+  ok "model matrix: answers-file openai model line written (gpt-4o)"
 else
   bad "model matrix 17a rc=${RC17A}:"; tail -5 /tmp/setup-dryrun.17a.out >&2 || true
 fi
@@ -1207,7 +1220,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_INSTALL_DIR HOME="${PH19A}" TERM=dumb HD_STATE_DIR="${S19A}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "" projname19a ansns ansuser openai modeltest sk-key-pty 9300 9390 -- --dry-run \
+        "" projname19a ansns ansuser openai gpt-4o sk-key-pty 9300 9390 -- --dry-run \
   ) >/tmp/setup-dryrun.19a.out 2>&1
   RC19A=$?
   set -e
@@ -1236,7 +1249,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_INSTALL_DIR HOME="${TH19B}" TERM=dumb HD_STATE_DIR="${S19B}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "~" projname19b ansns ansuser openai modeltest2 sk-key-pty2 9301 9391 -- --dry-run \
+        "~" projname19b ansns ansuser openai gpt-4o sk-key-pty2 9301 9391 -- --dry-run \
   ) >/tmp/setup-dryrun.19b.out 2>&1
   RC19B=$?
   set -e
@@ -1585,7 +1598,7 @@ rm -rf "${TP2}" "${SP2}"
 # P3. fresh answers-file leading line ansproj -> written (post-guard re-probe
 #     proves the answered name was probed).
 TP3="$(fresh_tree)"; SP3="$(mktemp -d)"
-printf 'ansproj\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p3.answers
+printf 'ansproj\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p3.answers
 : > /tmp/setup-dryrun.p3.log; printf '' > /tmp/setup-dryrun.p3.state
 set +e
 (
@@ -1610,7 +1623,7 @@ rm -rf "${TP3}" "${SP3}"
 
 # P4. fresh answers-file EMPTY leading line -> the derived default is written.
 TP4="$(fresh_tree)"; SP4="$(mktemp -d)"
-printf '\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p4.answers
+printf '\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p4.answers
 : > /tmp/setup-dryrun.p4.log; printf '' > /tmp/setup-dryrun.p4.state
 DERIVED4="$(derived_proj "${TP4}")"
 set +e
@@ -1659,7 +1672,7 @@ rm -rf "${TP5}" "${SP5}"
 # P6. fresh answers-file INVALID leading line -> dies on the project (the
 #     charset message), no .env.
 TP6="$(fresh_tree)"; SP6="$(mktemp -d)"
-printf 'BadProj!\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p6.answers
+printf 'BadProj!\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p6.answers
 set +e
 (
   cd "${TP6}"
@@ -1865,7 +1878,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP12}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP12}/scripts/setup.sh" "Continue with the change?" \
-        n ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
+        n ansns ansuser openai gpt-4o sk-pty-key 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.p12.out 2>&1
   RC12=$?
   set -e
@@ -1904,7 +1917,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP13}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP13}/scripts/setup.sh" "Continue with the change?" \
-        y ansns ansuser openai ft:gpt-4o:org:custom sk-pty-key 9300 9390 -- --dry-run
+        y ansns ansuser openai gpt-4o sk-pty-key 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.p13.out 2>&1
   RC13=$?
   set -e
@@ -1991,7 +2004,7 @@ rm -rf "${TP15}" "${SP15}"
 #      proceeds and writes it (-p typedname in the log), and when typedname is
 #      RUNNING it dies pre-write, no .env.
 TP16="$(fresh_tree)"; SP16="$(mktemp -d)"
-printf 'typedname\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16.answers
+printf 'typedname\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16.answers
 DERIVED16="$(derived_proj "${TP16}")"
 # Scenario 1: nothing running -> rc 0, .env typedname, log has -p typedname
 : > /tmp/setup-dryrun.p16a.log; printf '' > /tmp/setup-dryrun.p16a.state
@@ -2010,7 +2023,7 @@ cp "${TP16}/.env" /tmp/setup-dryrun.p16a.env 2>/dev/null || true
 set -e
 # Scenario 2: typedname RUNNING -> die pre-write, no .env
 TP16B="$(fresh_tree)"; SP16B="$(mktemp -d)"
-printf 'typedname\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16b.answers
+printf 'typedname\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16b.answers
 : > /tmp/setup-dryrun.p16b.log; printf 'RUNNING typedname\n' > /tmp/setup-dryrun.p16b.state
 set +e
 (
@@ -2095,7 +2108,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA2}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a2.out 2>&1
   RC_A2=$?
   set -e
@@ -2126,7 +2139,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA3}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA3}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a3.out 2>&1
   RC_A3=$?
   set -e
@@ -2158,7 +2171,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR=1 HOME="${HOME}" HD_STATE_DIR="${SA4A}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4A}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a4a.out 2>&1
   RC_A4A=$?
   set -e
@@ -2179,7 +2192,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR= HOME="${HOME}" HD_STATE_DIR="${SA4B}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4B}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a4b.out 2>&1
   RC_A4B=$?
   set -e
@@ -2193,6 +2206,182 @@ if command -v python3 >/dev/null 2>&1; then
 else
   ok "A4 SKIPPED (python3 unavailable)"
 fi
+
+
+# ---------------------------------------------------------------------------
+# B. Phase B select-from-list menus (pty + answers-file regression): on a real
+#    TTY with NO answers file the AI-provider and AI-model questions become
+#    number-driven menus (B1 select by number, B2 Enter accepts the default,
+#    B3 typed exact value), B4 invalid provider input (out-of-range number ->
+#    warn + retry -> valid selection succeeds), B5 an out-of-range MODEL
+#    integer (99) is warned + retried and NEVER written (valid_model would
+#    otherwise accept '99' — the exact trap Phase B closes), and B6 the
+#    answers-file raw-value regression: with an answers file the flat
+#    raw-value path is used — NO menu is rendered and behavior is
+#    byte-identical to pre-Phase-B (an unlisted-but-valid model passes through
+#    untouched, whereas interactively it would need "type your own"). Each pty
+#    invocation passes TERM=dumb explicitly (Phase A approved addendum).
+#    python3-gated; skipped cleanly when python3 is unavailable.
+if command -v python3 >/dev/null 2>&1; then
+  # B1. select provider by number (2=custom) and model by number (3=gpt-4o).
+  TB1="$(fresh_tree)"; SB1="$(mktemp -d)"
+  set +e
+  (
+    cd "${TB1}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SB1}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TB1}/scripts/setup.sh" "Compose project name" \
+        projb1 ansns ansuser 2 3 https://b1.example/v1 sk-b1 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.b1.out 2>&1
+  RC_B1=$?
+  set -e
+  if [ "${RC_B1}" -eq 0 ] \
+    && grep -q 'AI provider:   custom' /tmp/setup-dryrun.b1.out \
+    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TB1}/.env" \
+    && grep -q '^HD_AI_BASE_URL=https://b1.example/v1$' "${TB1}/.env"; then
+    ok "B1: provider by number 2=custom + model by number 3=gpt-4o (HD_AI_MODEL=gpt-4o, HD_AI_BASE_URL written)"
+  else
+    bad "B1 rc=${RC_B1} (want custom + gpt-4o + base URL):"
+    sed 's/^/    | /' /tmp/setup-dryrun.b1.out >&2 || true
+  fi
+  rm -rf "${TB1}" "${SB1}"
+
+  # B2. Enter accepts the default at BOTH menus: provider -> inferred openai,
+  #     model -> the gpt-5.4-mini pin.
+  TB2="$(fresh_tree)"; SB2="$(mktemp -d)"
+  set +e
+  (
+    cd "${TB2}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SB2}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TB2}/scripts/setup.sh" "Compose project name" \
+        projb2 ansns ansuser "" "" sk-b2 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.b2.out 2>&1
+  RC_B2=$?
+  set -e
+  if [ "${RC_B2}" -eq 0 ] \
+    && grep -q 'AI provider:   openai' /tmp/setup-dryrun.b2.out \
+    && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${TB2}/.env"; then
+    ok "B2: Enter accepts the default at both menus (provider=openai, model=gpt-5.4-mini pin)"
+  else
+    bad "B2 rc=${RC_B2} (want openai + gpt-5.4-mini pin):"
+    sed 's/^/    | /' /tmp/setup-dryrun.b2.out >&2 || true
+  fi
+  rm -rf "${TB2}" "${SB2}"
+
+  # B3. typed exact value at both menus (openai / gpt-4o) is accepted.
+  TB3="$(fresh_tree)"; SB3="$(mktemp -d)"
+  set +e
+  (
+    cd "${TB3}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SB3}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TB3}/scripts/setup.sh" "Compose project name" \
+        projb3 ansns ansuser openai gpt-4o sk-b3 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.b3.out 2>&1
+  RC_B3=$?
+  set -e
+  if [ "${RC_B3}" -eq 0 ] \
+    && grep -q 'AI provider:   openai' /tmp/setup-dryrun.b3.out \
+    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TB3}/.env"; then
+    ok "B3: typed exact value at both menus (openai / gpt-4o) accepted"
+  else
+    bad "B3 rc=${RC_B3} (want typed openai + gpt-4o):"
+    sed 's/^/    | /' /tmp/setup-dryrun.b3.out >&2 || true
+  fi
+  rm -rf "${TB3}" "${SB3}"
+
+  # B4. invalid provider input (out-of-range number 9) -> warn + retry ->
+  #     valid selection (2=custom) succeeds; loop terminates.
+  TB4="$(fresh_tree)"; SB4="$(mktemp -d)"
+  set +e
+  (
+    cd "${TB4}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SB4}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TB4}/scripts/setup.sh" "Compose project name" \
+        projb4 ansns ansuser 9 2 3 https://b4.example/v1 sk-b4 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.b4.out 2>&1
+  RC_B4=$?
+  set -e
+  if [ "${RC_B4}" -eq 0 ] \
+    && grep -q "invalid selection '9': enter a number 1-3" /tmp/setup-dryrun.b4.out \
+    && grep -q 'AI provider:   custom' /tmp/setup-dryrun.b4.out \
+    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TB4}/.env"; then
+    ok "B4: invalid provider input 9 -> warn + retry -> 2=custom succeeds (loop terminates)"
+  else
+    bad "B4 rc=${RC_B4} (want 9 warned/retried, then custom):"
+    sed 's/^/    | /' /tmp/setup-dryrun.b4.out >&2 || true
+  fi
+  rm -rf "${TB4}" "${SB4}"
+
+  # B5. out-of-range MODEL integer 99 -> warn + retry -> 3=gpt-4o; '99' is
+  #     NEVER written to .env (the valid_model("99") trap).
+  TB5="$(fresh_tree)"; SB5="$(mktemp -d)"
+  set +e
+  (
+    cd "${TB5}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SB5}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TB5}/scripts/setup.sh" "Compose project name" \
+        projb5 ansns ansuser openai 99 3 sk-b5 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.b5.out 2>&1
+  RC_B5=$?
+  set -e
+  if [ "${RC_B5}" -eq 0 ] \
+    && grep -q "invalid selection '99': enter a number 1-7" /tmp/setup-dryrun.b5.out \
+    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TB5}/.env" \
+    && ! grep -q '^HD_AI_MODEL=99$' "${TB5}/.env"; then
+    ok "B5: model 99 out-of-range -> warn + retry -> gpt-4o; '99' NEVER written"
+  else
+    bad "B5 rc=${RC_B5} (want 99 warned/retried, then gpt-4o, no 99 in .env):"
+    sed 's/^/    | /' /tmp/setup-dryrun.b5.out >&2 || true
+  fi
+  rm -rf "${TB5}" "${SB5}"
+else
+  ok "Phase B select-from-list menu hermetics SKIPPED (python3 unavailable)"
+fi
+
+# B6. answers-file raw-value regression (pre-Phase-B path): with an answers
+#     file the flat raw-value prompt path is used — NO menu is rendered (even
+#     with a color-capable TERM) and raw values pass through UNMODIFIED (an
+#     unlisted-but-valid model stays as typed; interactively it would need the
+#     "type your own" option). No ESC bytes (rich disabled by redirection).
+TB6="$(fresh_tree)"; SB6="$(mktemp -d)"
+printf 'projb6\nansns\nansuser\nopenai\ngpt-raw6\nsk-b6\n9300\n9390\n' > /tmp/setup-dryrun.ansB6
+set +e
+(
+  cd "${TB6}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${TB6}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansB6 HD_STATE_DIR="${SB6}" \
+    TERM=xterm-256color bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.b6.out 2>&1
+RC_B6=$?
+set -e
+if [ "${RC_B6}" -eq 0 ] \
+  && grep -q '^HD_AI_MODEL=gpt-raw6$' "${TB6}/.env" \
+  && ! grep -q '1) openai' /tmp/setup-dryrun.b6.out \
+  && ! grep -q '1) gpt-5.4' /tmp/setup-dryrun.b6.out \
+  && ! grep -q 'select a number' /tmp/setup-dryrun.b6.out \
+  && ! grep -q 'type your own' /tmp/setup-dryrun.b6.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.b6.out; then
+  ok "B6: answers-file raw-value regression — raw model passes through (gpt-raw6), NO menu, NO ESC (pre-Phase-B byte-identical)"
+else
+  bad "B6 rc=${RC_B6} (want raw answers-file path, no menu, no ESC):"
+  sed 's/^/    | /' /tmp/setup-dryrun.b6.out >&2 || true
+fi
+rm -rf "${TB6}" "${SB6}"
 
 
 if [ "${FAIL}" -eq 0 ]; then

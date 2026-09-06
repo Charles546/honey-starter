@@ -150,6 +150,16 @@ An invalid model (whitespace/control, or characters outside
 environment, an answers file, or a typed answer at the prompt; it is never
 silently replaced by the pin nor by a later line.
 
+**Interactive select-from-list menus (TTY-only).** On a real terminal with no
+answers file, the AI provider and AI model questions render as numbered
+menus: pick by number (`2`), type the exact value, or press Enter for the
+default. The model menu adds a trailing *type your own* option for any other
+model (a free-string model at the menu is otherwise unparseable input and
+keeps the invalid-model die). An **out-of-range number** (e.g. provider `9`
+or model `99`) is warned about and re-asked — it is **never adopted** as a
+value. Answers-file and `HONEY_STARTER_NONINTERACTIVE=1` runs never render a
+menu; they consume the raw values exactly as before.
+
 ## Requirements
 
 - **Docker** (with compose v2) — for running the stack and the configcheck/smoke gates
