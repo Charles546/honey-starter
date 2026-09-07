@@ -101,16 +101,33 @@
 #     menu routes to a free-string sub-prompt — an invalid typed model is
 #     warned + re-asked, a valid free-string model is written, and the
 #     sentinel is never adopted.
+#   * Phase C masked API-key input (secret prompts on a real tty): a raw-mode
+#     masked_read loop echoes one '*' per character, backspace/DEL pops and
+#     erases a star, Enter submits, and Ctrl-C restores the terminal and
+#     aborts as exit 130; the returned key crosses ONLY a 600-mode mktemp
+#     temp file (never stdout; stars go to stderr only) and a re-type
+#     confirmation must match (mismatch -&gt; warn + re-ask) or a failing `stty`
+#     falls back to the exact pre-Phase-C `read -s` no-echo read. C1 ^C
+#     mid-typing exits 130 with the terminal restored and NO .env; C2
+#     backspace editing (`abc`+DEL+DEL+`d` -&gt; `ad`) with net two stars; C3
+#     per-char stars present AND the real key absent from captured output (a
+#     silent read -s fallback would zero the star count and fail this); C4 a
+#     redirected child stdout log stays clean (no key, only the pre-existing
+#     8-star masked summary); C5 a failing `stty` (stub on PATH) uses the
+#     read -s fallback (key set, no stars, no confirmation, no hang); C6 a
+#     confirmation mismatch warns + re-asks and terminates once the re-typed
+#     entries match.
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 96 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
-# (B1-B7).
+# 102 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# (B1-B7) + the 6 Phase C masked-key checks (C1-C6).
 #
-# python3 is OPTIONAL and used only by the pty harness (test/pty-helper.py) for
-# the interactive branch-3 prompt / typed-invalid-model tests (17k/19/20) and
-# the Phase B menu hermetics (B1-B5, B7); when python3 is absent those checks are
-# skipped cleanly. setup.sh itself never needs python3.
+# python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
+# and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
+# / typed-invalid-model tests (17k/19/20), the Phase B menu hermetics (B1-B5,
+# B7) and the Phase C masked-key hermetics (C1-C6); when python3 is absent
+# those checks are skipped cleanly. setup.sh itself never needs python3.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -1223,7 +1240,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_INSTALL_DIR HOME="${PH19A}" TERM=dumb HD_STATE_DIR="${S19A}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "" projname19a ansns ansuser openai gpt-4o sk-key-pty 9300 9390 -- --dry-run \
+        "" projname19a ansns ansuser openai gpt-4o sk-key-pty sk-key-pty 9300 9390 -- --dry-run \
   ) >/tmp/setup-dryrun.19a.out 2>&1
   RC19A=$?
   set -e
@@ -1252,7 +1269,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_INSTALL_DIR HOME="${TH19B}" TERM=dumb HD_STATE_DIR="${S19B}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "~" projname19b ansns ansuser openai gpt-4o sk-key-pty2 9301 9391 -- --dry-run \
+        "~" projname19b ansns ansuser openai gpt-4o sk-key-pty2 sk-key-pty2 9301 9391 -- --dry-run \
   ) >/tmp/setup-dryrun.19b.out 2>&1
   RC19B=$?
   set -e
@@ -1881,7 +1898,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP12}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP12}/scripts/setup.sh" "Continue with the change?" \
-        n ansns ansuser openai gpt-4o sk-pty-key 9300 9390 -- --dry-run
+        n ansns ansuser openai gpt-4o sk-pty-key sk-pty-key 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.p12.out 2>&1
   RC12=$?
   set -e
@@ -1920,7 +1937,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP13}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP13}/scripts/setup.sh" "Continue with the change?" \
-        y ansns ansuser openai gpt-4o sk-pty-key 9300 9390 -- --dry-run
+        y ansns ansuser openai gpt-4o sk-pty-key sk-pty-key 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.p13.out 2>&1
   RC13=$?
   set -e
@@ -2111,7 +2128,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA2}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a2.out 2>&1
   RC_A2=$?
   set -e
@@ -2142,7 +2159,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA3}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA3}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a3.out 2>&1
   RC_A3=$?
   set -e
@@ -2174,7 +2191,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR=1 HOME="${HOME}" HD_STATE_DIR="${SA4A}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4A}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a4a.out 2>&1
   RC_A4A=$?
   set -e
@@ -2195,7 +2212,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR= HOME="${HOME}" HD_STATE_DIR="${SA4B}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4B}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a4b.out 2>&1
   RC_A4B=$?
   set -e
@@ -2240,7 +2257,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB1}/scripts/setup.sh" "Compose project name" \
-        projb1 ansns ansuser 2 3 https://b1.example/v1 sk-b1 9300 9390 -- --dry-run
+        projb1 ansns ansuser 2 3 https://b1.example/v1 sk-b1 sk-b1 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b1.out 2>&1
   RC_B1=$?
   set -e
@@ -2266,7 +2283,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB2}/scripts/setup.sh" "Compose project name" \
-        projb2 ansns ansuser "" "" sk-b2 9300 9390 -- --dry-run
+        projb2 ansns ansuser "" "" sk-b2 sk-b2 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b2.out 2>&1
   RC_B2=$?
   set -e
@@ -2290,7 +2307,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB3}/scripts/setup.sh" "Compose project name" \
-        projb3 ansns ansuser openai gpt-4o sk-b3 9300 9390 -- --dry-run
+        projb3 ansns ansuser openai gpt-4o sk-b3 sk-b3 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b3.out 2>&1
   RC_B3=$?
   set -e
@@ -2315,7 +2332,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB4}/scripts/setup.sh" "Compose project name" \
-        projb4 ansns ansuser 9 2 3 https://b4.example/v1 sk-b4 9300 9390 -- --dry-run
+        projb4 ansns ansuser 9 2 3 https://b4.example/v1 sk-b4 sk-b4 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b4.out 2>&1
   RC_B4=$?
   set -e
@@ -2341,7 +2358,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB5}/scripts/setup.sh" "Compose project name" \
-        projb5 ansns ansuser openai 99 3 sk-b5 9300 9390 -- --dry-run
+        projb5 ansns ansuser openai 99 3 sk-b5 sk-b5 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b5.out 2>&1
   RC_B5=$?
   set -e
@@ -2369,7 +2386,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB7}/scripts/setup.sh" "Compose project name" \
-        projb7 ansns ansuser openai 7 "bad model" my-custom-model sk-b7 9300 9390 -- --dry-run
+        projb7 ansns ansuser openai 7 "bad model" my-custom-model sk-b7 sk-b7 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b7.out 2>&1
   RC_B7=$?
   set -e
@@ -2419,6 +2436,228 @@ else
 fi
 rm -rf "${TB6}" "${SB6}"
 
+# ============================================================================
+# Phase C masked API-key hermetics (pty). Each run uses the raw-mode
+# pty-mask-helper.py: it waits per-stage for a prompt substring, then writes
+# the payload ONLY while the pty slave is in raw mode (ICANON off - setup.sh's
+# masked_read loop must consume it; canonical bytes would get echo-leaked into
+# the transcript), then counts the net '*' feedback (mask stars minus
+# backspace erases) and reports whether the terminal was restored
+# (canonical) after the child exited. C1/C2/C3/C4/C6 exercise the masked path;
+# C5 proves the read -s fallback when `stty` fails (no stars, no
+# confirmation). All runs are python3-gated and TERM=dumb.
+if command -v python3 >/dev/null 2>&1; then
+  # C1. Ctrl-C mid-typing: the mask loop sees ^C as data (byte 0x03), restores
+  #     the terminal and exits 130 as a NORMAL exit (every cleanup trap runs);
+  #     no .env is written, nothing is left raw, no wedge.
+  TC1="$(fresh_tree)"; SC1="$(mktemp -d)"
+  set +e
+  (
+    cd "${TC1}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SC1}" TERM=dumb \
+      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
+        "${TC1}/scripts/setup.sh" "Compose project name" \
+        projc1 ansns ansuser \
+        --stage "hidden; Enter to skip" $'ab\x03' --no-submit -- --dry-run
+  ) >/tmp/setup-dryrun.c1.out 2>&1
+  RC_C1=$?
+  set -e
+  if [ "${RC_C1}" -eq 130 ] \
+    && grep -q '^STARS_1=2$' /tmp/setup-dryrun.c1.out \
+    && grep -q '^RESTORED=yes$' /tmp/setup-dryrun.c1.out \
+    && [ ! -f "${TC1}/.env" ]; then
+    ok "C1: Ctrl-C mid-typing -> exit 130 + terminal restored + NO .env (2 stars, no wedge)"
+  else
+    bad "C1 rc=${RC_C1} (want 130 + restored + no .env):"
+    sed 's/^/    | /' /tmp/setup-dryrun.c1.out >&2 || true
+  fi
+  rm -rf "${TC1}" "${SC1}"
+
+  # C2. Backspace editing: abc+DEL+DEL+d -> value 'ad' (.env), net of two
+  #     '*'s (3 typed minus 2 erasures, then 1 for 'd'), both reads confirmed.
+  TC2="$(fresh_tree)"; SC2="$(mktemp -d)"
+  set +e
+  (
+    cd "${TC2}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SC2}" TERM=dumb \
+      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
+        "${TC2}/scripts/setup.sh" "Compose project name" \
+        projc2 ansns ansuser \
+        --stage "hidden; Enter to skip" $'abc\x7f\x7fd' \
+        --stage "re-type to verify" "ad" \
+        --canon "Daemon API host port" 9300 \
+        --canon "UI host port" 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.c2.out 2>&1
+  RC_C2=$?
+  set -e
+  if [ "${RC_C2}" -eq 0 ] \
+    && grep -q '^STARS_1=2$' /tmp/setup-dryrun.c2.out \
+    && grep -q '^STARS_2=2$' /tmp/setup-dryrun.c2.out \
+    && grep -q '^OPENAI_API_KEY=ad$' "${TC2}/.env"; then
+    ok "C2: backspace editing abc+DEL+DEL+d -> OPENAI_API_KEY=ad with net two '*'s (both reads)"
+  else
+    bad "C2 rc=${RC_C2} (want ad + net 2 stars):"
+    sed 's/^/    | /' /tmp/setup-dryrun.c2.out >&2 || true
+  fi
+  rm -rf "${TC2}" "${SC2}"
+
+  # C3. The per-character mask feedback is REAL: 12 stars (one per key char),
+  #     and the key text itself NEVER crosses the captured pty output (it is
+  #     returned via a 600-mode mktemp temp file). A silent read -s fallback
+  #     would print zero stars and FAIL this check.
+  TC3="$(fresh_tree)"; SC3="$(mktemp -d)"
+  set +e
+  (
+    cd "${TC3}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SC3}" TERM=dumb \
+      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
+        "${TC3}/scripts/setup.sh" "Compose project name" \
+        projc3 ansns ansuser \
+        --stage "hidden; Enter to skip" "sk-c3-secret" \
+        --stage "re-type to verify" "sk-c3-secret" \
+        --canon "Daemon API host port" 9300 \
+        --canon "UI host port" 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.c3.out 2>&1
+  RC_C3=$?
+  set -e
+  if [ "${RC_C3}" -eq 0 ] \
+    && grep -q '^STARS_1=12$' /tmp/setup-dryrun.c3.out \
+    && grep -q '^STARS_2=12$' /tmp/setup-dryrun.c3.out \
+    && ! grep -q 'sk-c3-secret' /tmp/setup-dryrun.c3.out \
+    && grep -q '^OPENAI_API_KEY=sk-c3-secret$' "${TC3}/.env"; then
+    ok "C3: 12 per-char '*'s present AND the real key ABSENT from captured output (.env has it)"
+  else
+    bad "C3 rc=${RC_C3} (want stars + key hidden from transcript):"
+    sed 's/^/    | /' /tmp/setup-dryrun.c3.out >&2 || true
+  fi
+  rm -rf "${TC3}" "${SC3}"
+
+  # C4. A redirected child stdout log stays CLEAN: it never sees the key text
+  #     and its only '*' line is the pre-existing 8-star masked summary
+  #     (OPENAI_API_KEY=********) - no per-char mask corruption leaks to a
+  #     redirected stdout (stars go to stderr/pty only).
+  TC4="$(fresh_tree)"; SC4="$(mktemp -d)"
+  : > /tmp/setup-dryrun.c4.log
+  set +e
+  (
+    cd "${TC4}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SC4}" TERM=dumb \
+      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
+        "${TC4}/scripts/setup.sh" "Compose project name" \
+        projc4 ansns ansuser \
+        --stage "hidden; Enter to skip" "sk-c4-secret" \
+        --stage "re-type to verify" "sk-c4-secret" \
+        --canon "Daemon API host port" 9300 \
+        --canon "UI host port" 9390 \
+        --child-stdout /tmp/setup-dryrun.c4.log -- --dry-run
+  ) >/tmp/setup-dryrun.c4.out 2>&1
+  RC_C4=$?
+  set -e
+  if [ "${RC_C4}" -eq 0 ] \
+    && ! grep -q 'sk-c4-secret' /tmp/setup-dryrun.c4.log \
+    && [ "$(grep -c '\*' /tmp/setup-dryrun.c4.log)" -eq 1 ] \
+    && grep -q '^OPENAI_API_KEY=\*\{8\}$' /tmp/setup-dryrun.c4.log \
+    && grep -q '^OPENAI_API_KEY=sk-c4-secret$' "${TC4}/.env"; then
+    ok "C4: redirected child stdout log CLEAN (no key; only the masked OPENAI_API_KEY=******** summary, no mask corruption)"
+  else
+    bad "C4 rc=${RC_C4} (want clean child log + key in .env):"
+    sed 's/^/    | /' /tmp/setup-dryrun.c4.out >&2 || true
+    echo "    | --- child log ---" >&2
+    sed 's/^/    | /' /tmp/setup-dryrun.c4.log >&2 || true
+  fi
+  rm -rf "${TC4}" "${SC4}" /tmp/setup-dryrun.c4.log
+
+  # C5. stty failure -> graceful read -s no-echo fallback (the exact
+  #     pre-Phase-C path): the key IS captured (no stars, no confirmation, no
+  #     hang) and the terminal never went raw. A fake failing `stty` stub on
+  #     PATH forces read_secret_key's probe to fail.
+  CSTUB="$(mktemp -d)"
+  cat > "${CSTUB}/stty" <<'CSTUBEOF'
+#!/bin/sh
+echo "stty: not permitted (stub)" >&2
+exit 1
+CSTUBEOF
+  chmod +x "${CSTUB}/stty"
+  TC5="$(fresh_tree)"; SC5="$(mktemp -d)"
+  set +e
+  (
+    cd "${TC5}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SC5}" TERM=dumb PATH="${CSTUB}:${PATH}" \
+      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
+        "${TC5}/scripts/setup.sh" "Compose project name" \
+        projc5 ansns ansuser \
+        --stage "hidden; Enter to skip" "sk-c5-secret" \
+        --canon "Daemon API host port" 9300 \
+        --canon "UI host port" 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.c5.out 2>&1
+  RC_C5=$?
+  set -e
+  if [ "${RC_C5}" -eq 0 ] \
+    && grep -q '^STARS_1=0$' /tmp/setup-dryrun.c5.out \
+    && ! grep -q 're-type to verify' /tmp/setup-dryrun.c5.out \
+    && grep -q '^RESTORED=yes$' /tmp/setup-dryrun.c5.out \
+    && grep -q '^OPENAI_API_KEY=sk-c5-secret$' "${TC5}/.env"; then
+    ok "C5: failing stty -> read -s fallback (key set, NO stars, NO confirmation, terminal untouched)"
+  else
+    bad "C5 rc=${RC_C5} (want read -s fallback + key set):"
+    sed 's/^/    | /' /tmp/setup-dryrun.c5.out >&2 || true
+  fi
+  rm -rf "${TC5}" "${SC5}" "${CSTUB}"
+
+  # C6. Confirmation mismatch terminates: first confirm WRONG -> warn +
+  #     re-ask -> re-typed entries match -> key written. 5+5 stars (first
+  #     attempt) then 5+5 (retry), one warning, .env correct.
+  TC6="$(fresh_tree)"; SC6="$(mktemp -d)"
+  set +e
+  (
+    cd "${TC6}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SC6}" TERM=dumb \
+      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
+        "${TC6}/scripts/setup.sh" "Compose project name" \
+        projc6 ansns ansuser \
+        --stage "hidden; Enter to skip" "sk-c6" \
+        --stage "re-type to verify" "WRONG" \
+        --stage "hidden; Enter to skip" "sk-c6" \
+        --stage "re-type to verify" "sk-c6" \
+        --canon "Daemon API host port" 9300 \
+        --canon "UI host port" 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.c6.out 2>&1
+  RC_C6=$?
+  set -e
+  if [ "${RC_C6}" -eq 0 ] \
+    && grep -q '^STARS_1=5$' /tmp/setup-dryrun.c6.out \
+    && grep -q '^STARS_2=5$' /tmp/setup-dryrun.c6.out \
+    && grep -q '^STARS_3=5$' /tmp/setup-dryrun.c6.out \
+    && grep -q '^STARS_4=5$' /tmp/setup-dryrun.c6.out \
+    && grep -q 'API key entries did not match' /tmp/setup-dryrun.c6.out \
+    && grep -q '^OPENAI_API_KEY=sk-c6$' "${TC6}/.env"; then
+    ok "C6: confirmation mismatch -> warn + re-ask -> re-typed match -> OPENAI_API_KEY=sk-c6 (.env)"
+  else
+    bad "C6 rc=${RC_C6} (want mismatch warning + retry match):"
+    sed 's/^/    | /' /tmp/setup-dryrun.c6.out >&2 || true
+  fi
+  rm -rf "${TC6}" "${SC6}"
+else
+  ok "Phase C masked-key hermetics (C1-C6) SKIPPED (python3 unavailable)"
+fi
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="

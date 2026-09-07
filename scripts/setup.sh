@@ -402,7 +402,9 @@ runs NEVER ask it:
                       for openai/custom - see HD_AI_MODEL semantics below.
   5. HD_AI_BASE_URL   ONLY when provider=custom; required http(s):// endpoint;
                       never silently defaulted.
-  6. API key          hidden input (read -s). For openai/custom. Empty = keep
+  6. API key          hidden input (masked '*' feedback + re-type confirm
+                      on a real tty; read -s no-echo fallback). For openai/
+                      custom. Empty = keep
                       the current key (existing install) or add later
                       (placeholder flow: start.sh seeds a placeholder and you
                       add the real key to .env and re-run).
@@ -1308,7 +1310,8 @@ state_dir_has_artifacts() {
 # --- questionnaire plumbing ---------------------------------------------------
 # Prompt input sources, in order: HONEY_STARTER_ANSWERS_FILE (newline-delimited
 # answers replayed through the same helper) -> real /dev/tty (opened
-# explicitly; read -s for keys). If neither is available the run must be
+# explicitly; masked `*` feedback with re-type confirmation for keys, read -s
+# no-echo fallback). If neither is available the run must be
 # non-interactive (explicit flag or every decision already env-supplied), else
 # we die with guidance — never a silent default, never a hang.
 ANSWERS_FD=""
@@ -1382,6 +1385,112 @@ all_answers_supplied() {
   return 0
 }
 
+# masked_read SAVED_STATE TTY_FD - interactive per-character masked input for
+# secret/API-key prompts. Switches /dev/tty to raw mode (-icanon -isig -echo)
+# inside a SUBSHELL whose scoped EXIT trap restores the saved termios; the
+# parent's `trap 'close_input_sources' EXIT` is inherited untouched, and a
+# Ctrl-C (byte 0x03, seen AS DATA because -isig keeps the line discipline from
+# turning it into a real SIGINT) restores the terminal and exits 130 as a
+# NORMAL exit so every cleanup trap still runs (terminal usable after; no raw
+# left behind; no wedge). Each printable byte echoes one '*' to stderr;
+# Backspace/DEL pops the last character and erases its star; Enter submits.
+# The entered value is returned through a 600-mode mktemp temp file read back
+# by the caller - it NEVER crosses stdout, so a redirected log or $(...)
+# capture cannot see the secret or corrupt the star feedback. Uses `dd
+# bs=1 count=1` rather than read -N1: bash's read -N on a tty re-enables ISIG,
+# which would turn a ^C byte into a real SIGINT before the loop could act on
+# it (empirically verified). Returns 0 with REPLY set (possibly empty); returns
+# 1 when raw mode is unavailable (the caller falls back to read -s);
+# propagates Ctrl-C as exit 130.
+masked_read() {
+  local saved_state="$1" tty_fd="$2" line="" c="" rc=0 tmp="" q=""
+  tmp="$(mktemp 2>/dev/null)" || { REPLY=""; return 1; }
+  chmod 600 "${tmp}" 2>/dev/null || true
+  (
+    q="$(printf '%q' "${saved_state}")"
+    trap 'stty -F /dev/tty '"${q}"' 2>/dev/null || true' EXIT
+    stty -F /dev/tty -icanon -isig -echo min 1 time 0 2>/dev/null || exit 99
+    while :; do
+      # dd outputs one raw byte; command substitution strips a trailing
+      # newline, so a pty/pipe '\n' arrives as an EMPTY read (break = submit)
+      # while a real-terminal '\r' (Enter) is caught explicitly below.
+      c="$(dd bs=1 count=1 <&"${tty_fd}" 2>/dev/null || true)"
+      [ -z "${c}" ] && break
+      case "${c}" in
+        $'\x03') exit 130 ;;
+        $'\n' | $'\r') break ;;
+        $'\x7f' | $'\x08')
+          if [ -n "${line}" ]; then
+            line="${line%?}"
+            printf '\b \b' >&2
+          fi
+          ;;
+        *) line="${line}${c}"; printf '*' >&2 ;;
+      esac
+    done
+    printf '\n' >&2
+    printf '%s' "${line}" > "${tmp}"
+  ) || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    line="$(cat "${tmp}" 2>/dev/null || true)"
+    rm -f "${tmp}"
+    REPLY="${line}"
+    return 0
+  fi
+  rm -f "${tmp}"
+  if [ "${rc}" -eq 130 ]; then
+    exit 130
+  fi
+  REPLY=""
+  return 1
+}
+
+# read_secret_key LABEL - masked key read + one re-type confirmation on a real
+#   TTY. LABEL is the prompt label this helper owns (re-printed on a retry so a
+#   mismatch never leaves a bare input line); an empty LABEL means the caller
+#   already rendered the prompt (the flat prompt_setting path) and it is not
+#   re-printed. Sets REPLY to the confirmed value. A non-empty entry must be
+#   re-typed and match (mismatch -> warn + re-ask, looping until it matches);
+#   an EMPTY entry (Enter = keep/add-later documented default) skips
+#   confirmation. Returns 0 on success; returns 1 when raw-mode masking is
+#   unavailable (the caller falls back to the plain read -s path); a Ctrl-C
+#   aborts as exit 130.
+read_secret_key() {
+  local label="$1" saved="" first="" second="" done=0
+  if ! saved="$(stty -F /dev/tty -g 2>/dev/null)"; then
+    # raw masking unavailable (no stty / /dev/tty): still render the prompt
+    # label so the read -s fallback is not a silent bare read
+    if [ -n "${label}" ]; then
+      msg_key "${label}" >&2
+    fi
+    return 1
+  fi
+  while [ "${done}" -eq 0 ]; do
+    if [ -n "${label}" ]; then
+      msg_key "${label}" >&2
+    fi
+    if ! masked_read "${saved}" "${TTY_FD}"; then
+      return 1
+    fi
+    first="${REPLY}"
+    if [ -z "${first}" ]; then
+      REPLY=""
+      return 0
+    fi
+    msg_key "Confirm API key (re-type to verify) " >&2
+    if ! masked_read "${saved}" "${TTY_FD}"; then
+      return 1
+    fi
+    second="${REPLY}"
+    if [ -n "${second}" ] && [ "${second}" = "${first}" ]; then
+      REPLY="${first}"
+      return 0
+    fi
+    msg_warn "API key entries did not match; please re-enter" >&2
+  done
+  return 0
+}
+
 # read_answer VARNAME PROMPT SECRET(0|1) NAME
 #   reads one answer into REPLY (may be empty). Returns 0 on an answer (even
 #   empty), 1 when no input source could provide one.
@@ -1395,20 +1504,23 @@ read_answer() {
     fi
   fi
   if [ "${HAVE_TTY}" -eq 1 ]; then
-    if [ -n "${prompt}" ]; then
-      if [ "${secret}" -eq 1 ]; then
-        msg_key "${prompt}" >&2
-      else
-        msg_input "${prompt}" >&2
-      fi
+    if [ "${secret}" -eq 0 ] && [ -n "${prompt}" ]; then
+      msg_input "${prompt}" >&2
     fi
     if [ "${secret}" -eq 1 ]; then
-      IFS= read -rs -u "${TTY_FD}" line || true
-      printf '\n' >&2
+      # masked per-character feedback on a real tty (raw-mode loop above) with
+      # re-type confirmation; falls back to today's exact `read -s` no-echo
+      # read when raw mode is unavailable (no stty / /dev/tty) - no stars, no
+      # confirmation then
+      if ! read_secret_key "${prompt}"; then
+        IFS= read -rs -u "${TTY_FD}" line || true
+        printf '\n' >&2
+        REPLY="${line}"
+      fi
     else
       IFS= read -r -u "${TTY_FD}" line || true
+      REPLY="${line}"
     fi
-    REPLY="${line}"
     return 0
   fi
   if [ "${NONINTERACTIVE}" -eq 1 ]; then
