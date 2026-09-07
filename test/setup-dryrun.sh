@@ -118,11 +118,25 @@
 #     confirmation mismatch warns + re-asks and terminates once the re-typed
 #     entries match.
 #
+#   * Phase 1 macOS platform layer: the REAL platform-compat shims block is
+#     sourced out of scripts/setup.sh into the suite (proving the D8b
+#     byte-identity guard at run time), derived_proj uses the shared
+#     sha256_digest shim (so its mirror never drifts from derived_project_name),
+#     and the E-series mocks an arm64 macOS host through a PATH-shim `uname`
+#     (Darwin / arm64), a mock `brew --prefix httpd`, and fake BSD `shasum` /
+#     `openssl` digester output - asserting preflight_os proceeds on Darwin,
+#     every digester branch yields the same bare hex digest, htpasswd resolves
+#     to $$(brew --prefix httpd)/bin/htpasswd on darwin, and an unsupported OS
+#     still dies.
+#
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 130 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
-# (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 28 Phase D
-# lifecycle rich-output checks (D1-D8).
+# 139 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
+# lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 8
+# Phase 1 E-series Darwin-mock checks (E1-E4: preflight_os on Darwin,
+# sha256_digest format parity across sha256sum/shasum/openssl, htpasswd
+# brew-path resolution, unsupported-OS die).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -141,6 +155,57 @@ FAIL=0
 
 ok()  { PASS=$((PASS + 1)); printf 'ok   - %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL - %s\n' "$1" >&2; }
+
+# Phase 1 macOS platform layer: source the REAL platform-compat shims block out
+# of scripts/setup.sh (byte-identical to lib.sh; the D8b guard proves it). The
+# test then exercises the EXACT production shims - derived_proj's digest,
+# sha256_digest parity, and the htpasswd resolution - by construction in sync.
+PLATFORM_BLOCK_FILE="$(mktemp)"
+awk '/^# --- platform-compat shims/{p=1} p{print} /^# --- end platform-compat shims ---/{exit}' \
+  "${SETUP_SRC}" > "${PLATFORM_BLOCK_FILE}"
+# shellcheck source=/dev/null
+. "${PLATFORM_BLOCK_FILE}"
+rm -f "${PLATFORM_BLOCK_FILE}"
+
+# stat_mode FILE -> octal permission modes, portable across GNU stat -c and
+# BSD/macOS stat -f (Phase 1: the suite must run on macOS too).
+stat_mode() {
+  local f="$1" out=""
+  out="$(stat -c '%a' "$f" 2>/dev/null)" || out="$(stat -f '%Lp' "$f" 2>/dev/null)"
+  printf '%s' "${out}"
+}
+
+# cp_tree_portable SRC DST - the test's own recursive tree copy (GNU cp -a vs
+# BSD cp -pR; macOS cp has no -a). Mirrors the production cp_recursive shim.
+cp_tree_portable() {
+  local src="$1" dst="$2"
+  if ! cp -a "$src" "$dst" 2>/dev/null; then
+    cp -pR "$src" "$dst"
+  fi
+}
+
+# portable_mktemp [-d] [PREFIX] -> create a temp file/dir under TMPDIR with a
+# POSIX template (macOS/BSD mktemp rejects "dir.XXXXXX" style templates, and
+# both accept a trailing directory argument). NAME/len are deliberately random
+# via $$ + $RANDOM; the pattern stays /tmp (the suite's cleanup trap clears
+# /tmp/setup-dryrun.*).
+portable_mktemp() {
+  local d=0 tmpl="/tmp/setup-dryrun.tmp.$$"
+  if [ "$1" = "-d" ]; then
+    d=1
+    shift
+  fi
+  if [ -n "${1:-}" ]; then
+    tmpl="${1}"
+  fi
+  tmpl="${tmpl}.$$.${RANDOM:-0}"
+  if [ "${d}" -eq 1 ]; then
+    mkdir -p "${tmpl}"
+  else
+    : > "${tmpl}"
+  fi
+  printf '%s' "${tmpl}"
+}
 
 # assert_rc NAME EXPECTED_RC CMD...  -> runs in a subshell, checks exit code
 assert_rc() {
@@ -163,7 +228,7 @@ assert_rc() {
 fresh_tree() {
   local d
   d="$(mktemp -d)"
-  cp -a "${HERE}/." "${d}/tree"
+  cp_tree_portable "${HERE}/." "${d}/tree"
   rm -rf "${d}/tree/.git" "${d}/tree/.honey-starter" "${d}/tree/.env"
   printf '%s' "${d}/tree"
 }
@@ -192,7 +257,7 @@ derived_proj() {
   [ -n "${b}" ] || b="dir"
   b="${b:0:20}"
   b="${b%-}"
-  h="$(printf '%s' "${dir}" | sha256sum | cut -c1-8)"
+  h="$(printf '%s' "${dir}" | sha256_digest - | cut -c1-8)"
   printf 'hs-%s-%s' "${b}" "${h}"
 }
 
@@ -234,7 +299,7 @@ if [ -f "${T1}/.env" ]; then
 else
   bad ".env missing"
 fi
-MODE1="$(stat -c '%a' "${T1}/.env" 2>/dev/null || true)"
+MODE1="$(stat_mode "${T1}/.env")"
 if [ "${MODE1}" = "600" ]; then
   ok ".env mode 600 (got ${MODE1})"
 else
@@ -420,7 +485,7 @@ if grep -q '^HD_AI_MODEL=' "${T2}/.env"; then
 else
   ok "skip provider wrote no HD_AI_MODEL line (model only for openai/custom)"
 fi
-MODE2="$(stat -c '%a' "${T2}/.env")"
+MODE2="$(stat_mode "${T2}/.env")"
 if [ "${MODE2}" = "600" ]; then
   ok "mode 600 after round-trip write"
 else
@@ -1233,7 +1298,7 @@ if command -v python3 >/dev/null 2>&1; then
   #      on-disk copy re-runs the questionnaire -> .env written in place. This
   #      also proves the typed/Enter'd dir -> re-exec -> branch-2-in-place flow.
   PH19A="$(mktemp -d)"
-  cp -a "${HERE}/." "${PH19A}/honey-starter"
+  cp_tree_portable "${HERE}/." "${PH19A}/honey-starter"
   rm -rf "${PH19A}/honey-starter/.git" "${PH19A}/honey-starter/.honey-starter" "${PH19A}/honey-starter/.env"
   S19A="$(mktemp -d)"
   CWD19A="$(mktemp -d)"
@@ -1262,7 +1327,7 @@ if command -v python3 >/dev/null 2>&1; then
   #      "$PWD/~/..."): with HOME set to a valid tree, "~" -> that tree, reused
   #      in place (no download).
   TH19B="$(mktemp -d)"
-  cp -a "${HERE}/." "${TH19B}"
+  cp_tree_portable "${HERE}/." "${TH19B}"
   rm -rf "${TH19B}/.git" "${TH19B}/.honey-starter" "${TH19B}/.env"
   S19B="$(mktemp -d)"
   CWD19B="$(mktemp -d)"
@@ -1295,7 +1360,7 @@ fi
 #     and no "$PWD/~" directory is ever created.
 # ---------------------------------------------------------------------------
 T20="$(fresh_tree)"; TH20="$(mktemp -d)"
-cp -a "${HERE}/." "${TH20}"
+cp_tree_portable "${HERE}/." "${TH20}"
 rm -rf "${TH20}/.git" "${TH20}/.honey-starter" "${TH20}/.env"
 S20="$(mktemp -d)"
 CWD20="$(mktemp -d)"
@@ -1328,7 +1393,7 @@ rm -rf "${T20}" "${TH20}" "${S20}" "${CWD20}"
 #                             prints the four service container ids
 #       VISIBLE <volume>   -> `docker volume inspect <volume>` succeeds
 # ---------------------------------------------------------------------------
-F3_STUB_DIR="$(mktemp -d /tmp/setup-dryrun.stub.XXXXXX)"
+F3_STUB_DIR="$(portable_mktemp -d /tmp/setup-dryrun.stub)"
 cat > "${F3_STUB_DIR}/docker" <<'F3STUB'
 #!/usr/bin/env bash
 # Fake docker stub - answers EXACTLY the probes guard_project_state_consistency
@@ -2716,7 +2781,7 @@ else
 fi
 
 # D3 probe: `bash PROBE LIB` sources lib.sh and renders msg_ok "  [ok] probe".
-D_PROBE="$(mktemp /tmp/setup-dryrun.dprobe.XXXXXX)"
+D_PROBE="$(portable_mktemp /tmp/setup-dryrun.dprobe)"
 cat > "${D_PROBE}" <<'DPROBE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2853,7 +2918,7 @@ rm -f "${D_PROBE}"
 # D4. msg_* PLAIN identity battery: every helper renders the ORIGINAL text
 #     byte-for-byte on the correct stream (stdout for ok/info/note/section/
 #     info(); stderr for fail/warn/warn(); info "" prints a bare blank line).
-D4_PROBE="$(mktemp /tmp/setup-dryrun.d4.XXXXXX)"
+D4_PROBE="$(portable_mktemp /tmp/setup-dryrun.d4)"
 cat > "${D4_PROBE}" <<'D4PROBE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2904,7 +2969,7 @@ fi
 rm -f "${D4_PROBE}"
 
 # D4c. die() -> msg_fail "ERROR: ..." on stderr + exit 1.
-D4C_PROBE="$(mktemp /tmp/setup-dryrun.d4c.XXXXXX)"
+D4C_PROBE="$(portable_mktemp /tmp/setup-dryrun.d4c)"
 cat > "${D4C_PROBE}" <<'D4CPROBE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2933,7 +2998,7 @@ fi
 # D5. start.sh early path with docker ABSENT. Restricted PATH holds ONLY
 #     bash+dirname+uname (no /usr/bin), so a docker host cannot leak a real
 #     docker; the Linux guard's uname is satisfied via the symlink.
-ND_DIR="$(mktemp -d /tmp/setup-dryrun.d5path.XXXXXX)"
+ND_DIR="$(portable_mktemp -d /tmp/setup-dryrun.d5path)"
 ln -s "$(command -v bash)" "${ND_DIR}/bash"
 ln -s "$(command -v dirname)" "${ND_DIR}/dirname"
 ln -s "$(command -v uname)" "${ND_DIR}/uname"
@@ -3018,7 +3083,7 @@ rm -rf "${ND_DIR}"
 #     depend on it) and the dir holds ONLY docker + a uname symlink, so
 #     `command -v docker` resolves (no SKIP path) while every compose probe
 #     returns empty/0.
-D6_DIR="$(mktemp -d /tmp/setup-dryrun.d6shim.XXXXXX)"
+D6_DIR="$(portable_mktemp -d /tmp/setup-dryrun.d6shim)"
 cat > "${D6_DIR}/docker" <<'D6STUB'
 #!/usr/bin/env bash
 # Silent fake docker: always exit 0, print NOTHING (compose ps -q / logs
@@ -3220,7 +3285,7 @@ rm -rf "${D6_DIR}"
 # D7. Direct SKIP tests: with docker ABSENT (restricted PATH: bash+dirname+
 #     uname only) each lifecycle script prints the exact `SKIP: docker not
 #     found` line and exits 0, plain, no ESC.
-ND7_DIR="$(mktemp -d /tmp/setup-dryrun.d7path.XXXXXX)"
+ND7_DIR="$(portable_mktemp -d /tmp/setup-dryrun.d7path)"
 ln -s "$(command -v bash)" "${ND7_DIR}/bash"
 ln -s "$(command -v dirname)" "${ND7_DIR}/dirname"
 ln -s "$(command -v uname)" "${ND7_DIR}/uname"
@@ -3254,8 +3319,8 @@ rm -rf "${ND7_DIR}"
 
 # D8. KEEP-IN-SYNC sync guard: the lib.sh rich block (marker comment through
 #     usage_die) must stay a byte-for-byte copy of setup.sh's Phase A block.
-D8_LIB="$(mktemp)"
-D8_SETUP="$(mktemp)"
+D8_LIB="$(portable_mktemp /tmp/setup-dryrun.d8lib)"
+D8_SETUP="$(portable_mktemp /tmp/setup-dryrun.d8setup)"
 awk '/^# --- output helpers \(Phase A rich-output foundation\)/{p=1} p{print} /^usage_die\(\)/{exit}' \
   "${HERE}/scripts/lib.sh" > "${D8_LIB}"
 awk '/^# --- output helpers \(Phase A rich-output foundation\)/{p=1} p{print} /^usage_die\(\)/{exit}' \
@@ -3267,6 +3332,256 @@ else
   diff -u "${D8_SETUP}" "${D8_LIB}" >&2 || true
 fi
 rm -f "${D8_LIB}" "${D8_SETUP}"
+
+# D8b. Phase 1 KEEP-IN-SYNC sync guard: the platform-compat shims block (the
+#      marker comment through the end marker) must stay byte-identical between
+#      scripts/setup.sh (ORIGINAL - self-contained bootstrap copy) and
+#      scripts/lib.sh (shared copy). Drift fails the suite.
+D8B_LIB="$(portable_mktemp /tmp/setup-dryrun.d8blib)"
+D8B_SETUP="$(portable_mktemp /tmp/setup-dryrun.d8bsetup)"
+awk '/^# --- platform-compat shims/{p=1} p{print} /^# --- end platform-compat shims ---/{exit}' \
+  "${HERE}/scripts/lib.sh" > "${D8B_LIB}"
+awk '/^# --- platform-compat shims/{p=1} p{print} /^# --- end platform-compat shims ---/{exit}' \
+  "${HERE}/scripts/setup.sh" > "${D8B_SETUP}"
+if diff -u "${D8B_SETUP}" "${D8B_LIB}" >/dev/null 2>&1; then
+  ok "D8b: lib.sh platform-compat shims block is byte-identical to setup.sh (KEEP-IN-SYNC)"
+else
+  bad "D8b: lib.sh platform-compat shims block drifted from setup.sh (KEEP-IN-SYNC)"
+  diff -u "${D8B_SETUP}" "${D8B_LIB}" >&2 || true
+fi
+rm -f "${D8B_LIB}" "${D8B_SETUP}"
+
+# ---------------------------------------------------------------------------
+# E. Phase 1 Darwin-mock checks (no docker required). Mocks an arm64 macOS host
+#    through PATH-shim binaries so setup.sh's platform layer is exercised AS
+#    REAL on any host: a fake `uname` (Darwin/arm64), a fake
+#    `brew --prefix httpd`, and fake BSD `shasum` / `openssl` digester output.
+#    The platform block is ALREADY sourced into this suite (above), so
+#    preflight_os (extracted from scripts/setup.sh below) and the shims run
+#    against the EXACT production code.
+#    E1: preflight_os proceeds on Darwin ([ok] Darwin arm64).
+#    E2: sha256_digest emits the BARE hex digest in all three backends
+#        (sha256sum / shasum -a 256 / openssl dgst -sha256), file and stdin.
+#    E3: htpasswd resolves to $(brew --prefix httpd)/bin/htpasswd on darwin.
+#    E4: an unsupported OS still dies.
+E_PREFLIGHT="$(portable_mktemp /tmp/setup-dryrun.epreflight)"
+awk '/^preflight_os\(\) \{/{p=1} p{print} /^\}/{if(p) exit}' "${SETUP_SRC}" > "${E_PREFLIGHT}"
+if [ ! -s "${E_PREFLIGHT}" ]; then
+  bad "E: could not extract preflight_os from setup.sh (sync-guard cannot run)"
+fi
+
+# E1. preflight_os on Darwin (mock uname -s=Darwin, -m=arm64).
+E1_DIR="$(portable_mktemp -d /tmp/setup-dryrun.e1)"
+cat > "${E1_DIR}/uname" <<'E1UNAME'
+#!/bin/bash
+case "$1" in
+  -s) printf 'Darwin\n' ;;
+  -m) printf 'arm64\n' ;;
+  -r) printf '23.6.0\n' ;;
+  *) printf 'Darwin\n' ;;
+esac
+E1UNAME
+chmod +x "${E1_DIR}/uname"
+set +e
+(
+  set +e
+  PATH="${E1_DIR}"
+  # shellcheck disable=SC2329 # stubs are used by the sourced preflight_os
+  die() { printf 'DIE:%s\n' "$*" >&2; exit 1; }
+  # shellcheck disable=SC2329
+  msg_ok() { printf '%s\n' "$*"; }
+  # shellcheck source=/dev/null
+  . "${E_PREFLIGHT}"
+  OUT="$(preflight_os 2>&1)"
+  RC=$?
+  printf 'RC=%s\n%s\n' "${RC}" "${OUT}"
+) > /tmp/setup-dryrun.e1.out
+set -e
+E1_RC="$(sed -n '1s/^RC=//p' /tmp/setup-dryrun.e1.out)"
+if [ "${E1_RC}" = "0" ] \
+  && grep -q '^  \[ok\] Darwin arm64$' /tmp/setup-dryrun.e1.out \
+  && grep -q '^  \[ok\] bash ' /tmp/setup-dryrun.e1.out; then
+  ok "E1: preflight_os on Darwin proceeds (mock uname -s=Darwin -m=arm64) -> [ok] Darwin arm64 + [ok] bash"
+else
+  bad "E1: preflight_os on Darwin rc=${E1_RC}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.e1.out >&2 || true
+fi
+
+# E2. sha256_digest parity across sha256sum / BSD shasum / openssl. Reference is
+#     computed DIRECTLY (not via the shim) so every branch is compared against
+#     the host digester itself; stdio "-" is tested too (derived_project_name
+#     and the preflight probe both feed stdin).
+E2_PAYLOAD="$(portable_mktemp /tmp/setup-dryrun.e2payload)"
+printf '%s' 'honey-starter-platform-layer-parity' > "${E2_PAYLOAD}"
+REAL_SHA256SUM="$(command -v sha256sum)"
+REAL_AWK="$(command -v awk)"
+E2_REFERENCE="$(sha256sum "${E2_PAYLOAD}" | awk '{print $1}')"
+
+E2A_OUT="$(sha256_digest "${E2_PAYLOAD}")"
+if [ -n "${E2A_OUT}" ] && [ "${E2A_OUT}" = "${E2_REFERENCE}" ]; then
+  ok "E2a: sha256_digest via GNU sha256sum emits the bare hex digest (reference match)"
+else
+  bad "E2a: sha256sum-branch digest [${E2A_OUT}] != reference [${E2_REFERENCE}]"
+fi
+
+# E2b/E2e. BSD shasum -a 256 branch (fake shasum prints "HASH  FILE" / "HASH  -").
+E2S_DIR="$(portable_mktemp -d /tmp/setup-dryrun.e2shasum)"
+cat > "${E2S_DIR}/shasum" <<E2SHASUM
+#!/bin/bash
+f=""
+for a in "\$@"; do f="\$a"; done
+if [ "\${f}" = "-" ] || [ -z "\${f}" ]; then
+  H="\$(${REAL_SHA256SUM} | ${REAL_AWK} '{print \$1}')"
+  printf '%s  -\n' "\${H}"
+else
+  H="\$(${REAL_SHA256SUM} "\${f}" | ${REAL_AWK} '{print \$1}')"
+  printf '%s  %s\n' "\${H}" "\${f}"
+fi
+E2SHASUM
+chmod +x "${E2S_DIR}/shasum"
+ln -s "${REAL_AWK}" "${E2S_DIR}/awk"
+ln -s "$(command -v sed)" "${E2S_DIR}/sed"
+set +e
+(
+  set +e
+  PATH="${E2S_DIR}"
+  printf '%s' "$(sha256_digest "${E2_PAYLOAD}")"
+) > /tmp/setup-dryrun.e2s.out
+(
+  set +e
+  PATH="${E2S_DIR}"
+  printf '%s' "$(printf '%s' 'honey-starter-platform-layer-parity' | sha256_digest -)"
+) > /tmp/setup-dryrun.e2sstdin.out
+set -e
+E2S_OUT="$(cat /tmp/setup-dryrun.e2s.out)"
+E2S_STDIN_OUT="$(cat /tmp/setup-dryrun.e2sstdin.out)"
+if [ -n "${E2S_OUT}" ] && [ "${E2S_OUT}" = "${E2_REFERENCE}" ]; then
+  ok "E2b: sha256_digest via BSD shasum -a 256 (file) == reference"
+else
+  bad "E2b: shasum-branch digest [${E2S_OUT}] != reference [${E2_REFERENCE}]"
+fi
+if [ -n "${E2S_STDIN_OUT}" ] && [ "${E2S_STDIN_OUT}" = "${E2_REFERENCE}" ]; then
+  ok "E2e: sha256_digest via BSD shasum -a 256 (stdin '-') == reference"
+else
+  bad "E2e: shasum-stdin digest [${E2S_STDIN_OUT}] != reference [${E2_REFERENCE}]"
+fi
+
+# E2c/E2d. openssl dgst -sha256 branch (fake openssl prints "SHA256(FILE)= HASH").
+E2O_DIR="$(portable_mktemp -d /tmp/setup-dryrun.e2openssl)"
+cat > "${E2O_DIR}/openssl" <<E2OPENSSL
+#!/bin/bash
+f=""
+for a in "\$@"; do f="\$a"; done
+if [ "\${f}" = "-" ] || [ -z "\${f}" ]; then
+  H="\$(${REAL_SHA256SUM} | ${REAL_AWK} '{print \$1}')"
+  printf 'SHA256(-)= %s\n' "\${H}"
+else
+  H="\$(${REAL_SHA256SUM} "\${f}" | ${REAL_AWK} '{print \$1}')"
+  printf 'SHA256(%s)= %s\n' "\${f}" "\${H}"
+fi
+E2OPENSSL
+chmod +x "${E2O_DIR}/openssl"
+ln -s "${REAL_AWK}" "${E2O_DIR}/awk"
+ln -s "$(command -v sed)" "${E2O_DIR}/sed"
+set +e
+(
+  set +e
+  PATH="${E2O_DIR}"
+  printf '%s' "$(sha256_digest "${E2_PAYLOAD}")"
+) > /tmp/setup-dryrun.e2o.out
+(
+  set +e
+  PATH="${E2O_DIR}"
+  printf '%s' "$(printf '%s' 'honey-starter-platform-layer-parity' | sha256_digest -)"
+) > /tmp/setup-dryrun.e2ostdin.out
+set -e
+E2O_OUT="$(cat /tmp/setup-dryrun.e2o.out)"
+E2O_STDIN_OUT="$(cat /tmp/setup-dryrun.e2ostdin.out)"
+if [ -n "${E2O_OUT}" ] && [ "${E2O_OUT}" = "${E2_REFERENCE}" ]; then
+  ok "E2c: sha256_digest via openssl dgst -sha256 (file) == reference"
+else
+  bad "E2c: openssl-branch digest [${E2O_OUT}] != reference [${E2_REFERENCE}]"
+fi
+if [ -n "${E2O_STDIN_OUT}" ] && [ "${E2O_STDIN_OUT}" = "${E2_REFERENCE}" ]; then
+  ok "E2d: sha256_digest via openssl dgst -sha256 (stdin '-') == reference"
+else
+  bad "E2d: openssl-stdin digest [${E2O_STDIN_OUT}] != reference [${E2_REFERENCE}]"
+fi
+
+# E3. _htpasswd_probe on Darwin resolves htpasswd via $(brew --prefix httpd)/bin.
+E3_DIR="$(portable_mktemp -d /tmp/setup-dryrun.e3)"
+cat > "${E3_DIR}/uname" <<'E3UNAME'
+#!/bin/bash
+printf 'Darwin\n'
+E3UNAME
+chmod +x "${E3_DIR}/uname"
+MOCK_BREW_PREFIX="${E3_DIR}/mockbrewprefix"
+mkdir -p "${MOCK_BREW_PREFIX}/bin"
+printf '#!/bin/bash\nexit 0\n' > "${MOCK_BREW_PREFIX}/bin/htpasswd"
+chmod +x "${MOCK_BREW_PREFIX}/bin/htpasswd"
+cat > "${E3_DIR}/brew" <<'E3BREW'
+#!/bin/bash
+if [ "$1" = "--prefix" ] && [ "$2" = "httpd" ]; then
+  printf '%s\n' "${E3_MOCK_BREW_PREFIX}"
+  exit 0
+fi
+exit 1
+E3BREW
+chmod +x "${E3_DIR}/brew"
+set +e
+(
+  set +e
+  PATH="${E3_DIR}"
+  export E3_MOCK_BREW_PREFIX="${MOCK_BREW_PREFIX}"
+  _htpasswd_probe
+  RC=$?
+  HTPASSWD_PATH="$(command -v htpasswd 2>/dev/null || true)"
+  printf 'RC=%s\n%s\n' "${RC}" "${HTPASSWD_PATH}"
+) > /tmp/setup-dryrun.e3.out
+set -e
+E3_RC="$(sed -n '1s/^RC=//p' /tmp/setup-dryrun.e3.out)"
+E3_HTPASSWD="$(sed -n '2p' /tmp/setup-dryrun.e3.out)"
+if [ "${E3_RC}" = "0" ] \
+  && [ -n "${E3_HTPASSWD}" ] \
+  && [ "${E3_HTPASSWD}" = "${MOCK_BREW_PREFIX}/bin/htpasswd" ]; then
+  ok "E3: _htpasswd_probe on Darwin resolves htpasswd via brew --prefix httpd (NOT on PATH)"
+else
+  bad "E3: htpasswd brew-path resolution rc=${E3_RC} path=${E3_HTPASSWD}:"
+  sed 's/^/    | /' /tmp/setup-dryrun.e3.out >&2 || true
+fi
+
+# E4. preflight_os on an unsupported OS still dies.
+E4_DIR="$(portable_mktemp -d /tmp/setup-dryrun.e4)"
+cat > "${E4_DIR}/uname" <<'E4UNAME'
+#!/bin/bash
+printf 'FreeBSD\n'
+E4UNAME
+chmod +x "${E4_DIR}/uname"
+set +e
+(
+  set +e
+  PATH="${E4_DIR}"
+  # shellcheck disable=SC2329 # stubs are used by the sourced preflight_os
+  die() { printf 'DIE:%s\n' "$*" >&2; exit 1; }
+  # shellcheck disable=SC2329
+  msg_ok() { printf '%s\n' "$*"; }
+  # shellcheck source=/dev/null
+  . "${E_PREFLIGHT}"
+  OUT="$(preflight_os 2>&1)"
+  RC=$?
+  printf 'RC=%s\n%s\n' "${RC}" "${OUT}"
+) > /tmp/setup-dryrun.e4.out
+set -e
+E4_RC="$(sed -n '1s/^RC=//p' /tmp/setup-dryrun.e4.out)"
+if [ "${E4_RC}" = "1" ] && grep -q 'runs on Linux or macOS' /tmp/setup-dryrun.e4.out; then
+  ok "E4: preflight_os on an unsupported OS (FreeBSD) still dies"
+else
+  bad "E4: unsupported-OS rc=${E4_RC} (want die + message):"
+  sed 's/^/    | /' /tmp/setup-dryrun.e4.out >&2 || true
+fi
+
+rm -rf "${E_PREFLIGHT}" "${E1_DIR}" "${E2_PAYLOAD}" "${E2S_DIR}" "${E2O_DIR}" "${E3_DIR}" "${E4_DIR}"
+
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="

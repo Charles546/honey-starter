@@ -277,6 +277,161 @@ die() { msg_fail "ERROR: $*"; exit 1; }
 usage_die() { msg_fail "ERROR: $*"; printf 'Try --help for usage.\n' >&2; exit 2; }
 
 
+# --- platform-compat shims (Phase 1 macOS platform layer) ---------------------
+# Platform layer for Linux + arm64 macOS (Apple Silicon, macOS 12+). This block
+# is self-contained in setup.sh (the piped bootstrap copy sources nothing) and
+# mirrored byte-identical in scripts/lib.sh (shared by start.sh + the lifecycle
+# scripts). The D8b KEEP-IN-SYNC sync-guard in test/setup-dryrun.sh diffs this
+# exact region (marker comment -> end marker) and FAILS on drift. All GNU-only
+# calls route through these shims so Linux behavior is unchanged and macOS gets
+# BSD/brew-compatible behavior.
+platform_os() {
+  case "$(uname -s 2>/dev/null)" in
+    Linux) printf 'linux' ;;
+    Darwin) printf 'darwin' ;;
+    *) printf 'unsupported' ;;
+  esac
+}
+
+# sha256_digest FILE -> prints the BARE hex SHA-256 digest of FILE (use "-" for
+# stdin). GNU sha256sum prints "HASH  FILE", BSD shasum -a 256 prints
+# "HASH  FILE", openssl dgst -sha256 prints "SHA256(FILE)= HASH": the digester
+# name + filename are stripped so existing `| cut -c1-8` / `| awk '{print $1}'`
+# consumers keep working. Returns 1 when no digester is available.
+sha256_digest() {
+  local f="${1:--}"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${f}" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${f}" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "${f}" | sed 's/^.*= *//'
+  else
+    return 1
+  fi
+}
+
+# sed_inplace PROGRAM FILE - GNU sed needs `-i` with no suffix, BSD needs
+# `-i ''`, and musl/busybox varies: PROBE which form this host accepts (never
+# guess from the OS name) and cache it. Returns 1 when neither form works.
+SED_INPLACE_MODE=""
+sed_inplace() {
+  local prog="$1" file="$2" tmpf
+  if [ -z "${SED_INPLACE_MODE}" ]; then
+    tmpf="$(mktemp 2>/dev/null)" || tmpf="/tmp/honey-starter.sedprobe.$$"
+    printf 'x\n' > "${tmpf}"
+    if sed -i 's/x/y/' "${tmpf}" 2>/dev/null && [ "$(cat "${tmpf}" 2>/dev/null)" = "y" ]; then
+      SED_INPLACE_MODE="gnu"
+    elif sed -i '' 's/x/y/' "${tmpf}" 2>/dev/null && [ "$(cat "${tmpf}" 2>/dev/null)" = "y" ]; then
+      SED_INPLACE_MODE="bsd"
+    else
+      SED_INPLACE_MODE="none"
+    fi
+    rm -f "${tmpf}" 2>/dev/null || true
+  fi
+  case "${SED_INPLACE_MODE}" in
+    gnu) sed -i "${prog}" "${file}" ;;
+    bsd) sed -i '' "${prog}" "${file}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# stty_dev -> prints "-F" (GNU/BusyBox stty -F DEV) or "-f" (BSD stty -f DEV)
+# for the /dev/tty device; PROBEd once against /dev/tty and cached. Used by
+# setup.sh's masked-input (masked_read / read_secret_key).
+STTY_DEV_FLAG=""
+stty_dev() {
+  if [ -z "${STTY_DEV_FLAG}" ]; then
+    if stty -F /dev/tty -g >/dev/null 2>&1; then
+      STTY_DEV_FLAG="-F"
+    elif stty -f /dev/tty -g >/dev/null 2>&1; then
+      STTY_DEV_FLAG="-f"
+    else
+      STTY_DEV_FLAG="-F"
+    fi
+  fi
+  printf '%s' "${STTY_DEV_FLAG}"
+}
+
+# realpath_portable PATH -> canonical absolute path: `readlink -f` when present
+# (GNU coreutils / Linux; macOS has no readlink -f), else `cd && pwd -P` for an
+# existing dir, else print the path as-is (matches the old fallback exactly).
+realpath_portable() {
+  local p="$1" out=""
+  if command -v readlink >/dev/null 2>&1; then
+    out="$(readlink -f "${p}" 2>/dev/null || true)"
+  fi
+  if [ -z "${out}" ]; then
+    if [ -d "${p}" ]; then
+      out="$(cd "${p}" && pwd -P)"
+    else
+      out="${p}"
+    fi
+  fi
+  printf '%s' "${out}"
+}
+
+# cp_recursive SRC DST - GNU `cp -a` vs BSD `cp -pR` (macOS cp has no -a).
+# PROBEd once and cached; used by materialize_new's EXDEV cross-filesystem
+# fallback.
+CP_RECURSIVE_ARGS=""
+cp_recursive() {
+  local src="$1" dst="$2" tmpd
+  if [ -z "${CP_RECURSIVE_ARGS}" ]; then
+    tmpd="$(mktemp -d 2>/dev/null)" || tmpd="/tmp/honey-starter.cpprobe.$$"
+    mkdir -p "${tmpd}/s" 2>/dev/null || true
+    printf 'x' > "${tmpd}/s/f" 2>/dev/null || true
+    if cp -a "${tmpd}/s" "${tmpd}/a" 2>/dev/null && [ -f "${tmpd}/a/f" ]; then
+      CP_RECURSIVE_ARGS="-a"
+    elif cp -pR "${tmpd}/s" "${tmpd}/b" 2>/dev/null && [ -f "${tmpd}/b/f" ]; then
+      CP_RECURSIVE_ARGS="-pR"
+    else
+      CP_RECURSIVE_ARGS="-a"
+    fi
+    rm -rf "${tmpd}" 2>/dev/null || true
+  fi
+  cp "${CP_RECURSIVE_ARGS}" "${src}" "${dst}"
+}
+
+# _htpasswd_probe -> 0/1 probe shared by resolve_htpasswd (hard: dies with brew
+# guidance) and setup.sh's optional-tools preflight (soft: reports missing).
+# Private helper backing the public resolve_htpasswd shim below.
+_htpasswd_probe() {
+  if command -v htpasswd >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ "$(uname -s)" = "Darwin" ]; then
+    local htdir=""
+    htdir="$(brew --prefix httpd 2>/dev/null || true)"
+    if [ -n "${htdir}" ] && [ -x "${htdir}/bin/htpasswd" ]; then
+      PATH="${htdir}/bin:${PATH}"
+      export PATH
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# resolve_htpasswd -> htpasswd is NOT on PATH on macOS even after
+# `brew install httpd` (it lives at $(brew --prefix httpd)/bin/htpasswd). Probe
+# `command -v htpasswd` first, then the brew prefix on darwin; export the dir
+# onto PATH so every caller (setup.sh optional-tools preflight, start.sh's
+# `require_cmd htpasswd`) resolves it. Dies with brew guidance on darwin; the
+# plain Linux message (identical to the previous `require_cmd htpasswd` die) is
+# kept on every other platform so Linux behavior is unchanged.
+resolve_htpasswd() {
+  if _htpasswd_probe; then
+    return 0
+  fi
+  if [ "$(uname -s)" = "Darwin" ]; then
+    die "required command not found: htpasswd (brew install httpd; it is at \$(brew --prefix httpd)/bin/htpasswd - NOT on PATH by default)"
+  fi
+  die "required command not found: htpasswd"
+}
+# --- end platform-compat shims ---
+
+
+
 print_help() {
   cat <<'HELP'
 honey-starter guided installer (scripts/setup.sh)
@@ -518,10 +673,11 @@ Compose project (COMPOSE_PROJECT_NAME) - per-instance, persisted in .env:
   initialized Vault volume and failing mid-start on a missing unseal key.
 
 Preflight (fail-fast, before any prompt or download):
-  Linux guard -> bash >= 4 -> curl + tar + sha256sum -> docker + compose v2 ->
-  `docker info` reachability -> docker-group/sudo capability. jq/openssl/
-  htpasswd presence and the optional install offer happen on the on-disk copy,
-  still before the questionnaire. docker/compose are never auto-installed.
+  OS guard (Linux | macOS arm64) -> bash >= 4 -> curl + tar + a sha256 digester
+  -> docker + compose v2 -> `docker info` reachability -> docker-group/sudo
+  capability. jq/openssl/htpasswd presence and the optional install offer
+  happen on the on-disk copy, still before the questionnaire. docker/compose
+  are never auto-installed.
 
 Environment variables (all optional):
   COMPOSE_PROJECT_NAME         setup-time override: fresh installs use it
@@ -591,9 +747,7 @@ detect_mode() {
       */*) ;;
       *) cand="./${cand}" ;;
     esac
-    if command -v readlink >/dev/null 2>&1; then
-      cand="$(readlink -f "${cand}" 2>/dev/null || printf '%s' "${cand}")"
-    fi
+    cand="$(realpath_portable "${cand}")"
     if [ -n "${cand}" ] && [ -f "${cand}" ]; then
       SCRIPT_REAL="${cand}"
       dir="$(dirname "$(dirname "${SCRIPT_REAL}")")"
@@ -653,11 +807,16 @@ is_sensitive_key() {
 }
 
 os_distro_id() {
-  if [ -r /etc/os-release ]; then
-    sed -n 's/^ID=//p' /etc/os-release | tr -d '"' | head -n 1
-  else
-    printf 'unknown'
-  fi
+  case "$(platform_os)" in
+    darwin) printf 'darwin' ;;
+    *)
+      if [ -r /etc/os-release ]; then
+        sed -n 's/^ID=//p' /etc/os-release | tr -d '"' | head -n 1
+      else
+        printf 'unknown'
+      fi
+      ;;
+  esac
 }
 
 # --- .env parsing (read-only; the file is NEVER sourced, so nothing leaks) ----
@@ -741,7 +900,7 @@ POSITIONAL_TARGET=""
 # (fallback cd && pwd -P) so equality vs the invoked tree (SCRIPT_TREE,
 # resolved the same way in detect_mode) is canonical.
 resolve_arg_path() {
-  local p="$1" out=""
+  local p="$1"
   if [ "${p}" = "~" ] && [ -n "${HOME:-}" ]; then
     p="${HOME:-}"
   fi
@@ -752,17 +911,7 @@ resolve_arg_path() {
     /*) ;;
     *) p="$(pwd)/${p}" ;;
   esac
-  if command -v readlink >/dev/null 2>&1; then
-    out="$(readlink -f "${p}" 2>/dev/null || true)"
-  fi
-  if [ -z "${out}" ]; then
-    if [ -d "${p}" ]; then
-      out="$(cd "${p}" && pwd -P)"
-    else
-      out="${p}"
-    fi
-  fi
-  printf '%s' "${out}"
+  realpath_portable "${p}"
 }
 
 parse_args() {
@@ -850,23 +999,31 @@ detect_can_root() {
 }
 
 preflight_os() {
-  if [ "$(uname -s)" != "Linux" ]; then
-    die "honey-starter runs on Linux only (docker bind mounts + the root-without-caps file-permission model). Detected: $(uname -s)"
-  fi
+  local os
+  os="$(platform_os)"
+  case "${os}" in
+    linux|darwin) ;;
+    *)
+      die "honey-starter runs on Linux or macOS (Apple Silicon / arm64) only (docker bind mounts + the root-without-caps file-permission model). Detected: $(uname -s)"
+      ;;
+  esac
   if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    if [ "${os}" = "darwin" ]; then
+      die "bash 4 or newer is required (found ${BASH_VERSION:-unknown}). macOS ships bash 3.2 by default - install a newer bash with Homebrew: brew install bash && chsh -s /usr/local/bin/bash (or re-run this script with the new bash: /usr/local/bin/bash scripts/setup.sh)"
+    fi
     die "bash 4 or newer is required (found ${BASH_VERSION:-unknown})"
   fi
-  msg_ok "  [ok] Linux $(uname -r)"
+  if [ "${os}" = "darwin" ]; then
+    msg_ok "  [ok] Darwin $(uname -m)"
+  else
+    msg_ok "  [ok] Linux $(uname -r)"
+  fi
   msg_ok "  [ok] bash ${BASH_VERSION%%(*}"
 }
 
 preflight_download_tools() {
   local missing=0
-  # sha256sum is HARD-required (Phase 6): the per-instance COMPOSE_PROJECT_NAME
-  # is derived from a sha256 of the resolved install dir, so a host without it
-  # cannot run the guided installer. Linux-only: coreutils / busybox both
-  # provide it.
-  for cmd in curl tar sha256sum; do
+  for cmd in curl tar; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
       warn "required command not found: ${cmd}"
       missing=1
@@ -874,17 +1031,29 @@ preflight_download_tools() {
       msg_ok "  [ok] ${cmd}"
     fi
   done
+  # A sha256 digester is HARD-required (Phase 6): the per-instance
+  # COMPOSE_PROJECT_NAME is derived from a sha256 of the resolved install dir
+  # and the release tarball is verified. Routed through the sha256_digest shim
+  # so sha256sum (GNU coreutils), shasum -a 256 (BSD/macOS) and
+  # openssl dgst -sha256 all satisfy it.
+  if printf '%s' 'probe' | sha256_digest - >/dev/null 2>&1; then
+    msg_ok "  [ok] sha256 digester (sha256sum/shasum/openssl)"
+  else
+    warn "required command not found: a sha256 digester (sha256sum / shasum -a 256 / openssl dgst -sha256)"
+    missing=1
+  fi
   if [ "${missing}" -eq 1 ]; then
     case "$(os_distro_id)" in
-      debian|ubuntu) die "install curl + tar + sha256sum first, e.g.: sudo apt-get update && sudo apt-get install -y curl tar coreutils" ;;
-      rhel|fedora|centos|rocky|almalinux) die "install curl + tar + sha256sum first, e.g.: sudo dnf install -y curl tar coreutils" ;;
-      arch) die "install curl + tar + sha256sum first, e.g.: sudo pacman -S --noconfirm curl tar coreutils" ;;
-      alpine) die "install curl + tar + sha256sum first, e.g.: apk add --no-cache curl tar coreutils" ;;
-      *) die "install curl + tar + sha256sum, then re-run" ;;
+      darwin) die "install curl + tar + a sha256 digester first, e.g.: brew install curl tar coreutils (coreutils provides sha256sum; shasum is built in, and openssl dgst -sha256 also works)" ;;
+      debian|ubuntu) die "install curl + tar + a sha256 digester first, e.g.: sudo apt-get update && sudo apt-get install -y curl tar coreutils" ;;
+      rhel|fedora|centos|rocky|almalinux) die "install curl + tar + a sha256 digester first, e.g.: sudo dnf install -y curl tar coreutils" ;;
+      arch) die "install curl + tar + a sha256 digester first, e.g.: sudo pacman -S --noconfirm curl tar coreutils" ;;
+      alpine) die "install curl + tar + a sha256 digester first, e.g.: apk add --no-cache curl tar coreutils" ;;
+      *) die "install curl + tar + a sha256 digester (sha256sum / shasum -a 256 / openssl dgst -sha256), then re-run" ;;
     esac
   fi
-  if [ -n "${HONEY_STARTER_EXPECT_SHA256:-}" ] && ! command -v sha256sum >/dev/null 2>&1; then
-    die "HONEY_STARTER_EXPECT_SHA256 is set but sha256sum is not available"
+  if [ -n "${HONEY_STARTER_EXPECT_SHA256:-}" ] && ! printf '%s' 'probe' | sha256_digest - >/dev/null 2>&1; then
+    die "HONEY_STARTER_EXPECT_SHA256 is set but no sha256 digester (sha256sum / shasum -a 256 / openssl dgst -sha256) is available"
   fi
 }
 
@@ -892,7 +1061,7 @@ preflight_download_tools() {
 # A host with no viable docker fails fast BEFORE any prompt or download.
 # In --dry-run the check is informational only (render-only validation).
 preflight_docker() {
-  local have_docker=1 have_compose=1
+  local have_docker=1 have_compose=1 distro
   if ! command -v docker >/dev/null 2>&1; then
     have_docker=0
   elif ! docker compose version >/dev/null 2>&1; then
@@ -908,7 +1077,11 @@ preflight_docker() {
       fi
       return 0
     fi
-    if [ -S /var/run/docker.sock ] && [ "$(id -u)" -ne 0 ] \
+    # Linux: a reachable-but-permission-denied socket is a docker-group problem
+    # (usermod -aG docker). macOS: there is NO docker group - Docker Desktop and
+    # Rancher Desktop route through their own CLIs/sockets (Rancher Desktop's
+    # CLI is at ~/.rd/bin/docker and its user socket at ~/.docker/run/docker.sock).
+    if [ "$(uname -s)" != "Darwin" ] && [ -S /var/run/docker.sock ] && [ "$(id -u)" -ne 0 ] \
       && ! { command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }; then
       if [ "${DRY_RUN}" -eq 1 ]; then
         warn "docker daemon not reachable as the current user (dry-run continues for render-only validation)"
@@ -927,11 +1100,58 @@ preflight_docker() {
     fi
     die "docker daemon is not reachable (docker info failed). Start docker and re-run."
   fi
+  # docker / compose v2 not found. On darwin, probe the desktop runtimes so a
+  # RUNNING Rancher Desktop (CLI at ~/.rd/bin/docker) or Docker Desktop (CLI in
+  # /usr/local/bin, user socket at ~/.docker/run/docker.sock) is actually found
+  # before dying; then give desktop download links (never distro package paths,
+  # never the docker group - there is no docker group on macOS).
+  if [ "$(uname -s)" = "Darwin" ]; then
+    local probe_docker=""
+    if [ "${have_docker}" -eq 0 ]; then
+      if [ -x "${HOME}/.rd/bin/docker" ]; then
+        probe_docker="${HOME}/.rd/bin/docker"
+      elif [ -x /usr/local/bin/docker ]; then
+        probe_docker="/usr/local/bin/docker"
+      fi
+      if [ -n "${probe_docker}" ]; then
+        # The CLI exists off-PATH - add its dir and re-test.
+        PATH="$(dirname "${probe_docker}"):${PATH}"
+        export PATH
+        have_docker=1
+      fi
+    fi
+    # Docker Desktop on macOS routes through a user-mode socket at
+    # ~/.docker/run/docker.sock (no /var/run/docker.sock by default); point
+    # DOCKER_HOST at it so `docker info` can reach a running desktop daemon.
+    if [ -S "${HOME}/.docker/run/docker.sock" ]; then
+      DOCKER_HOST="unix://${HOME}/.docker/run/docker.sock"
+      export DOCKER_HOST
+    fi
+    if [ "${have_docker}" -eq 1 ] \
+      && docker compose version >/dev/null 2>&1 \
+      && docker info >/dev/null 2>&1; then
+      msg_ok "  [ok] docker + compose v2 (${probe_docker:-desktop runtime})"
+      return 0
+    fi
+    if [ "${DRY_RUN}" -eq 1 ]; then
+      warn "docker / compose v2 not found (dry-run continues for render-only validation)"
+      return 0
+    fi
+    msg_fail "ERROR: docker with compose v2 is required and is NOT auto-installed."
+    echo "       Install Docker Desktop or Rancher Desktop for Apple Silicon (arm64):" >&2
+    echo "         Docker Desktop:  https://www.docker.com/products/docker-desktop/" >&2
+    echo "         Rancher Desktop: https://rancherdesktop.io/" >&2
+    echo "       Both provide the \`docker compose\` v2 wrapper (no group membership" >&2
+    echo "       needed - there is no docker group on macOS)." >&2
+    echo "       Rancher Desktop's CLI is at ~/.rd/bin/docker (not on PATH by" >&2
+    echo "       default); Docker Desktop's is at /usr/local/bin/docker with its" >&2
+    echo "       user socket at ~/.docker/run/docker.sock." >&2
+    die "docker + compose v2 not found"
+  fi
   if [ "${DRY_RUN}" -eq 1 ]; then
     warn "docker / compose v2 not found (dry-run continues for render-only validation)"
     return 0
   fi
-  local distro
   distro="$(os_distro_id)"
   msg_fail "ERROR: docker with compose v2 is required and is NOT auto-installed."
   echo "       Install it manually, then re-run. Distro-specific guidance:" >&2
@@ -966,13 +1186,21 @@ preflight_docker() {
 # the exact package set and stop. Never guesses.
 preflight_optional_tools() {
   local missing=() cmd pkglist distro
-  for cmd in jq openssl htpasswd; do
+  for cmd in jq openssl; do
     if command -v "${cmd}" >/dev/null 2>&1; then
       msg_ok "  [ok] ${cmd}"
     else
       missing+=("${cmd}")
     fi
   done
+  # htpasswd: routed through the shared probe so the darwin brew-path
+  # ($(brew --prefix httpd)/bin/htpasswd) is checked too - it is NOT on PATH
+  # by default on macOS even after `brew install httpd`.
+  if _htpasswd_probe; then
+    msg_ok "  [ok] htpasswd"
+  else
+    missing+=(htpasswd)
+  fi
   if [ "${#missing[@]}" -eq 0 ]; then
     return 0
   fi
@@ -1027,6 +1255,9 @@ preflight_optional_tools() {
       ;;
     alpine)
       die "missing required tools for ${distro}: jq openssl apache2-utils (apk add --no-cache jq openssl apache2-utils)"
+      ;;
+    darwin)
+      die "missing required tools for darwin: jq openssl htpasswd (brew install jq openssl httpd; htpasswd is provided by the httpd formula at \$(brew --prefix httpd)/bin/htpasswd and is NOT on PATH by default)"
       ;;
     *)
       die "missing required tools: ${missing[*]}"
@@ -1110,7 +1341,7 @@ materialize_new() {
     # EXDEV / cross-filesystem fallback: copy + remove (NEVER mv the source).
     # After a failed rename the target does not exist yet (mv is atomic), so
     # create it first; the mktemp content is removed only after a full copy.
-    if mkdir -p "${target}" && cp -a "${tmpdir}/." "${target}/" && rm -rf "${tmpdir}"; then
+    if mkdir -p "${target}" && cp_recursive "${tmpdir}/." "${target}/" && rm -rf "${tmpdir}"; then
       info "--- materialized a new honey-starter instance at ${target} (copied from ${SCRIPT_TREE})"
     else
       rm -rf "${tmpdir}"
@@ -1233,7 +1464,7 @@ download_and_install() {
   fi
   if [ -n "${HONEY_STARTER_EXPECT_SHA256:-}" ]; then
     local actual
-    actual="$(sha256sum "${tarball}" | awk '{print $1}')"
+    actual="$(sha256_digest "${tarball}")"
     if [ "${actual}" != "${HONEY_STARTER_EXPECT_SHA256}" ]; then
       cleanup_tmp
       die "sha256 mismatch for the downloaded tarball: expected ${HONEY_STARTER_EXPECT_SHA256}, got ${actual}"
@@ -1408,8 +1639,8 @@ masked_read() {
   chmod 600 "${tmp}" 2>/dev/null || true
   (
     q="$(printf '%q' "${saved_state}")"
-    trap 'stty -F /dev/tty '"${q}"' 2>/dev/null || true' EXIT
-    stty -F /dev/tty -icanon -isig -echo min 1 time 0 2>/dev/null || exit 99
+    trap 'stty '"$(stty_dev)"' /dev/tty '"${q}"' 2>/dev/null || true' EXIT
+    stty "$(stty_dev)" /dev/tty -icanon -isig -echo min 1 time 0 2>/dev/null || exit 99
     while :; do
       # dd outputs one raw byte; command substitution strips a trailing
       # newline, so a pty/pipe '\n' arrives as an EMPTY read (break = submit)
@@ -1457,7 +1688,7 @@ masked_read() {
 #   aborts as exit 130.
 read_secret_key() {
   local label="$1" saved="" first="" second="" done=0
-  if ! saved="$(stty -F /dev/tty -g 2>/dev/null)"; then
+  if ! saved="$(stty "$(stty_dev)" /dev/tty -g 2>/dev/null)"; then
     # raw masking unavailable (no stty / /dev/tty): still render the prompt
     # label so the read -s fallback is not a silent bare read
     if [ -n "${label}" ]; then
@@ -1864,18 +2095,18 @@ sanitize_project_basename() {
 # chars of sha256(INSTALL_DIR) — the RESOLVED (post-dispatch) absolute target
 # path, NEVER SCRIPT_TREE, so two instances materialized from the same invoked
 # tree hash differently. Length 3+20+1+8 = 32 (PROJECT_NAME_MAX). Defensive
-# die if sha256sum is missing (preflight already requires it).
+# die if no sha256 digester is available (preflight already requires one).
 # KEEP IN SYNC with test/setup-dryrun.sh derived_proj() (same inputs ->
 # same output); any derivation change must update BOTH.
 derived_project_name() {
   local dir="$1" base b h name
-  if ! command -v sha256sum >/dev/null 2>&1; then
-    die "sha256sum is required to derive the per-instance COMPOSE_PROJECT_NAME (install coreutils/busybox and re-run)"
+  if ! printf '%s' 'probe' | sha256_digest - >/dev/null 2>&1; then
+    die "a sha256 digester (sha256sum / shasum -a 256 / openssl dgst -sha256) is required to derive the per-instance COMPOSE_PROJECT_NAME (install coreutils on Linux, or brew install coreutils on macOS, and re-run)"
   fi
   base="$(basename "${dir}")"
   [ -n "${base}" ] || base="dir"
   b="$(sanitize_project_basename "${base}")"
-  h="$(printf '%s' "${dir}" | sha256sum | cut -c1-${PROJECT_HASH_LEN})"
+  h="$(printf '%s' "${dir}" | sha256_digest - | cut -c1-${PROJECT_HASH_LEN})"
   name="${PROJECT_PREFIX}${b}-${h}"
   if [ "${#name}" -gt "${PROJECT_NAME_MAX}" ]; then
     die "internal: derived project name '${name}' exceeds ${PROJECT_NAME_MAX} chars"
