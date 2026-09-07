@@ -30,6 +30,7 @@ $ make start
 🚀 === honey-starter: start ===
 ✅   [ok] Linux 6.8.0-45-generic
 ✅   [ok] docker compose v2
+✅   [ok] docker
 ✅   [ok] curl
 ✅   [ok] jq
 ✅   [ok] openssl
