@@ -159,6 +159,168 @@ warn() { msg_warn "WARNING: $*"; }
 die() { msg_fail "ERROR: $*"; exit 1; }
 usage_die() { msg_fail "ERROR: $*"; printf 'Try --help for usage.\n' >&2; exit 2; }
 
+# KEEP-IN-SYNC with scripts/setup.sh: the platform-compat shims block below
+# (the marker comment through the end marker) is a byte-for-byte copy of
+# setup.sh's Phase 1 macOS platform layer - setup.sh is the ORIGINAL; the
+# guided installer stays self-contained, this copy is shared by start.sh and
+# the lifecycle scripts. The D8b sync-guard check in test/setup-dryrun.sh
+# diffs the marker region and FAILS on drift. Edit BOTH.
+
+# --- platform-compat shims (Phase 1 macOS platform layer) ---------------------
+# Platform layer for Linux + arm64 macOS (Apple Silicon, macOS 12+). This block
+# is self-contained in setup.sh (the piped bootstrap copy sources nothing) and
+# mirrored byte-identical in scripts/lib.sh (shared by start.sh + the lifecycle
+# scripts). The D8b KEEP-IN-SYNC sync-guard in test/setup-dryrun.sh diffs this
+# exact region (marker comment -> end marker) and FAILS on drift. All GNU-only
+# calls route through these shims so Linux behavior is unchanged and macOS gets
+# BSD/brew-compatible behavior.
+platform_os() {
+  case "$(uname -s 2>/dev/null)" in
+    Linux) printf 'linux' ;;
+    Darwin) printf 'darwin' ;;
+    *) printf 'unsupported' ;;
+  esac
+}
+
+# sha256_digest FILE -> prints the BARE hex SHA-256 digest of FILE (use "-" for
+# stdin). GNU sha256sum prints "HASH  FILE", BSD shasum -a 256 prints
+# "HASH  FILE", openssl dgst -sha256 prints "SHA256(FILE)= HASH": the digester
+# name + filename are stripped so existing `| cut -c1-8` / `| awk '{print $1}'`
+# consumers keep working. Returns 1 when no digester is available.
+sha256_digest() {
+  local f="${1:--}"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${f}" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${f}" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "${f}" | sed 's/^.*= *//'
+  else
+    return 1
+  fi
+}
+
+# sed_inplace PROGRAM FILE - GNU sed needs `-i` with no suffix, BSD needs
+# `-i ''`, and musl/busybox varies: PROBE which form this host accepts (never
+# guess from the OS name) and cache it. Returns 1 when neither form works.
+SED_INPLACE_MODE=""
+sed_inplace() {
+  local prog="$1" file="$2" tmpf
+  if [ -z "${SED_INPLACE_MODE}" ]; then
+    tmpf="$(mktemp 2>/dev/null)" || tmpf="/tmp/honey-starter.sedprobe.$$"
+    printf 'x\n' > "${tmpf}"
+    if sed -i 's/x/y/' "${tmpf}" 2>/dev/null && [ "$(cat "${tmpf}" 2>/dev/null)" = "y" ]; then
+      SED_INPLACE_MODE="gnu"
+    elif sed -i '' 's/x/y/' "${tmpf}" 2>/dev/null && [ "$(cat "${tmpf}" 2>/dev/null)" = "y" ]; then
+      SED_INPLACE_MODE="bsd"
+    else
+      SED_INPLACE_MODE="none"
+    fi
+    rm -f "${tmpf}" 2>/dev/null || true
+  fi
+  case "${SED_INPLACE_MODE}" in
+    gnu) sed -i "${prog}" "${file}" ;;
+    bsd) sed -i '' "${prog}" "${file}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# stty_dev -> prints "-F" (GNU/BusyBox stty -F DEV) or "-f" (BSD stty -f DEV)
+# for the /dev/tty device; PROBEd once against /dev/tty and cached. Used by
+# setup.sh's masked-input (masked_read / read_secret_key).
+STTY_DEV_FLAG=""
+stty_dev() {
+  if [ -z "${STTY_DEV_FLAG}" ]; then
+    if stty -F /dev/tty -g >/dev/null 2>&1; then
+      STTY_DEV_FLAG="-F"
+    elif stty -f /dev/tty -g >/dev/null 2>&1; then
+      STTY_DEV_FLAG="-f"
+    else
+      STTY_DEV_FLAG="-F"
+    fi
+  fi
+  printf '%s' "${STTY_DEV_FLAG}"
+}
+
+# realpath_portable PATH -> canonical absolute path: `readlink -f` when present
+# (GNU coreutils / Linux; macOS has no readlink -f), else `cd && pwd -P` for an
+# existing dir, else print the path as-is (matches the old fallback exactly).
+realpath_portable() {
+  local p="$1" out=""
+  if command -v readlink >/dev/null 2>&1; then
+    out="$(readlink -f "${p}" 2>/dev/null || true)"
+  fi
+  if [ -z "${out}" ]; then
+    if [ -d "${p}" ]; then
+      out="$(cd "${p}" && pwd -P)"
+    else
+      out="${p}"
+    fi
+  fi
+  printf '%s' "${out}"
+}
+
+# cp_recursive SRC DST - GNU `cp -a` vs BSD `cp -pR` (macOS cp has no -a).
+# PROBEd once and cached; used by materialize_new's EXDEV cross-filesystem
+# fallback.
+CP_RECURSIVE_ARGS=""
+cp_recursive() {
+  local src="$1" dst="$2" tmpd
+  if [ -z "${CP_RECURSIVE_ARGS}" ]; then
+    tmpd="$(mktemp -d 2>/dev/null)" || tmpd="/tmp/honey-starter.cpprobe.$$"
+    mkdir -p "${tmpd}/s" 2>/dev/null || true
+    printf 'x' > "${tmpd}/s/f" 2>/dev/null || true
+    if cp -a "${tmpd}/s" "${tmpd}/a" 2>/dev/null && [ -f "${tmpd}/a/f" ]; then
+      CP_RECURSIVE_ARGS="-a"
+    elif cp -pR "${tmpd}/s" "${tmpd}/b" 2>/dev/null && [ -f "${tmpd}/b/f" ]; then
+      CP_RECURSIVE_ARGS="-pR"
+    else
+      CP_RECURSIVE_ARGS="-a"
+    fi
+    rm -rf "${tmpd}" 2>/dev/null || true
+  fi
+  cp "${CP_RECURSIVE_ARGS}" "${src}" "${dst}"
+}
+
+# _htpasswd_probe -> 0/1 probe shared by resolve_htpasswd (hard: dies with brew
+# guidance) and setup.sh's optional-tools preflight (soft: reports missing).
+# Private helper backing the public resolve_htpasswd shim below.
+_htpasswd_probe() {
+  if command -v htpasswd >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ "$(uname -s)" = "Darwin" ]; then
+    local htdir=""
+    htdir="$(brew --prefix httpd 2>/dev/null || true)"
+    if [ -n "${htdir}" ] && [ -x "${htdir}/bin/htpasswd" ]; then
+      PATH="${htdir}/bin:${PATH}"
+      export PATH
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# resolve_htpasswd -> htpasswd is NOT on PATH on macOS even after
+# `brew install httpd` (it lives at $(brew --prefix httpd)/bin/htpasswd). Probe
+# `command -v htpasswd` first, then the brew prefix on darwin; export the dir
+# onto PATH so every caller (setup.sh optional-tools preflight, start.sh's
+# `require_cmd htpasswd`) resolves it. Dies with brew guidance on darwin; the
+# plain Linux message (identical to the previous `require_cmd htpasswd` die) is
+# kept on every other platform so Linux behavior is unchanged.
+resolve_htpasswd() {
+  if _htpasswd_probe; then
+    return 0
+  fi
+  if [ "$(uname -s)" = "Darwin" ]; then
+    die "required command not found: htpasswd (brew install httpd; it is at \$(brew --prefix httpd)/bin/htpasswd - NOT on PATH by default)"
+  fi
+  die "required command not found: htpasswd"
+}
+# --- end platform-compat shims ---
+
+
+
 # Hard requirement: exit if the command is missing.
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then

@@ -37,6 +37,21 @@
 # honeydipper binary is required.
 #
 # Run: bash scripts/start.sh   (or: make start)
+
+# bash >= 4 is required throughout (arrays, [[ ]], mapfile, ${var,,},
+# `set -o pipefail`). macOS ships bash 3.2 by default, so surface this FIRST -
+# before `set -euo pipefail` itself can fail cryptically and before lib.sh is
+# sourced - with actionable Homebrew guidance. The bash this script runs under
+# is whatever `make start` picked up from PATH (`@bash scripts/start.sh`).
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    printf '%s\n' "ERROR: bash 4 or newer is required (found ${BASH_VERSION:-unknown}). macOS ships bash 3.2 by default - install a newer bash with Homebrew: brew install bash && chsh -s /usr/local/bin/bash (or re-run this script with /usr/local/bin/bash scripts/start.sh)" >&2
+  else
+    printf '%s\n' "ERROR: bash 4 or newer is required (found ${BASH_VERSION:-unknown})" >&2
+  fi
+  exit 1
+fi
+
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -44,26 +59,35 @@ source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 msg_section "=== honey-starter: start ==="
 
-# --- Linux-only guard -------------------------------------------------------
+# --- OS guard --------------------------------------------------------------
 # The cap_drop/CAP_DAC_OVERRIDE file-permission model and the bind-mount
-# layout below are Linux-specific (see deploy/README.md "Hardening notes").
-if [ "$(uname -s)" != "Linux" ]; then
-  die "honey-starter runs on Linux only (docker bind mounts + the root-without-caps file-permission model). Detected: $(uname -s)"
-fi
+# layout are Linux-specific (see deploy/README.md "Hardening notes"); macOS
+# (arm64 / Apple Silicon) is supported via Docker Desktop / Rancher Desktop.
+case "$(platform_os)" in
+  linux|darwin) ;;
+  *) die "honey-starter runs on Linux or macOS (Apple Silicon / arm64) only (docker bind mounts + the root-without-caps file-permission model). Detected: $(uname -s)" ;;
+esac
 
 # --- required tools ---------------------------------------------------------
 require_cmd docker
 if ! docker compose version >/dev/null 2>&1; then
   die "docker compose v2 is required (docker compose version failed)"
 fi
-for cmd in curl jq openssl htpasswd; do
+for cmd in curl jq openssl; do
   require_cmd "${cmd}"
 done
+# htpasswd may not be on PATH on macOS even after `brew install httpd`; the
+# shared shim resolves $(brew --prefix httpd)/bin/htpasswd and exports it.
+resolve_htpasswd
 if ! docker info >/dev/null 2>&1; then
   die "docker daemon is not reachable (docker info failed). Start docker and re-run."
 fi
 
-msg_ok "  [ok] Linux $(uname -r)"
+if [ "$(platform_os)" = "darwin" ]; then
+  msg_ok "  [ok] Darwin $(uname -m)"
+else
+  msg_ok "  [ok] Linux $(uname -r)"
+fi
 msg_ok "  [ok] docker compose v2"
 for cmd in docker curl jq openssl htpasswd; do
   msg_ok "  [ok] ${cmd}"
@@ -218,10 +242,10 @@ render_config() {
 
   local f
   while IFS= read -r f; do
-    sed -i "s/<ns>/${HONEY_NS}/g" "${f}"
+    sed_inplace "s/<ns>/${HONEY_NS}/g" "${f}"
   done < <(grep -rl '<ns>' "${staging}" 2>/dev/null || true)
   while IFS= read -r f; do
-    sed -i "s/<user>/${HONEY_USER}/g" "${f}"
+    sed_inplace "s/<user>/${HONEY_USER}/g" "${f}"
   done < <(grep -rl '<user>' "${staging}" 2>/dev/null || true)
 
   # normalize perms so the daemon's root-without-caps can read the mount
