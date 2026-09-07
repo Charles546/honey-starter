@@ -24,7 +24,7 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "SKIP: docker not found"
+  msg_info "SKIP: docker not found"
   exit 0
 fi
 
@@ -33,16 +33,16 @@ case "${1:-}" in
   "" ) ;;
   -v|--volumes) EXTRA+=(--volumes) ;;
   *)
-    echo "usage: $0 [-v|--volumes]" >&2
+    msg_fail "usage: $0 [-v|--volumes]" >&2
     exit 1
     ;;
 esac
 
-echo "=== honey-starter: down ==="
+msg_section "=== honey-starter: down ==="
 compose down "${EXTRA[@]}"
 if [ "${#EXTRA[@]}" -gt 0 ]; then
-  echo "=== honey-starter down; named volumes deleted (vault-file / valkey-data / daemon-driver-cache) ==="
-  echo "=== .honey-starter/ state preserved (remove by hand to fully reset) ==="
+  msg_section "=== honey-starter down; named volumes deleted (vault-file / valkey-data / daemon-driver-cache) ==="
+  msg_section "=== .honey-starter/ state preserved (remove by hand to fully reset) ==="
 else
-  echo "=== honey-starter down; named volumes and .honey-starter/ state preserved ==="
+  msg_section "=== honey-starter down; named volumes and .honey-starter/ state preserved ==="
 fi

@@ -13,7 +13,7 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "SKIP: docker not found"
+  msg_info "SKIP: docker not found"
   exit 0
 fi
 
