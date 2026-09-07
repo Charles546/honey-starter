@@ -254,7 +254,9 @@ engine (`qwen/qwen3.5-9b` default); in compose `HD_AI_MODEL` is always set, so
 openrouter's own default is already dead.
 
 **Security note.** The AI key exists in `.env` (chmod 600) *only* as a
-provisioning input: `setup.sh` never echoes it (masked in the summary), unsets
+provisioning input: on a real tty `setup.sh` shows `*` feedback per typed
+character with a re-type confirmation (no-echo `read -s` fallback when raw
+mode is unavailable) and never echoes it (masked in the summary), unsets
 it from its own environment after capture, and scrubs it (`env -u`) from the
 environment handed to the `start.sh` child — `start.sh` receives it by sourcing
 the 600-mode `.env` itself, seeds it into Vault at

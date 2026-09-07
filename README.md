@@ -160,6 +160,12 @@ or model `99`) is warned about and re-asked — it is **never adopted** as a
 value. Answers-file and `HONEY_STARTER_NONINTERACTIVE=1` runs never render a
 menu; they consume the raw values exactly as before.
 
+**Secrets (masked input).** On a real terminal the API key question shows
+`*` feedback per typed character (Backspace pops), then asks you to re-type it
+for confirmation (a mismatch is warned and re-asked). If raw-mode masking is
+unavailable (no `stty`/`/dev/tty`) it falls back to the plain no-echo `read -s`
+read. The key itself never crosses stdout/stderr — only the `*` feedback does.
+
 ## Requirements
 
 - **Docker** (with compose v2) — for running the stack and the configcheck/smoke gates
