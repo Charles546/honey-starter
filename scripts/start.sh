@@ -320,6 +320,7 @@ case "${vault_out}" in
     ;;
   *)
     msg_fail "FAIL: vault did not become reachable" >&2
+    # raw vault output — deliberately NOT styled
     echo "${vault_out}" >&2
     die "vault API unreachable"
     ;;

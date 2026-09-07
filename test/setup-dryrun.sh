@@ -3099,17 +3099,19 @@ set +e
     -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
     HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
     bash scripts/status.sh
-) >/tmp/setup-dryrun.d6d.out 2>&1
+) >/tmp/setup-dryrun.d6d.out 2>/tmp/setup-dryrun.d6d.err
 RC_D6D=$?
 set -e
 if [ "${RC_D6D}" -eq 1 ] \
   && grep -q '^=== honey-starter: status ===$' /tmp/setup-dryrun.d6d.out \
   && grep -q '^stack is not running (no running containers for project honey-starter). Start it with: make start$' /tmp/setup-dryrun.d6d.out \
-  && ! grep -q $'\x1b' /tmp/setup-dryrun.d6d.out; then
-  ok "D6d: status.sh (empty compose ps) -> 'stack is not running...' on STDOUT, rc 1 (plain)"
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d6d.out \
+  && [ ! -s /tmp/setup-dryrun.d6d.err ]; then
+  ok "D6d: status.sh (empty compose ps) -> 'stack is not running...' on STDOUT, stderr EMPTY, rc 1 (plain)"
 else
-  bad "D6d rc=${RC_D6D} (want status banner + stack-not-running STDOUT):"
-  sed 's/^/    | /' /tmp/setup-dryrun.d6d.out >&2 || true
+  bad "D6d rc=${RC_D6D} (want status banner + stack-not-running STDOUT, empty stderr):"
+  sed 's/^/    | out: /' /tmp/setup-dryrun.d6d.out >&2 || true
+  sed 's/^/    | err: /' /tmp/setup-dryrun.d6d.err >&2 || true
 fi
 
 # D6e. logs: fake docker silent -> compose logs passthrough, rc 0, no output.
