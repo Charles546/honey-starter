@@ -42,7 +42,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
-echo "=== honey-starter: start ==="
+msg_section "=== honey-starter: start ==="
 
 # --- Linux-only guard -------------------------------------------------------
 # The cap_drop/CAP_DAC_OVERRIDE file-permission model and the bind-mount
@@ -63,10 +63,10 @@ if ! docker info >/dev/null 2>&1; then
   die "docker daemon is not reachable (docker info failed). Start docker and re-run."
 fi
 
-echo "  [ok] Linux $(uname -r)"
-echo "  [ok] docker compose v2"
+msg_ok "  [ok] Linux $(uname -r)"
+msg_ok "  [ok] docker compose v2"
 for cmd in docker curl jq openssl htpasswd; do
-  echo "  [ok] ${cmd}"
+  msg_ok "  [ok] ${cmd}"
 done
 
 # --- tunables with defaults ------------------------------------------------
@@ -130,7 +130,7 @@ chmod 700 "${STATE_DIR}" 2>/dev/null || true
 # deploy/README.md "Hardening notes"): dirs 755, config files world-readable.
 chmod 755 "${CONFIG_DIR}" "${IDENTITY_DIR}" 2>/dev/null || true
 
-echo "--- state dir: ${STATE_DIR}"
+info "--- state dir: ${STATE_DIR}"
 
 # --- root/sudo capability for identity-file hygiene --------------------------
 # Identity files must be readable by the daemon's root-without-caps process:
@@ -183,7 +183,7 @@ write_identity_file() {
   else
     printf '%s' "${value}" > "${file}"
     chmod 644 "${file}"
-    echo "NOTE: cannot act as root (no root/sudo); ${file} is 0644. The AppRole pair is scoped to read one Vault path only (never the root token)."
+    note "cannot act as root (no root/sudo); ${file} is 0644. The AppRole pair is scoped to read one Vault path only (never the root token)."
   fi
 }
 
@@ -230,7 +230,7 @@ render_config() {
   if [ -d "${CONFIG_DIR}" ] && diff -rq "${staging}" "${CONFIG_DIR}" >/dev/null 2>&1; then
     rm -rf "${staging}"
     CONFIG_CHANGED=0
-    echo "--- rendered config unchanged (ns=${HONEY_NS} user=${HONEY_USER})"
+    info "--- rendered config unchanged (ns=${HONEY_NS} user=${HONEY_USER})"
   else
     # refresh in place (keep the CONFIG_DIR inode so a running daemon's bind
     # mount keeps working); a running daemon picks the change up on its next
@@ -240,7 +240,7 @@ render_config() {
     rm -rf "${staging}"
     chmod -R a+rX "${CONFIG_DIR}"
     CONFIG_CHANGED=1
-    echo "--- rendered config refreshed (ns=${HONEY_NS} user=${HONEY_USER})"
+    info "--- rendered config refreshed (ns=${HONEY_NS} user=${HONEY_USER})"
   fi
 
   # sanity: no placeholders may remain in the rendered config
@@ -284,20 +284,20 @@ if [ "${stack_running}" = "false" ]; then
     if curl -s -o /dev/null --connect-timeout 1 "http://127.0.0.1:${port}/" 2>/dev/null; then
       die "${what} host port ${port} is already in use; set HD_API_HOST_PORT/HD_UI_HOST_PORT to free ports"
     fi
-    echo "  [ok] host port ${port} free (${what})"
+    msg_ok "  [ok] host port ${port} free (${what})"
   }
-  echo "--- host port preflight"
+  info "--- host port preflight"
   port_preflight "${API_HOST_PORT}" "daemon API"
   port_preflight "${UI_HOST_PORT}" "UI"
 else
-  echo "--- a daemon/ui container is already running; skipping host port preflight"
+  info "--- a daemon/ui container is already running; skipping host port preflight"
 fi
 
 # --- start infrastructure -----------------------------------------------------
-echo "--- starting valkey + vault"
+info "--- starting valkey + vault"
 compose up -d valkey vault
 
-echo "--- waiting for vault API"
+info "--- waiting for vault API"
 vault_out=""
 for ((i = 0; i < 90; i++)); do
   set +e
@@ -319,7 +319,7 @@ case "${vault_out}" in
   *"not initialized"* | *Sealed* | *sealed*)
     ;;
   *)
-    echo "FAIL: vault did not become reachable" >&2
+    msg_fail "FAIL: vault did not become reachable" >&2
     echo "${vault_out}" >&2
     die "vault API unreachable"
     ;;
@@ -364,7 +364,7 @@ if [ "${vault_initialized}" = "false" ]; then
   if [ -s "${ROOT_TOKEN_FILE}" ]; then
     die "vault reports uninitialized but ${ROOT_TOKEN_FILE} exists. The vault-file volume is out of sync with ${STATE_DIR} (e.g. the volume was removed but the state kept, or vice versa). To start fresh: 'make down-volumes' then remove ${STATE_DIR}."
   fi
-  echo "--- vault not initialized; initializing (key-shares=${HONEY_VAULT_KEY_SHARES}, key-threshold=${HONEY_VAULT_KEY_THRESHOLD})"
+  info "--- vault not initialized; initializing (key-shares=${HONEY_VAULT_KEY_SHARES}, key-threshold=${HONEY_VAULT_KEY_THRESHOLD})"
   INIT_JSON="$(vault_exec operator init \
     -key-shares="${HONEY_VAULT_KEY_SHARES}" \
     -key-threshold="${HONEY_VAULT_KEY_THRESHOLD}" \
@@ -379,30 +379,30 @@ if [ "${vault_initialized}" = "false" ]; then
   chmod 600 "${ROOT_TOKEN_FILE}"
   ( umask 077; printf '%s\n' "${UNSEAL_KEYS[@]}" > "${UNSEAL_KEY_FILE}" )
   chmod 600 "${UNSEAL_KEY_FILE}"
-  echo "--- root token + unseal key(s) persisted to ${STATE_DIR} (chmod 600, host-only)"
+  info "--- root token + unseal key(s) persisted to ${STATE_DIR} (chmod 600, host-only)"
 
-  echo "--- unsealing vault"
+  info "--- unsealing vault"
   for k in "${UNSEAL_KEYS[@]}"; do
     vault_exec operator unseal "${k}" >/dev/null
     vault_is_unsealed && break
   done
   vault_is_unsealed || die "vault failed to unseal"
-  echo "--- vault unsealed"
+  info "--- vault unsealed"
 elif [ "${vault_sealed}" = "true" ]; then
   # re-run after a restart / host reboot: vault comes back sealed; unseal with
   # the persisted key(s)
   [ -s "${UNSEAL_KEY_FILE}" ] || die "vault is sealed but ${UNSEAL_KEY_FILE} is missing/empty. The unseal key is not recoverable from Vault; restore it from a backup or reset the deployment."
   UNSEAL_KEYS_FROM_FILE="$(file_read "${UNSEAL_KEY_FILE}")" || die "cannot read ${UNSEAL_KEY_FILE}; re-run start.sh as its owner or with sudo (or reset the deployment)"
-  echo "--- vault sealed on re-run; unsealing with persisted key(s)"
+  info "--- vault sealed on re-run; unsealing with persisted key(s)"
   while IFS= read -r k; do
     [ -n "${k}" ] || continue
     vault_exec operator unseal "${k}" >/dev/null
     vault_is_unsealed && break
   done <<< "${UNSEAL_KEYS_FROM_FILE}"
   vault_is_unsealed || die "vault failed to unseal with persisted key(s)"
-  echo "--- vault unsealed"
+  info "--- vault unsealed"
 else
-  echo "--- vault already initialized and unsealed"
+  info "--- vault already initialized and unsealed"
 fi
 
 # Load the root token for administrative operations. On a fresh init ROOT_TOKEN
@@ -416,22 +416,22 @@ fi
 if ! vault_exec_token "${ROOT_TOKEN}" secrets list -format=json \
   | jq -e 'has("secrets/")' >/dev/null 2>&1; then
   vault_exec_token "${ROOT_TOKEN}" secrets enable -path=secrets kv-v2
-  echo "--- KV v2 enabled at secrets/"
+  info "--- KV v2 enabled at secrets/"
 else
-  echo "--- KV v2 already enabled at secrets/"
+  info "--- KV v2 already enabled at secrets/"
 fi
 if ! vault_exec_token "${ROOT_TOKEN}" auth list -format=json \
   | jq -e 'has("approle/")' >/dev/null 2>&1; then
   vault_exec_token "${ROOT_TOKEN}" auth enable approle
-  echo "--- AppRole auth enabled"
+  info "--- AppRole auth enabled"
 else
-  echo "--- AppRole auth already enabled"
+  info "--- AppRole auth already enabled"
 fi
 
 # --- AppRole role with read-only, path-scoped policy --------------------------
 printf 'path "secrets/data/%s/daemon" {\n  capabilities = ["read"]\n}\n' \
   "${HONEY_NS}" | vault_exec_token "${ROOT_TOKEN}" policy write daemon-read -
-echo "--- policy daemon-read ensured (read-only, scoped to secrets/data/${HONEY_NS}/daemon)"
+info "--- policy daemon-read ensured (read-only, scoped to secrets/data/${HONEY_NS}/daemon)"
 
 vault_exec_token "${ROOT_TOKEN}" write auth/approle/role/daemon \
   token_policies=daemon-read \
@@ -439,7 +439,7 @@ vault_exec_token "${ROOT_TOKEN}" write auth/approle/role/daemon \
   token_ttl=1h \
   token_max_ttl=24h \
   >/dev/null
-echo "--- AppRole role daemon ensured"
+info "--- AppRole role daemon ensured"
 
 # --- identity files (role_id / secret_id) -------------------------------------
 # Vault keeps a role's role_id stable across role-data writes, so on re-run we
@@ -457,7 +457,7 @@ if [ -f "${IDENTITY_DIR}/role_id" ] && [ -f "${IDENTITY_DIR}/secret_id" ]; then
 fi
 if [ -n "${existing_role_id}" ] && [ "${existing_role_id}" = "${VAULT_ROLE_ID}" ] \
   && [ -n "$(file_read "${IDENTITY_DIR}/secret_id" || true)" ]; then
-  echo "--- AppRole identity files already present and matching; reusing"
+  info "--- AppRole identity files already present and matching; reusing"
 else
   if { [ -f "${IDENTITY_DIR}/role_id" ] || [ -f "${IDENTITY_DIR}/secret_id" ]; } \
     && [ -z "$(file_read "${IDENTITY_DIR}/role_id" 2>/dev/null || true)" ]; then
@@ -469,7 +469,7 @@ else
   [ -n "${VAULT_SECRET_ID}" ] || die "could not generate a secret_id for role daemon"
   write_identity_file "${IDENTITY_DIR}/role_id" "${VAULT_ROLE_ID}"
   write_identity_file "${IDENTITY_DIR}/secret_id" "${VAULT_SECRET_ID}"
-  echo "--- AppRole identity files written (no trailing newline; readable by daemon root-without-caps)"
+  info "--- AppRole identity files written (no trailing newline; readable by daemon root-without-caps)"
 fi
 
 # --- admin token (generate once, persist, print once) -------------------------
@@ -479,13 +479,13 @@ fi
 admin_token_generated=false
 if [ -s "${ADMIN_TOKEN_FILE}" ]; then
   ADMIN_TOKEN="$(file_read "${ADMIN_TOKEN_FILE}")" || die "cannot read ${ADMIN_TOKEN_FILE}; re-run start.sh as its owner or with sudo (or remove it to generate a new admin token)"
-  echo "--- admin token reused from ${ADMIN_TOKEN_FILE}"
+  info "--- admin token reused from ${ADMIN_TOKEN_FILE}"
 else
   ADMIN_TOKEN="$(openssl rand -hex 24)"
   ( umask 077; printf '%s\n' "${ADMIN_TOKEN}" > "${ADMIN_TOKEN_FILE}" )
   chmod 600 "${ADMIN_TOKEN_FILE}"
   admin_token_generated=true
-  echo "--- admin token generated and persisted (chmod 600)"
+  info "--- admin token generated and persisted (chmod 600)"
 fi
 
 # --- AI provider keys ---------------------------------------------------------
@@ -536,32 +536,32 @@ seed_one() {
   case "${mode}" in
     hash)
       if [ -n "${cur}" ] && [ "${admin_token_generated}" = "false" ]; then
-        echo "--- ${key} already present; left unchanged (token unchanged)"
+        info "--- ${key} already present; left unchanged (token unchanged)"
         return 0
       fi
       if [ "${cur}" = "${value}" ]; then
         return 0
       fi
       vault_exec_token "${ROOT_TOKEN}" kv patch "${SEED_PATH}" "${key}=${value}" >/dev/null
-      echo "--- seeded ${key}"
+      info "--- seeded ${key}"
       ;;
     env)
       if [ -z "${cur}" ]; then
         vault_exec_token "${ROOT_TOKEN}" kv patch "${SEED_PATH}" "${key}=${value}" >/dev/null
-        echo "--- seeded ${key}"
+        info "--- seeded ${key}"
       elif is_placeholder "${value}"; then
-        echo "--- ${key} already present; left unchanged (export the real key to replace)"
+        info "--- ${key} already present; left unchanged (export the real key to replace)"
       elif [ "${cur}" != "${value}" ]; then
         vault_exec_token "${ROOT_TOKEN}" kv patch "${SEED_PATH}" "${key}=${value}" >/dev/null
-        echo "--- updated ${key} from explicit env value"
+        info "--- updated ${key} from explicit env value"
       else
-        echo "--- ${key} already up to date"
+        info "--- ${key} already up to date"
       fi
       ;;
   esac
 }
 
-echo "--- seeding ${SEED_PATH}"
+info "--- seeding ${SEED_PATH}"
 # The bcrypt hash is only computed when it will actually be written.
 ADMIN_TOKEN_HASH=""
 if [ "${admin_token_generated}" = "true" ] \
@@ -590,14 +590,14 @@ else
     "openai_api_key=${OPENAI_API_KEY}" \
     "openrouter_api_key=${OPENROUTER_API_KEY}" \
     >/dev/null
-  echo "--- seeded secrets/data/${HONEY_NS}/daemon (created)"
+  info "--- seeded secrets/data/${HONEY_NS}/daemon (created)"
 fi
 if is_placeholder "${OPENAI_API_KEY}"; then
-  echo "NOTE: OPENAI_API_KEY not set; a placeholder was stored in Vault. To enable AI, add OPENAI_API_KEY=<your key> to .env and re-run start.sh (the key is stored in Vault only, never in compose/env)."
+  note "OPENAI_API_KEY not set; a placeholder was stored in Vault. To enable AI, add OPENAI_API_KEY=<your key> to .env and re-run start.sh (the key is stored in Vault only, never in compose/env)."
 fi
 
 # --- start application --------------------------------------------------------
-echo "--- starting daemon + ui (daemon waits for vault healthy == unsealed)"
+info "--- starting daemon + ui (daemon waits for vault healthy == unsealed)"
 compose up -d daemon ui
 
 # If the rendered config changed while the daemon was already running, the
@@ -606,12 +606,12 @@ compose up -d daemon ui
 # instead of waiting up to HD_CONFIG_CHECK_INTERVAL. (A daemon that was down is
 # started fresh by `up -d` above and already reads the new config.)
 if [ "${CONFIG_CHANGED}" -eq 1 ] && [ "${daemon_was_running}" = "true" ]; then
-  echo "--- rendered config changed; restarting daemon to apply"
+  info "--- rendered config changed; restarting daemon to apply"
   compose restart daemon
 fi
 
 API_URL="http://localhost:${API_HOST_PORT}"
-echo "--- waiting for daemon /healthz at ${API_URL}"
+info "--- waiting for daemon /healthz at ${API_URL}"
 http_code=""
 for ((i = 0; i < 240; i++)); do
   set +e
@@ -624,17 +624,17 @@ for ((i = 0; i < 240; i++)); do
   sleep 2
 done
 if [ "${http_code}" != "200" ]; then
-  echo "FAIL: daemon /healthz did not become 200 (last=${http_code})" >&2
+  msg_fail "FAIL: daemon /healthz did not become 200 (last=${http_code})" >&2
   # Surface the daemon's own view immediately: the most common cause of a
   # never-200 /healthz is the daemon crash-looping (unreadable identity files,
   # a missing/mis-seeded Vault LOOKUP key, vault sealed at boot), so dump
   # status + logs instead of making the operator wait.
   compose ps daemon >&2 || true
-  echo "--- daemon logs (tail) ---" >&2
+  info "--- daemon logs (tail) ---" >&2
   compose logs --tail=100 daemon >&2 || true
   die "daemon /healthz did not become 200"
 fi
-echo "--- daemon healthy"
+info "--- daemon healthy"
 
 # --- persist namespace/user after successful provisioning --------------------
 # Written only now, so a failed first run does not strand the <ns>/<user>
@@ -645,20 +645,20 @@ if [ ! -f "${PROVISION_FILE}" ]; then
 fi
 
 # --- success summary -----------------------------------------------------------
-echo ""
-echo "=== honey-starter is up ==="
-echo "UI:        http://localhost:${UI_HOST_PORT}"
-echo "API:       ${API_URL}/healthz"
+info ""
+msg_section "=== honey-starter is up ==="
+msg_info "UI:        http://localhost:${UI_HOST_PORT}"
+msg_info "API:       ${API_URL}/healthz"
 if [ "${admin_token_generated}" = "true" ]; then
-  echo "Admin token (generated now, printed once): ${ADMIN_TOKEN}"
+  msg_info "Admin token (generated now, printed once): ${ADMIN_TOKEN}"
 else
-  echo "Admin token: stored at ${ADMIN_TOKEN_FILE} (chmod 600). It was printed on first run; cat the file to view it."
+  msg_info "Admin token: stored at ${ADMIN_TOKEN_FILE} (chmod 600). It was printed on first run; cat the file to view it."
 fi
-echo ""
-echo "Namespace (Vault KV prefix): ${HONEY_NS}"
-echo "Admin subject:               ${HONEY_USER}"
-echo "Secrets live in Vault at:    secrets/data/${HONEY_NS}/daemon"
-echo "Root token/unseal key:       ${STATE_DIR} (chmod 600, host-only, never mounted)"
-echo ""
-echo "Lifecycle:  make stop | make down | make down-volumes | make status | make logs"
-echo "To unseal after a host reboot / 'docker compose restart': re-run make start"
+info ""
+msg_info "Namespace (Vault KV prefix): ${HONEY_NS}"
+msg_info "Admin subject:               ${HONEY_USER}"
+msg_info "Secrets live in Vault at:    secrets/data/${HONEY_NS}/daemon"
+msg_info "Root token/unseal key:       ${STATE_DIR} (chmod 600, host-only, never mounted)"
+info ""
+msg_info "Lifecycle:  make stop | make down | make down-volumes | make status | make logs"
+msg_info "To unseal after a host reboot / 'docker compose restart': re-run make start"

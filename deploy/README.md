@@ -103,11 +103,14 @@ short questionnaire, writes the repo-root `.env` (chmod 600) and delegates to
 `scripts/start.sh`. See the repository README → *Install in one line* and
 `bash scripts/setup.sh --help`.
 
-**Output styling.** `setup.sh` detects a rich (emoji/color) terminal on fd 1
-only — redirected/non-tty runs and `TERM=dumb` always render **plain** text.
-Force plain output on a color-capable terminal by setting `NO_COLOR` or
-`HONEY_STARTER_NO_COLOR` to any value (even empty; presence semantics). Rich
-styling is **prefix-only** — message text is never rewritten.
+**Output styling.** `setup.sh` (and the lifecycle targets `make
+start|stop|status|down` via `scripts/start.sh`/`stop.sh`/`status.sh`/
+`down.sh`, plus `logs.sh`'s `SKIP` path) detect a rich (emoji/color) terminal
+on fd 1 only — redirected/non-tty runs and `TERM=dumb` always render
+**plain** text. Force plain output on a color-capable terminal by setting
+`NO_COLOR` or `HONEY_STARTER_NO_COLOR` to any value (even empty; presence
+semantics). Rich styling is **prefix-only** — message text is never
+rewritten.
 
 **Multiple instances (Phase 5).** The same command SETS UP a NEW instance at a
 given directory or RE-SETS UP (manages) an EXISTING instance. Target selection

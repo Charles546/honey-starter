@@ -17,13 +17,13 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "SKIP: docker not found"
+  msg_info "SKIP: docker not found"
   exit 0
 fi
 
-echo "=== honey-starter: status ==="
+msg_section "=== honey-starter: status ==="
 if [ -z "$(compose ps --status running -q 2>/dev/null)" ]; then
-  echo "stack is not running (no running containers for project ${COMPOSE_PROJECT_NAME}). Start it with: make start"
+  msg_info "stack is not running (no running containers for project ${COMPOSE_PROJECT_NAME}). Start it with: make start"
   exit 1
 fi
 
@@ -39,9 +39,9 @@ ok=true
 # daemon healthz
 code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 "${API_URL}/healthz" 2>/dev/null || true)"
 if [ "${code}" = "200" ]; then
-  echo "daemon /healthz:            OK (200)"
+  msg_ok "daemon /healthz:            OK (200)"
 else
-  echo "daemon /healthz:            FAIL (${code:-no response})" >&2
+  msg_fail "daemon /healthz:            FAIL (${code:-no response})" >&2
   ok=false
 fi
 
@@ -54,32 +54,32 @@ vault_out="$(vault_exec status -format=json 2>/dev/null)"
 vault_rc=$?
 set -e
 if ! printf '%s' "${vault_out}" | jq -e '.initialized == true' >/dev/null 2>&1; then
-  echo "vault seal status:          NOT INITIALIZED (run make start)" >&2
+  msg_fail "vault seal status:          NOT INITIALIZED (run make start)" >&2
   ok=false
 elif printf '%s' "${vault_out}" | jq -e '.sealed == true' >/dev/null 2>&1; then
-  echo "vault seal status:          SEALED (run make start to unseal)" >&2
+  msg_fail "vault seal status:          SEALED (run make start to unseal)" >&2
   ok=false
 elif [ "${vault_rc}" -eq 0 ] \
   && printf '%s' "${vault_out}" | jq -e '.sealed == false' >/dev/null 2>&1; then
-  echo "vault seal status:          unsealed"
+  msg_ok "vault seal status:          unsealed"
 else
-  echo "vault seal status:          unknown (rc=${vault_rc})" >&2
+  msg_fail "vault seal status:          unknown (rc=${vault_rc})" >&2
   ok=false
 fi
 
 # UI reachability
 ui_code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 "${UI_URL}/" 2>/dev/null || true)"
 if [ "${ui_code}" = "200" ]; then
-  echo "UI at ${UI_URL}:             OK (200)"
+  msg_ok "UI at ${UI_URL}:             OK (200)"
 else
-  echo "UI at ${UI_URL}:             FAIL (${ui_code:-no response})" >&2
+  msg_fail "UI at ${UI_URL}:             FAIL (${ui_code:-no response})" >&2
   ok=false
 fi
 
-echo ""
+info ""
 if [ "${ok}" = "true" ]; then
-  echo "=== honey-starter is healthy ==="
+  msg_section "=== honey-starter is healthy ==="
 else
-  echo "=== honey-starter has problems (see above) ===" >&2
+  msg_section "=== honey-starter has problems (see above) ===" >&2
   exit 1
 fi

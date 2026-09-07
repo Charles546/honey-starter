@@ -120,13 +120,15 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 102 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
-# (B1-B7) + the 6 Phase C masked-key checks (C1-C6).
+# 130 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 28 Phase D
+# lifecycle rich-output checks (D1-D8).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
 # / typed-invalid-model tests (17k/19/20), the Phase B menu hermetics (B1-B5,
-# B7) and the Phase C masked-key hermetics (C1-C6); when python3 is absent
+# B7), the Phase C masked-key hermetics (C1-C6) and the Phase D lifecycle
+# rich-output hermetics (D3/D5/D6); when python3 is absent
 # those checks are skipped cleanly. setup.sh itself never needs python3.
 set -euo pipefail
 
@@ -2658,6 +2660,611 @@ CSTUBEOF
 else
   ok "Phase C masked-key hermetics (C1-C6) SKIPPED (python3 unavailable)"
 fi
+
+
+# ---------------------------------------------------------------------------
+# D. Phase D lifecycle rich-output hermetics (no docker required).
+#    Extends the Phase A rich-output foundation to scripts/lib.sh + the
+#    lifecycle scripts (start/stop/down/status/logs). Frozen files stay
+#    byte-identical; only the six Phase D files move.
+#    D1: bash -n across the six Phase D files.
+#    D2: sourcing lib.sh exposes every msg_* helper + thin wrappers + die.
+#    D3: rich detection gates, one subprocess per mode (redirected fd1 ->
+#        PLAIN EXACT line; pty+dumb -> plain; pty+xterm-256color -> RICH with
+#        a byte-correct exact-line assert; NO_COLOR=1 / NO_COLOR= (empty) /
+#        HONEY_STARTER_NO_COLOR=1 -> plain even on a color-capable tty).
+#    D4: msg_* PLAIN identity battery (text byte-for-byte, correct stream).
+#    D5: start.sh early path with docker ABSENT (restricted PATH: only
+#        bash+dirname+uname, so a docker host cannot leak) -> plain banner +
+#        "ERROR: required command not found: docker" + rc 1; pty+xterm ->
+#        styled banner + red die; pty+dumb -> plain.
+#    D6: lifecycle scripts through a fake-docker PATH shim (prints NOTHING;
+#        dir holds only docker + uname symlink): `command -v docker` resolves
+#        so no SKIP, and every compose probe returns empty/0 -> stop/down/logs
+#        rc 0, status rc 1 (stack-not-running, STDOUT), down usage-error rc 1
+#        (red msg_fail), each plain AND rich (pty).
+#    D7: the 4 lifecycle scripts with docker ABSENT -> direct
+#        `SKIP: docker not found`, rc 0, plain.
+#    D8: KEEP-IN-SYNC sync guard — the lib.sh rich block (marker comment
+#        through usage_die) must stay a byte-for-byte copy of setup.sh's.
+
+# D1. bash -n across all six Phase D files.
+D1_ALL_OK=1
+for f in lib.sh start.sh stop.sh down.sh status.sh logs.sh; do
+  if ! bash -n "${HERE}/scripts/${f}" >/dev/null 2>&1; then
+    D1_ALL_OK=0
+    echo "D1: bash -n FAILED for scripts/${f}" >&2
+  fi
+done
+if [ "${D1_ALL_OK}" -eq 1 ]; then
+  ok "D1: bash -n clean for lib.sh + start/stop/down/status/logs.sh"
+else
+  bad "D1: bash -n failure in one of the six Phase D files"
+fi
+
+# D2. Sourcing lib.sh exposes every rich helper + thin wrappers + die/usage_die.
+if env -u NO_COLOR -u HONEY_STARTER_NO_COLOR HONEY_STARTER_NO_ENV=1 \
+  bash -c "source '${HERE}/scripts/lib.sh';
+           for fn in msg_ok msg_fail msg_warn msg_info msg_note msg_section \
+                     msg_input msg_key msg_highlight info note warn die \
+                     usage_die require_cmd check_cmd; do
+             command -v \"\$fn\" >/dev/null 2>&1 || { echo \"missing \$fn\" >&2; exit 1; }
+           done"; then
+  ok "D2: sourcing lib.sh exposes msg_ok/fail/warn/info/note/section/input/key/highlight + info/note/warn/die/usage_die/require_cmd/check_cmd"
+else
+  bad "D2: a Phase D helper is missing after sourcing lib.sh"
+fi
+
+# D3 probe: `bash PROBE LIB` sources lib.sh and renders msg_ok "  [ok] probe".
+D_PROBE="$(mktemp /tmp/setup-dryrun.dprobe.XXXXXX)"
+cat > "${D_PROBE}" <<'DPROBE'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$1"
+msg_ok "  [ok] probe"
+DPROBE
+chmod +x "${D_PROBE}"
+
+# D3a. redirected fd1 (NOT a tty) -> PLAIN exact line, no ESC, no non-ASCII,
+#      even with TERM=xterm-256color set.
+set +e
+(
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color \
+    bash "${D_PROBE}" "${HERE}/scripts/lib.sh"
+) >/tmp/setup-dryrun.d3a.out 2>&1
+RC_D3A=$?
+set -e
+if [ "${RC_D3A}" -eq 0 ] \
+  && grep -q '^  \[ok\] probe$' /tmp/setup-dryrun.d3a.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d3a.out \
+  && ! LC_ALL=C grep -q '[^ -~]' /tmp/setup-dryrun.d3a.out; then
+  ok "D3a: redirected (non-tty) -> PLAIN exact line, no ESC, no emoji (TERM=xterm-256color)"
+else
+  bad "D3a rc=${RC_D3A} (want plain exact line):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d3a.out >&2 || true
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  # D3b. pty + TERM=dumb -> PLAIN (no ESC; label text still matches).
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${D_PROBE}" "" -- "${HERE}/scripts/lib.sh"
+  ) >/tmp/setup-dryrun.d3b.out 2>&1
+  RC_D3B=$?
+  set -e
+  if [ "${RC_D3B}" -eq 0 ] \
+    && tail -n +2 /tmp/setup-dryrun.d3b.out | grep -q '^  \[ok\] probe\r\?$' \
+    && ! grep -q $'\x1b' /tmp/setup-dryrun.d3b.out; then
+    ok "D3b: pty + TERM=dumb -> PLAIN (exact line, no ESC)"
+  else
+    bad "D3b rc=${RC_D3B} (want plain under TERM=dumb):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d3b.out >&2 || true
+  fi
+
+  # D3c. pty + TERM=xterm-256color -> RICH, byte-correct exact line:
+  #      \x1b[32m + ✅ + THREE spaces (format + 2-indent) + [ok] probe + \x1b[0m.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=xterm-256color \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${D_PROBE}" "" -- "${HERE}/scripts/lib.sh"
+  ) >/tmp/setup-dryrun.d3c.out 2>&1
+  RC_D3C=$?
+  set -e
+  if [ "${RC_D3C}" -eq 0 ] \
+    && head -1 /tmp/setup-dryrun.d3c.out | grep -q '^0$' \
+    && tail -n +2 /tmp/setup-dryrun.d3c.out | grep -Eq $'^\x1b\[32m✅   \[ok\] probe\x1b\[0m\r?$'; then
+    ok "D3c: pty + TERM=xterm-256color -> RICH exact byte line (green check + 3 spaces + [ok] probe + reset)"
+  else
+    bad "D3c rc=${RC_D3C} (want rich exact-line):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d3c.out >&2 || true
+  fi
+
+  # D3d. NO_COLOR=1 on a color-capable tty -> PLAIN (presence semantics).
+  set +e
+  (
+    env -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      NO_COLOR=1 HOME="${HOME}" TERM=xterm-256color \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${D_PROBE}" "" -- "${HERE}/scripts/lib.sh"
+  ) >/tmp/setup-dryrun.d3d.out 2>&1
+  RC_D3D=$?
+  set -e
+  if [ "${RC_D3D}" -eq 0 ] \
+    && head -1 /tmp/setup-dryrun.d3d.out | grep -q '^0$' \
+    && ! grep -q $'\x1b' /tmp/setup-dryrun.d3d.out \
+    && grep -q '\[ok\] probe' /tmp/setup-dryrun.d3d.out; then
+    ok "D3d: NO_COLOR=1 on a color-capable tty -> PLAIN (no ESC)"
+  else
+    bad "D3d rc=${RC_D3D} (want plain under NO_COLOR=1):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d3d.out >&2 || true
+  fi
+
+  # D3e. NO_COLOR= (EMPTY value, still SET) -> PLAIN (presence, not value).
+  set +e
+  (
+    env -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      NO_COLOR= HOME="${HOME}" TERM=xterm-256color \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${D_PROBE}" "" -- "${HERE}/scripts/lib.sh"
+  ) >/tmp/setup-dryrun.d3e.out 2>&1
+  RC_D3E=$?
+  set -e
+  if [ "${RC_D3E}" -eq 0 ] \
+    && head -1 /tmp/setup-dryrun.d3e.out | grep -q '^0$' \
+    && ! grep -q $'\x1b' /tmp/setup-dryrun.d3e.out \
+    && grep -q '\[ok\] probe' /tmp/setup-dryrun.d3e.out; then
+    ok "D3e: NO_COLOR= (EMPTY value, still SET) -> PLAIN (presence semantics)"
+  else
+    bad "D3e rc=${RC_D3E} (want plain under NO_COLOR= empty):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d3e.out >&2 || true
+  fi
+
+  # D3f. HONEY_STARTER_NO_COLOR=1 on a color-capable tty -> PLAIN.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HONEY_STARTER_NO_COLOR=1 HOME="${HOME}" TERM=xterm-256color \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${D_PROBE}" "" -- "${HERE}/scripts/lib.sh"
+  ) >/tmp/setup-dryrun.d3f.out 2>&1
+  RC_D3F=$?
+  set -e
+  if [ "${RC_D3F}" -eq 0 ] \
+    && head -1 /tmp/setup-dryrun.d3f.out | grep -q '^0$' \
+    && ! grep -q $'\x1b' /tmp/setup-dryrun.d3f.out \
+    && grep -q '\[ok\] probe' /tmp/setup-dryrun.d3f.out; then
+    ok "D3f: HONEY_STARTER_NO_COLOR=1 on a color-capable tty -> PLAIN (no ESC)"
+  else
+    bad "D3f rc=${RC_D3F} (want plain under HONEY_STARTER_NO_COLOR=1):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d3f.out >&2 || true
+  fi
+else
+  ok "D3b-f pty rich-gate hermetics SKIPPED (python3 unavailable)"
+fi
+rm -f "${D_PROBE}"
+
+# D4. msg_* PLAIN identity battery: every helper renders the ORIGINAL text
+#     byte-for-byte on the correct stream (stdout for ok/info/note/section/
+#     info(); stderr for fail/warn/warn(); info "" prints a bare blank line).
+D4_PROBE="$(mktemp /tmp/setup-dryrun.d4.XXXXXX)"
+cat > "${D4_PROBE}" <<'D4PROBE'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$1"
+msg_ok "  [ok] probe"
+msg_info "info line"
+msg_note "NOTE via msg_note"
+msg_section "=== section ==="
+info "--- info marker ---"
+note "note body via wrapper"
+info ""
+msg_fail "ERROR from msg_fail"
+warn "warn body via wrapper"
+D4PROBE
+chmod +x "${D4_PROBE}"
+set +e
+(
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color \
+    bash "${D4_PROBE}" "${HERE}/scripts/lib.sh"
+) >/tmp/setup-dryrun.d4.out 2>/tmp/setup-dryrun.d4.err
+RC_D4=$?
+set -e
+if [ "${RC_D4}" -eq 0 ] \
+  && grep -q '^  \[ok\] probe$' /tmp/setup-dryrun.d4.out \
+  && grep -q '^info line$' /tmp/setup-dryrun.d4.out \
+  && grep -q '^NOTE via msg_note$' /tmp/setup-dryrun.d4.out \
+  && grep -q '^=== section ===$' /tmp/setup-dryrun.d4.out \
+  && grep -q '^--- info marker ---$' /tmp/setup-dryrun.d4.out \
+  && grep -q '^NOTE: note body via wrapper$' /tmp/setup-dryrun.d4.out \
+  && grep -q '^$' /tmp/setup-dryrun.d4.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d4.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d4.err; then
+  ok "D4a: plain msg_ok/msg_info/msg_note/msg_section + info()/note() -> exact text on STDOUT (no ESC)"
+else
+  bad "D4a rc=${RC_D4} (want exact plain stdout):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d4.out >&2 || true
+fi
+if [ "${RC_D4}" -eq 0 ] \
+  && grep -q '^ERROR from msg_fail$' /tmp/setup-dryrun.d4.err \
+  && grep -q '^WARNING: warn body via wrapper$' /tmp/setup-dryrun.d4.err; then
+  ok "D4b: plain msg_fail + warn() -> exact text on STDERR (channels preserved)"
+else
+  bad "D4b rc=${RC_D4} (want exact stderr):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d4.err >&2 || true
+fi
+rm -f "${D4_PROBE}"
+
+# D4c. die() -> msg_fail "ERROR: ..." on stderr + exit 1.
+D4C_PROBE="$(mktemp /tmp/setup-dryrun.d4c.XXXXXX)"
+cat > "${D4C_PROBE}" <<'D4CPROBE'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$1"
+die "boom from die"
+D4CPROBE
+chmod +x "${D4C_PROBE}"
+set +e
+(
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color \
+    bash "${D4C_PROBE}" "${HERE}/scripts/lib.sh"
+) >/tmp/setup-dryrun.d4c.out 2>&1
+RC_D4C=$?
+set -e
+rm -f "${D4C_PROBE}"
+if [ "${RC_D4C}" -eq 1 ] \
+  && grep -q '^ERROR: boom from die$' /tmp/setup-dryrun.d4c.out; then
+  ok "D4c: die() -> msg_fail 'ERROR: ...' (stderr) + exit 1"
+else
+  bad "D4c rc=${RC_D4C} (want ERROR line + exit 1):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d4c.out >&2 || true
+fi
+
+# D5. start.sh early path with docker ABSENT. Restricted PATH holds ONLY
+#     bash+dirname+uname (no /usr/bin), so a docker host cannot leak a real
+#     docker; the Linux guard's uname is satisfied via the symlink.
+ND_DIR="$(mktemp -d /tmp/setup-dryrun.d5path.XXXXXX)"
+ln -s "$(command -v bash)" "${ND_DIR}/bash"
+ln -s "$(command -v dirname)" "${ND_DIR}/dirname"
+ln -s "$(command -v uname)" "${ND_DIR}/uname"
+if env PATH="${ND_DIR}" bash -c 'command -v docker' >/dev/null 2>&1; then
+  bad "D5: restricted PATH unexpectedly resolves docker (host leak)"
+  D5_HERMETIC=0
+else
+  D5_HERMETIC=1
+fi
+
+# D5a. plain (redirected fd1): banner + die "ERROR: required command not
+#      found: docker", rc 1, no ESC.
+set +e
+(
+  cd "${HERE}"
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color PATH="${ND_DIR}" HONEY_STARTER_NO_ENV=1 \
+    bash scripts/start.sh
+) >/tmp/setup-dryrun.d5a.out 2>&1
+RC_D5A=$?
+set -e
+if [ "${D5_HERMETIC}" -eq 1 ] && [ "${RC_D5A}" -eq 1 ] \
+  && grep -q '^=== honey-starter: start ===$' /tmp/setup-dryrun.d5a.out \
+  && grep -q '^ERROR: required command not found: docker$' /tmp/setup-dryrun.d5a.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d5a.out; then
+  ok "D5a: start.sh docker-absent -> PLAIN banner + 'ERROR: required command not found: docker', rc 1"
+else
+  bad "D5a rc=${RC_D5A} (want plain banner + docker die):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d5a.out >&2 || true
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  # D5b. pty + TERM=xterm-256color -> RICH banner + red die, rc 1. python3 is
+  #      invoked by absolute path so the pty child's PATH can stay restricted.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=xterm-256color PATH="${ND_DIR}" HONEY_STARTER_NO_ENV=1 \
+      "$(command -v python3)" "${HERE}/test/pty-helper.py" --on-disk "${HERE}/scripts/start.sh" ""
+  ) >/tmp/setup-dryrun.d5b.out 2>&1
+  RC_D5B=$?
+  set -e
+  if [ "${D5_HERMETIC}" -eq 1 ] && [ "${RC_D5B}" -eq 1 ] \
+    && head -1 /tmp/setup-dryrun.d5b.out | grep -q '^1$' \
+    && tail -n +2 /tmp/setup-dryrun.d5b.out | grep -Eq $'^\x1b\[1m\x1b\[36m🚀 === honey-starter: start ===\x1b\[0m\r?$' \
+    && tail -n +2 /tmp/setup-dryrun.d5b.out | grep -Eq $'^\x1b\[31m❌ ERROR: required command not found: docker\x1b\[0m\r?$'; then
+    ok "D5b: start.sh docker-absent (pty, xterm) -> RICH styled banner + red 'ERROR: required command not found: docker', rc 1"
+  else
+    bad "D5b rc=${RC_D5B} (want rich banner + red die):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d5b.out >&2 || true
+  fi
+
+  # D5c. pty + TERM=dumb -> PLAIN banner + error text, rc 1.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=dumb PATH="${ND_DIR}" HONEY_STARTER_NO_ENV=1 \
+      "$(command -v python3)" "${HERE}/test/pty-helper.py" --on-disk "${HERE}/scripts/start.sh" ""
+  ) >/tmp/setup-dryrun.d5c.out 2>&1
+  RC_D5C=$?
+  set -e
+  if [ "${D5_HERMETIC}" -eq 1 ] && [ "${RC_D5C}" -eq 1 ] \
+    && head -1 /tmp/setup-dryrun.d5c.out | grep -q '^1$' \
+    && ! grep -q $'\x1b' /tmp/setup-dryrun.d5c.out \
+    && tail -n +2 /tmp/setup-dryrun.d5c.out | grep -q '=== honey-starter: start ===' \
+    && tail -n +2 /tmp/setup-dryrun.d5c.out | grep -q 'ERROR: required command not found: docker'; then
+    ok "D5c: start.sh docker-absent (pty, TERM=dumb) -> PLAIN banner + error text, rc 1"
+  else
+    bad "D5c rc=${RC_D5C} (want plain pty output under dumb):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d5c.out >&2 || true
+  fi
+else
+  ok "D5b-c start.sh pty early-path hermetics SKIPPED (python3 unavailable)"
+fi
+rm -rf "${ND_DIR}"
+
+# D6. lifecycle scripts through a fake-docker PATH shim. The shim prints
+#     NOTHING (compose ps -q / logs command substitutions + the status gate
+#     depend on it) and the dir holds ONLY docker + a uname symlink, so
+#     `command -v docker` resolves (no SKIP path) while every compose probe
+#     returns empty/0.
+D6_DIR="$(mktemp -d /tmp/setup-dryrun.d6shim.XXXXXX)"
+cat > "${D6_DIR}/docker" <<'D6STUB'
+#!/usr/bin/env bash
+# Silent fake docker: always exit 0, print NOTHING (compose ps -q / logs
+# command substitutions and the status.sh running-gate depend on it).
+exit 0
+D6STUB
+chmod +x "${D6_DIR}/docker"
+ln -s "$(command -v uname)" "${D6_DIR}/uname"
+
+# D6a. stop: docker resolves, empty compose ps -> nothing-to-stop, rc 0, plain.
+set +e
+(
+  cd "${HERE}"
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+    bash scripts/stop.sh
+) >/tmp/setup-dryrun.d6a.out 2>&1
+RC_D6A=$?
+set -e
+if [ "${RC_D6A}" -eq 0 ] \
+  && grep -q '^=== honey-starter: stop ===$' /tmp/setup-dryrun.d6a.out \
+  && grep -q '^nothing to stop (no containers for project honey-starter)$' /tmp/setup-dryrun.d6a.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d6a.out; then
+  ok "D6a: stop.sh (fake docker, empty compose ps) -> banner + nothing-to-stop, rc 0 (plain)"
+else
+  bad "D6a rc=${RC_D6A} (want stop banner + nothing-to-stop):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d6a.out >&2 || true
+fi
+
+# D6b. down: rc 0 + preserved-state summary, plain.
+set +e
+(
+  cd "${HERE}"
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+    bash scripts/down.sh
+) >/tmp/setup-dryrun.d6b.out 2>&1
+RC_D6B=$?
+set -e
+if [ "${RC_D6B}" -eq 0 ] \
+  && grep -q '^=== honey-starter: down ===$' /tmp/setup-dryrun.d6b.out \
+  && grep -q '^=== honey-starter down; named volumes and .honey-starter/ state preserved ===$' /tmp/setup-dryrun.d6b.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d6b.out; then
+  ok "D6b: down.sh -> plain banner + preserved-state summary, rc 0"
+else
+  bad "D6b rc=${RC_D6B} (want down banner + summary):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d6b.out >&2 || true
+fi
+
+# D6c. down usage-error: bad arg -> msg_fail usage line on stderr, rc 1, no banner.
+set +e
+(
+  cd "${HERE}"
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+    bash scripts/down.sh --badarg
+) >/tmp/setup-dryrun.d6c.out 2>&1
+RC_D6C=$?
+set -e
+if [ "${RC_D6C}" -eq 1 ] \
+  && grep -q '^usage: .*\[-v|--volumes\]$' /tmp/setup-dryrun.d6c.out \
+  && ! grep -q '^=== honey-starter: down ===$' /tmp/setup-dryrun.d6c.out; then
+  ok "D6c: down.sh --badarg -> 'usage: ... [-v|--volumes]' on stderr, rc 1, no banner"
+else
+  bad "D6c rc=${RC_D6C} (want usage error + rc 1):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d6c.out >&2 || true
+fi
+
+# D6d. status: empty compose ps --status running -> 'stack is not running...'
+#      on STDOUT (no >&2 as today), rc 1, plain.
+set +e
+(
+  cd "${HERE}"
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+    bash scripts/status.sh
+) >/tmp/setup-dryrun.d6d.out 2>&1
+RC_D6D=$?
+set -e
+if [ "${RC_D6D}" -eq 1 ] \
+  && grep -q '^=== honey-starter: status ===$' /tmp/setup-dryrun.d6d.out \
+  && grep -q '^stack is not running (no running containers for project honey-starter). Start it with: make start$' /tmp/setup-dryrun.d6d.out \
+  && ! grep -q $'\x1b' /tmp/setup-dryrun.d6d.out; then
+  ok "D6d: status.sh (empty compose ps) -> 'stack is not running...' on STDOUT, rc 1 (plain)"
+else
+  bad "D6d rc=${RC_D6D} (want status banner + stack-not-running STDOUT):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d6d.out >&2 || true
+fi
+
+# D6e. logs: fake docker silent -> compose logs passthrough, rc 0, no output.
+set +e
+(
+  cd "${HERE}"
+  env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+    -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+    HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+    bash scripts/logs.sh
+) >/tmp/setup-dryrun.d6e.out 2>&1
+RC_D6E=$?
+set -e
+if [ "${RC_D6E}" -eq 0 ] && [ ! -s /tmp/setup-dryrun.d6e.out ]; then
+  ok "D6e: logs.sh (fake docker, silent shim) -> rc 0, no output (plain)"
+else
+  bad "D6e rc=${RC_D6E} (want rc 0 + no output; shim must stay silent):"
+  sed 's/^/    | /' /tmp/setup-dryrun.d6e.out >&2 || true
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  # D6f. stop rich (pty, xterm): banner + cyan nothing-to-stop, rc 0.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${HERE}/scripts/stop.sh" ""
+  ) >/tmp/setup-dryrun.d6f.out 2>&1
+  RC_D6F=$?
+  set -e
+  if [ "${RC_D6F}" -eq 0 ] \
+    && head -1 /tmp/setup-dryrun.d6f.out | grep -q '^0$' \
+    && tail -n +2 /tmp/setup-dryrun.d6f.out | grep -Eq $'^\x1b\[1m\x1b\[36m🚀 === honey-starter: stop ===\x1b\[0m\r?$' \
+    && tail -n +2 /tmp/setup-dryrun.d6f.out | grep -Eq $'^\x1b\[36mℹ nothing to stop \(no containers for project honey-starter\)\x1b\[0m\r?$'; then
+    ok "D6f: stop.sh (pty, xterm) -> RICH banner + cyan nothing-to-stop, rc 0"
+  else
+    bad "D6f rc=${RC_D6F} (want rich stop output):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d6f.out >&2 || true
+  fi
+
+  # D6g. status rich (pty, xterm): banner + cyan stack-not-running, rc 1.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${HERE}/scripts/status.sh" ""
+  ) >/tmp/setup-dryrun.d6g.out 2>&1
+  RC_D6G=$?
+  set -e
+  if [ "${RC_D6G}" -eq 1 ] \
+    && head -1 /tmp/setup-dryrun.d6g.out | grep -q '^1$' \
+    && tail -n +2 /tmp/setup-dryrun.d6g.out | grep -Eq $'^\x1b\[1m\x1b\[36m🚀 === honey-starter: status ===\x1b\[0m\r?$' \
+    && tail -n +2 /tmp/setup-dryrun.d6g.out | grep -Eq $'^\x1b\[36mℹ stack is not running \(no running containers for project honey-starter\)\. Start it with: make start\x1b\[0m\r?$'; then
+    ok "D6g: status.sh (pty, xterm) -> RICH banner + cyan stack-not-running, rc 1"
+  else
+    bad "D6g rc=${RC_D6G} (want rich status output):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d6g.out >&2 || true
+  fi
+
+  # D6h. down usage-error rich (pty, xterm): red msg_fail usage line, rc 1,
+  #      no down banner.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${HERE}/scripts/down.sh" "" -- --badarg
+  ) >/tmp/setup-dryrun.d6h.out 2>&1
+  RC_D6H=$?
+  set -e
+  if [ "${RC_D6H}" -eq 1 ] \
+    && head -1 /tmp/setup-dryrun.d6h.out | grep -q '^1$' \
+    && tail -n +2 /tmp/setup-dryrun.d6h.out | grep -Eq $'^\x1b\[31m❌ usage: .*\[-v\|--volumes\]\x1b\[0m\r?$' \
+    && ! tail -n +2 /tmp/setup-dryrun.d6h.out | grep -q '=== honey-starter: down ==='; then
+    ok "D6h: down.sh --badarg (pty, xterm) -> RED usage msg_fail, rc 1, no banner"
+  else
+    bad "D6h rc=${RC_D6H} (want rich usage error + rc 1):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d6h.out >&2 || true
+  fi
+
+  # D6i. logs rich (pty, xterm): silent shim -> rc 0 and NO output body.
+  set +e
+  (
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=xterm-256color PATH="${D6_DIR}:/usr/bin:/bin" HONEY_STARTER_NO_ENV=1 \
+      python3 "${HERE}/test/pty-helper.py" --on-disk "${HERE}/scripts/logs.sh" ""
+  ) >/tmp/setup-dryrun.d6i.out 2>&1
+  RC_D6I=$?
+  set -e
+  if [ "${RC_D6I}" -eq 0 ] \
+    && head -1 /tmp/setup-dryrun.d6i.out | grep -q '^0$' \
+    && ! tail -n +2 /tmp/setup-dryrun.d6i.out | grep -q .; then
+    ok "D6i: logs.sh (pty, xterm) -> rc 0, no output body (shim silent)"
+  else
+    bad "D6i rc=${RC_D6I} (want rc 0 + empty pty output):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d6i.out >&2 || true
+  fi
+else
+  ok "D6f-i lifecycle pty rich hermetics SKIPPED (python3 unavailable)"
+fi
+rm -rf "${D6_DIR}"
+
+# D7. Direct SKIP tests: with docker ABSENT (restricted PATH: bash+dirname+
+#     uname only) each lifecycle script prints the exact `SKIP: docker not
+#     found` line and exits 0, plain, no ESC.
+ND7_DIR="$(mktemp -d /tmp/setup-dryrun.d7path.XXXXXX)"
+ln -s "$(command -v bash)" "${ND7_DIR}/bash"
+ln -s "$(command -v dirname)" "${ND7_DIR}/dirname"
+ln -s "$(command -v uname)" "${ND7_DIR}/uname"
+if env PATH="${ND7_DIR}" bash -c 'command -v docker' >/dev/null 2>&1; then
+  bad "D7: restricted PATH unexpectedly resolves docker (host leak)"
+  D7_HERMETIC=0
+else
+  D7_HERMETIC=1
+fi
+for s in stop down status logs; do
+  set +e
+  (
+    cd "${HERE}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" TERM=xterm-256color PATH="${ND7_DIR}" HONEY_STARTER_NO_ENV=1 \
+      bash "scripts/${s}.sh"
+  ) >/tmp/setup-dryrun.d7.out 2>&1
+  RC_D7=$?
+  set -e
+  if [ "${D7_HERMETIC}" -eq 1 ] && [ "${RC_D7}" -eq 0 ] \
+    && grep -q '^SKIP: docker not found$' /tmp/setup-dryrun.d7.out \
+    && ! grep -q $'\x1b' /tmp/setup-dryrun.d7.out; then
+    ok "D7: ${s}.sh docker-absent -> SKIP: docker not found, rc 0 (plain)"
+  else
+    bad "D7 ${s} rc=${RC_D7} (want SKIP line + rc 0):"
+    sed 's/^/    | /' /tmp/setup-dryrun.d7.out >&2 || true
+  fi
+done
+rm -rf "${ND7_DIR}"
+
+# D8. KEEP-IN-SYNC sync guard: the lib.sh rich block (marker comment through
+#     usage_die) must stay a byte-for-byte copy of setup.sh's Phase A block.
+D8_LIB="$(mktemp)"
+D8_SETUP="$(mktemp)"
+awk '/^# --- output helpers \(Phase A rich-output foundation\)/{p=1} p{print} /^usage_die\(\)/{exit}' \
+  "${HERE}/scripts/lib.sh" > "${D8_LIB}"
+awk '/^# --- output helpers \(Phase A rich-output foundation\)/{p=1} p{print} /^usage_die\(\)/{exit}' \
+  "${HERE}/scripts/setup.sh" > "${D8_SETUP}"
+if diff -u "${D8_SETUP}" "${D8_LIB}" >/dev/null 2>&1; then
+  ok "D8: lib.sh rich-output block is byte-identical to setup.sh (KEEP-IN-SYNC)"
+else
+  bad "D8: lib.sh rich-output block drifted from setup.sh (KEEP-IN-SYNC)"
+  diff -u "${D8_SETUP}" "${D8_LIB}" >&2 || true
+fi
+rm -f "${D8_LIB}" "${D8_SETUP}"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="

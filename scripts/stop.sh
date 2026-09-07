@@ -14,16 +14,16 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "SKIP: docker not found"
+  msg_info "SKIP: docker not found"
   exit 0
 fi
 
-echo "=== honey-starter: stop ==="
+msg_section "=== honey-starter: stop ==="
 # compose v2 `ps` only lists running containers by default; --all covers
 # stopped ones too so we can detect "nothing to stop" either way.
 if [ -z "$(compose ps --all -q 2>/dev/null)" ]; then
-  echo "nothing to stop (no containers for project ${COMPOSE_PROJECT_NAME})"
+  msg_info "nothing to stop (no containers for project ${COMPOSE_PROJECT_NAME})"
   exit 0
 fi
 compose stop
-echo "=== honey-starter stopped (volumes and .honey-starter/ state preserved) ==="
+msg_section "=== honey-starter stopped (volumes and .honey-starter/ state preserved) ==="
