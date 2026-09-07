@@ -91,7 +91,7 @@ make start          # or: bash scripts/start.sh
 ### Guided install (setup.sh)
 
 For a bare Linux Docker host with no repo present and no host git, the guided
-installer (`scripts/setup.sh`, Phase 4) is the entry point:
+installer (`scripts/setup.sh`) is the entry point:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
@@ -103,16 +103,14 @@ short questionnaire, writes the repo-root `.env` (chmod 600) and delegates to
 `scripts/start.sh`. See the repository README → *Install in one line* and
 `bash scripts/setup.sh --help`.
 
-**Output styling.** `setup.sh` (and the lifecycle targets `make
-start|stop|status|down` via `scripts/start.sh`/`stop.sh`/`status.sh`/
-`down.sh`, plus `logs.sh`'s `SKIP` path) detect a rich (emoji/color) terminal
-on fd 1 only — redirected/non-tty runs and `TERM=dumb` always render
-**plain** text. Force plain output on a color-capable terminal by setting
-`NO_COLOR` or `HONEY_STARTER_NO_COLOR` to any value (even empty; presence
-semantics). Rich styling is **prefix-only** — message text is never
-rewritten.
+**Output styling.** `setup.sh`, `start.sh` and the lifecycle targets render
+rich (emoji/color) output only when fd 1 is a real terminal; on pipes /
+redirects / CI / `TERM=dumb` the output is always **plain**. Force plain by
+setting `NO_COLOR` or `HONEY_STARTER_NO_COLOR` to any value (even empty;
+presence semantics). Detection, menus, masked input and the KEEP-IN-SYNC
+contract: [`HONEYDIPPER.md`](../HONEYDIPPER.md).
 
-**Multiple instances (Phase 5).** The same command SETS UP a NEW instance at a
+**Multiple instances.** The same command SETS UP a NEW instance at a
 given directory or RE-SETS UP (manages) an EXISTING instance. Target selection
 is a three-branch rule:
 
@@ -138,7 +136,7 @@ neither is set). A port collision surfaces loudly at `docker compose up` —
 **Project name on existing instances.** An existing (provisioned) instance is
 **never auto-renamed**: manage reads its persisted `.env` name silently and
 keeps it. An exported `COMPOSE_PROJECT_NAME` with nothing persisted is
-**silently adopted** (and the F3 guard probes the adopted name). An exported
+**silently adopted** (and the early collision guard probes the adopted name). An exported
 name that DIFFERS from a persisted value requires an **explicit TTY confirm**:
 changing the project re-initializes Vault — it builds a NEW `<new>_vault-file`
 volume and OVERWRITES `root_token`/`unseal_key` in the state dir, and the old
@@ -150,7 +148,7 @@ persisted/absent value). Teardown is scoped per project:
 `docker compose down -v -p <project>`; `docker compose ls` lists the distinct
 projects.
 
-**Early collision guard.** The F3 guard probes the EFFECTIVE project name on
+**Early collision guard.** The guard probes the EFFECTIVE project name on
 every effective change: setting up a NEW instance (or a fresh
 materialized/downloaded target) while another deployment is up under that
 project (e.g. the shared default `honey-starter`), or renaming/adopting onto
@@ -201,7 +199,7 @@ target's own `start.sh` runs — safe.
   env contract; `start.sh` seeds it into Vault harmlessly until the rendered
   agent config points at openrouter.
 
-**Answers-file schema (`HONEY_STARTER_ANSWERS_FILE`, Phase 6 — leading line
+**Answers-file schema (`HONEY_STARTER_ANSWERS_FILE` — leading line
 added).** Exact order, one per line:
 
 ```
@@ -221,10 +219,10 @@ A fresh (never-provisioned) install consumes the leading project-name line
 (invalid DIES; empty = derived default); a manage-in-place run consumes and
 DISCARDS it (the persisted name is never re-asked / re-derived, and an
 exhausted file never pushes the slot to the missing list). Existing answer
-files MUST gain the leading line (same breakage class as the Phase 5 model
+files MUST gain the leading line (same breakage class as the model
 line).
 
-**`HD_AI_MODEL` (Phase 5 — the AI model question).** For openai/custom,
+**`HD_AI_MODEL` (the AI model question).** For openai/custom,
 setup.sh asks *AI model* with a default of `gpt-5.4-mini` (the pin). Three-way
 env semantics:
 
@@ -502,7 +500,7 @@ Two complementary mechanisms:
   (its secrets are config `LOOKUP`s), but the wiring is present for future
   use — notably for `HD_JWT_SIGNING_KEY` (see below).
 
-### Config reload behavior and the 30m default (H2)
+### Config reload behavior and the 30m default
 
 The daemon runs a `Watch()` loop that, every `configCheckInterval`, calls
 `Refresh()` and then, if the config changed, re-assembles and triggers
@@ -594,7 +592,7 @@ internal `data-valkey` network and publishes no host port.
   sending the bearer token (admin token) that maps through the auth-simple
   driver (bcrypt hash stored in Vault) to the seeded admin subject.
 
-## `HD_JWT_SIGNING_KEY` (M5)
+## `HD_JWT_SIGNING_KEY`
 
 The api service reads `HD_JWT_SIGNING_KEY` directly via `os.Getenv` to mint
 principal session tokens. It is **off by default** and genuinely optional:
