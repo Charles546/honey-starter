@@ -228,6 +228,12 @@ sed_inplace() {
 # stty_dev -> prints "-F" (GNU/BusyBox stty -F DEV) or "-f" (BSD stty -f DEV)
 # for the /dev/tty device; PROBEd once against /dev/tty and cached. Used by
 # setup.sh's masked-input (masked_read / read_secret_key).
+# BSD/macOS semantics: the device flag PRECEDES the device (`stty -f /dev/tty
+# ...` BSD vs `stty -F /dev/tty ...` GNU); -g save/restore parity is guaranteed
+# by read_secret_key saving `stty <flag> /dev/tty -g` and masked_read restoring
+# with the SAME flag + saved state in its EXIT trap; the raw-mode line
+# `stty <flag> /dev/tty -icanon -isig -echo min 1 time 0` is valid on both
+# (BSD accepts min/time; the dd bs=1 loop reads the raw chars).
 STTY_DEV_FLAG=""
 stty_dev() {
   if [ -z "${STTY_DEV_FLAG}" ]; then
@@ -262,17 +268,22 @@ realpath_portable() {
 
 # cp_recursive SRC DST - GNU `cp -a` vs BSD `cp -pR` (macOS cp has no -a).
 # PROBEd once and cached; used by materialize_new's EXDEV cross-filesystem
-# fallback.
+# fallback (`cp <args> "${tmpdir}/." "${target}/"`). BSD `cp -pR` preserves
+# mode/ownership/timestamps but NOT xattrs (a GNU -a nicety) - acceptable for
+# the rendered config/identity trees this fallback copies; flagged for the
+# real-Mac verification checklist.
 CP_RECURSIVE_ARGS=""
 cp_recursive() {
   local src="$1" dst="$2" tmpd
   if [ -z "${CP_RECURSIVE_ARGS}" ]; then
     tmpd="$(mktemp -d 2>/dev/null)" || tmpd="/tmp/honey-starter.cpprobe.$$"
-    mkdir -p "${tmpd}/s" 2>/dev/null || true
+    mkdir -p "${tmpd}/s" "${tmpd}/a" "${tmpd}/b" 2>/dev/null || true
     printf 'x' > "${tmpd}/s/f" 2>/dev/null || true
-    if cp -a "${tmpd}/s" "${tmpd}/a" 2>/dev/null && [ -f "${tmpd}/a/f" ]; then
+    # Probe the EXACT EXDEV call shape: contents-copy `src/.` into a
+    # pre-created dst dir (GNU and BSD cp both accept the trailing /.).
+    if cp -a "${tmpd}/s/." "${tmpd}/a/" 2>/dev/null && [ -f "${tmpd}/a/f" ]; then
       CP_RECURSIVE_ARGS="-a"
-    elif cp -pR "${tmpd}/s" "${tmpd}/b" 2>/dev/null && [ -f "${tmpd}/b/f" ]; then
+    elif cp -pR "${tmpd}/s/." "${tmpd}/b/" 2>/dev/null && [ -f "${tmpd}/b/f" ]; then
       CP_RECURSIVE_ARGS="-pR"
     else
       CP_RECURSIVE_ARGS="-a"

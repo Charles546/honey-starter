@@ -129,14 +129,24 @@
 #     to $$(brew --prefix httpd)/bin/htpasswd on darwin, and an unsupported OS
 #     still dies.
 #
+#   * Phase 2 macOS runtime polish: the E2 reference is a portable CANNED
+#     constant (sanity-checked against the shared sha256_digest shim) so the
+#     suite runs on a stock macOS host with no GNU sha256sum, and the BS1-BS4
+#     BSD-branch mocks exercise sed_inplace / stty_dev / cp_recursive /
+#     realpath_portable through fake BSD sed / stty / cp / readlink (rejecting
+#     the GNU-only forms) so every BSD branch is covered without a real Mac.
+#
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 139 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 144 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
-# lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 8
-# Phase 1 E-series Darwin-mock checks (E1-E4: preflight_os on Darwin,
-# sha256_digest format parity across sha256sum/shasum/openssl, htpasswd
-# brew-path resolution, unsupported-OS die).
+# lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
+# Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
+# Darwin, sha256_digest format parity across sha256sum/shasum/openssl against a
+# portable canned reference, htpasswd brew-path resolution, unsupported-OS
+# die) + the 4 Phase 2 BSD-branch mocks (BS1-BS4: sed_inplace / stty_dev /
+# cp_recursive / realpath_portable BSD branches exercised hermetically via fake
+# BSD sed / stty / cp / readlink, no Mac required).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -2997,7 +3007,8 @@ fi
 
 # D5. start.sh early path with docker ABSENT. Restricted PATH holds ONLY
 #     bash+dirname+uname (no /usr/bin), so a docker host cannot leak a real
-#     docker; the Linux guard's uname is satisfied via the symlink.
+#     docker; the uname the preflight_os guard needs is satisfied via the
+#     symlink (OS-neutral).
 ND_DIR="$(portable_mktemp -d /tmp/setup-dryrun.d5path)"
 ln -s "$(command -v bash)" "${ND_DIR}/bash"
 ln -s "$(command -v dirname)" "${ND_DIR}/dirname"
@@ -3407,15 +3418,22 @@ else
   sed 's/^/    | /' /tmp/setup-dryrun.e1.out >&2 || true
 fi
 
-# E2. sha256_digest parity across sha256sum / BSD shasum / openssl. Reference is
-#     computed DIRECTLY (not via the shim) so every branch is compared against
-#     the host digester itself; stdio "-" is tested too (derived_project_name
+# E2. sha256_digest parity across sha256sum / BSD shasum / openssl. The
+#     reference is a CANNED constant for the fixed payload below (computed once);
+#     the E2-ref sanity check below asserts it still matches the shared
+#     sha256_digest shim on THIS host, so the suite never assumes a GNU host and
+#     runs on stock macOS too. Every branch - real and fake - is compared
+#     against this same constant; stdio "-" is tested too (derived_project_name
 #     and the preflight probe both feed stdin).
 E2_PAYLOAD="$(portable_mktemp /tmp/setup-dryrun.e2payload)"
 printf '%s' 'honey-starter-platform-layer-parity' > "${E2_PAYLOAD}"
-REAL_SHA256SUM="$(command -v sha256sum)"
-REAL_AWK="$(command -v awk)"
-E2_REFERENCE="$(sha256sum "${E2_PAYLOAD}" | awk '{print $1}')"
+E2_REFERENCE="ce16d8cf37c18438f1e67d78a99153cf0b4ed3f7347c52855e6f90c09395166c"
+E2_REF_CHECK="$(sha256_digest "${E2_PAYLOAD}")"
+if [ -n "${E2_REF_CHECK}" ] && [ "${E2_REF_CHECK}" = "${E2_REFERENCE}" ]; then
+  ok "E2-ref: canned reference matches the shared sha256_digest shim (portable reference)"
+else
+  bad "E2-ref: canned reference [${E2_REFERENCE}] != shared sha256_digest [${E2_REF_CHECK}]; update the constant"
+fi
 
 E2A_OUT="$(sha256_digest "${E2_PAYLOAD}")"
 if [ -n "${E2A_OUT}" ] && [ "${E2A_OUT}" = "${E2_REFERENCE}" ]; then
@@ -3428,18 +3446,19 @@ fi
 E2S_DIR="$(portable_mktemp -d /tmp/setup-dryrun.e2shasum)"
 cat > "${E2S_DIR}/shasum" <<E2SHASUM
 #!/bin/bash
+# Fake BSD \`shasum -a 256\`: prints "HASH  FILE" / "HASH  -" using the CANNED
+# digest of the fixed E2 payload (no host digester dependency, so this runs on
+# stock macOS too).
 f=""
 for a in "\$@"; do f="\$a"; done
 if [ "\${f}" = "-" ] || [ -z "\${f}" ]; then
-  H="\$(${REAL_SHA256SUM} | ${REAL_AWK} '{print \$1}')"
-  printf '%s  -\n' "\${H}"
+  printf '%s  -\n' 'ce16d8cf37c18438f1e67d78a99153cf0b4ed3f7347c52855e6f90c09395166c'
 else
-  H="\$(${REAL_SHA256SUM} "\${f}" | ${REAL_AWK} '{print \$1}')"
-  printf '%s  %s\n' "\${H}" "\${f}"
+  printf '%s  %s\n' 'ce16d8cf37c18438f1e67d78a99153cf0b4ed3f7347c52855e6f90c09395166c' "\${f}"
 fi
 E2SHASUM
 chmod +x "${E2S_DIR}/shasum"
-ln -s "${REAL_AWK}" "${E2S_DIR}/awk"
+ln -s "$(command -v awk)" "${E2S_DIR}/awk"
 ln -s "$(command -v sed)" "${E2S_DIR}/sed"
 set +e
 (
@@ -3470,18 +3489,19 @@ fi
 E2O_DIR="$(portable_mktemp -d /tmp/setup-dryrun.e2openssl)"
 cat > "${E2O_DIR}/openssl" <<E2OPENSSL
 #!/bin/bash
+# Fake \`openssl dgst -sha256\`: prints "SHA256(FILE)= HASH" using the CANNED
+# digest of the fixed E2 payload (no host digester dependency, so this runs on
+# stock macOS too).
 f=""
 for a in "\$@"; do f="\$a"; done
 if [ "\${f}" = "-" ] || [ -z "\${f}" ]; then
-  H="\$(${REAL_SHA256SUM} | ${REAL_AWK} '{print \$1}')"
-  printf 'SHA256(-)= %s\n' "\${H}"
+  printf 'SHA256(-)= %s\n' 'ce16d8cf37c18438f1e67d78a99153cf0b4ed3f7347c52855e6f90c09395166c'
 else
-  H="\$(${REAL_SHA256SUM} "\${f}" | ${REAL_AWK} '{print \$1}')"
-  printf 'SHA256(%s)= %s\n' "\${f}" "\${H}"
+  printf 'SHA256(%s)= %s\n' "\${f}" 'ce16d8cf37c18438f1e67d78a99153cf0b4ed3f7347c52855e6f90c09395166c'
 fi
 E2OPENSSL
 chmod +x "${E2O_DIR}/openssl"
-ln -s "${REAL_AWK}" "${E2O_DIR}/awk"
+ln -s "$(command -v awk)" "${E2O_DIR}/awk"
 ln -s "$(command -v sed)" "${E2O_DIR}/sed"
 set +e
 (
@@ -3580,8 +3600,152 @@ else
   sed 's/^/    | /' /tmp/setup-dryrun.e4.out >&2 || true
 fi
 
-rm -rf "${E_PREFLIGHT}" "${E1_DIR}" "${E2_PAYLOAD}" "${E2S_DIR}" "${E2O_DIR}" "${E3_DIR}" "${E4_DIR}"
+# ---------------------------------------------------------------------------
+# Phase 2 BSD-branch mocks (BS1-BS4): exercise the BSD branches of the
+# platform-compat shims hermetically (no real Mac needed) by pointing PATH at
+# fake BSD binaries that REJECT the GNU-only forms (-i 'prog', -F, -a, readlink
+# -f) and accept the BSD forms. Each probe runs in a fresh subshell with PATH
+# REPLACED (the same pattern the E2 fake-digester tests use, so shellcheck
+# stays clean); the shims' cached probes (SED_INPLACE_MODE / STTY_DEV_FLAG /
+# CP_RECURSIVE_ARGS) are never set at the suite's top level, so each subshell
+# starts with an empty cache by construction and the parent's state is never
+# touched.
+# ---------------------------------------------------------------------------
 
+# BS1. sed_inplace selects the BSD form (fake BSD sed rejects `-i 'prog'`).
+#      The shim's SED_INPLACE_MODE cache is never set elsewhere in the suite,
+#      so it is empty here by construction. PATH is REPLACED (not appended) and
+#      the host tools the shim needs are symlinked in - the same pattern the
+#      E2 fake-digester tests use, so shellcheck stays clean.
+BS1_DIR="$(portable_mktemp -d /tmp/setup-dryrun.bs1)"
+cat > "${BS1_DIR}/sed" <<'BS1SED'
+#!/bin/bash
+# Fake BSD sed: only `-i '' 'prog' FILE` (BSD); reject `-i 'prog' FILE` (GNU).
+if [ "$1" != "-i" ] || [ "$#" -lt 4 ] || [ -n "$2" ]; then
+  exit 1
+fi
+prog="$3"
+file="$4"
+if [[ "$prog" =~ ^s/(.*)/(.*)/$ ]]; then
+  old="${BASH_REMATCH[1]}"
+  new="${BASH_REMATCH[2]}"
+  content="$(cat "$file")"
+  printf '%s\n' "${content//$old/$new}" > "$file"
+  exit 0
+fi
+exit 1
+BS1SED
+chmod +x "${BS1_DIR}/sed"
+ln -s "$(command -v mktemp)" "${BS1_DIR}/mktemp"
+ln -s "$(command -v cat)" "${BS1_DIR}/cat"
+ln -s "$(command -v rm)" "${BS1_DIR}/rm"
+BS1_FILE="$(portable_mktemp /tmp/setup-dryrun.bs1file)"
+printf 'x\n' > "${BS1_FILE}"
+set +e
+(
+  set +e
+  PATH="${BS1_DIR}"
+  sed_inplace 's/x/y/' "${BS1_FILE}"
+  rc=$?
+  printf 'RC=%s CONTENT=%s\n' "${rc}" "$(cat "${BS1_FILE}")"
+) > /tmp/setup-dryrun.bs1.out
+set -e
+BS1_OUT="$(cat /tmp/setup-dryrun.bs1.out)"
+if [ "${BS1_OUT}" = "RC=0 CONTENT=y" ]; then
+  ok "BS1: sed_inplace picks the BSD form (-i '' 'prog') under a fake BSD sed"
+else
+  bad "BS1: sed_inplace BSD branch: ${BS1_OUT}"
+fi
+rm -f "${BS1_FILE}"
+
+# BS2. stty_dev selects the BSD device flag (fake BSD stty rejects -F).
+BS2_DIR="$(portable_mktemp -d /tmp/setup-dryrun.bs2)"
+cat > "${BS2_DIR}/stty" <<'BS2STTY'
+#!/bin/bash
+# Fake BSD stty: only accepts `-f DEV ...`; rejects GNU `-F DEV ...`.
+[ "$1" = "-f" ]
+BS2STTY
+chmod +x "${BS2_DIR}/stty"
+set +e
+(
+  set +e
+  PATH="${BS2_DIR}"
+  printf 'FLAG=%s\n' "$(stty_dev)"
+) > /tmp/setup-dryrun.bs2.out
+set -e
+BS2_OUT="$(cat /tmp/setup-dryrun.bs2.out)"
+if [ "${BS2_OUT}" = "FLAG=-f" ]; then
+  ok "BS2: stty_dev picks the BSD device flag (-f) under a fake BSD stty"
+else
+  bad "BS2: stty_dev BSD branch: ${BS2_OUT}"
+fi
+
+# BS3. cp_recursive selects -pR (fake BSD cp rejects -a; the probe's EXDEV
+#      contents-copy shape `cp -pR src/. dst/` is delegated to the real cp).
+REAL_CP="$(command -v cp)"
+BS3_DIR="$(portable_mktemp -d /tmp/setup-dryrun.bs3)"
+cat > "${BS3_DIR}/cp" <<BS3CP
+#!/bin/bash
+# Fake BSD cp: only -pR; reject GNU -a; delegate the copy to the real cp.
+if [ "\$1" != "-pR" ]; then
+  exit 1
+fi
+"${REAL_CP}" -R "\$2" "\$3"
+BS3CP
+chmod +x "${BS3_DIR}/cp"
+ln -s "$(command -v mktemp)" "${BS3_DIR}/mktemp"
+ln -s "$(command -v mkdir)" "${BS3_DIR}/mkdir"
+ln -s "$(command -v rm)" "${BS3_DIR}/rm"
+ln -s "$(command -v cat)" "${BS3_DIR}/cat"
+BS3_SRC="$(portable_mktemp -d /tmp/setup-dryrun.bs3src)"
+mkdir -p "${BS3_SRC}/s" "${BS3_SRC}/dst"
+printf 'z' > "${BS3_SRC}/s/f"
+set +e
+(
+  set +e
+  PATH="${BS3_DIR}"
+  cp_recursive "${BS3_SRC}/s/." "${BS3_SRC}/dst/"
+  rc=$?
+  printf 'RC=%s CONTENT=%s\n' "${rc}" "$(cat "${BS3_SRC}/dst/f" 2>/dev/null || true)"
+) > /tmp/setup-dryrun.bs3.out
+set -e
+BS3_OUT="$(cat /tmp/setup-dryrun.bs3.out)"
+if [ "${BS3_OUT}" = "RC=0 CONTENT=z" ]; then
+  ok "BS3: cp_recursive picks -pR (BSD) for the EXDEV contents-copy shape"
+else
+  bad "BS3: cp_recursive BSD branch: ${BS3_OUT}"
+fi
+rm -rf "${BS3_SRC}"
+
+# BS4. realpath_portable falls back to `cd && pwd -P` when readlink -f is
+#      unavailable (fake BSD readlink rejects -f) - BSD branch.
+BS4_DIR="$(portable_mktemp -d /tmp/setup-dryrun.bs4)"
+cat > "${BS4_DIR}/readlink" <<'BS4READLINK'
+#!/bin/bash
+# Fake BSD readlink: rejects the GNU `-f` flag (macOS readlink has no -f).
+[ "$1" != "-f" ]
+BS4READLINK
+chmod +x "${BS4_DIR}/readlink"
+BS4_DIRPATH="$(portable_mktemp -d /tmp/setup-dryrun.bs4dir)"
+mkdir -p "${BS4_DIRPATH}/real/dir"
+BS4_EXPECT="$(cd "${BS4_DIRPATH}/real/dir" && pwd -P)"
+set +e
+(
+  set +e
+  PATH="${BS4_DIR}"
+  printf 'P=%s\n' "$(realpath_portable "${BS4_DIRPATH}/real/dir")"
+) > /tmp/setup-dryrun.bs4.out
+set -e
+BS4_OUT="$(cat /tmp/setup-dryrun.bs4.out)"
+if [ "${BS4_OUT}" = "P=${BS4_EXPECT}" ]; then
+  ok "BS4: realpath_portable falls back to pwd -P when readlink -f is unavailable (BSD)"
+else
+  bad "BS4: realpath_portable BSD fallback: ${BS4_OUT}"
+fi
+rm -rf "${BS4_DIRPATH}"
+
+rm -rf "${E_PREFLIGHT}" "${E1_DIR}" "${E2_PAYLOAD}" "${E2S_DIR}" "${E2O_DIR}" "${E3_DIR}" "${E4_DIR}" \
+  "${BS1_DIR}" "${BS2_DIR}" "${BS3_DIR}" "${BS4_DIR}"
 
 if [ "${FAIL}" -eq 0 ]; then
   echo "=== setup-dryrun: ${PASS} checks passed ==="
