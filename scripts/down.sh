@@ -39,7 +39,7 @@ case "${1:-}" in
 esac
 
 msg_section "=== honey-starter: down ==="
-compose down "${EXTRA[@]}"
+compose down ${EXTRA[@]+"${EXTRA[@]}"}
 if [ "${#EXTRA[@]}" -gt 0 ]; then
   msg_section "=== honey-starter down; named volumes deleted (vault-file / valkey-data / daemon-driver-cache) ==="
   msg_section "=== .honey-starter/ state preserved (remove by hand to fully reset) ==="

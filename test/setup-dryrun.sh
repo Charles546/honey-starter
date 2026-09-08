@@ -251,6 +251,11 @@ fresh_tree() {
 # inline copies.
 derived_proj() {
   local dir="$1" base b h
+  # Canonicalize the install dir exactly as production scripts/setup.sh does
+  # (realpath_portable -> readlink -f, else cd && pwd -P). On macOS this
+  # resolves the /var symlink to /private/var so the derived hs-...-hash8
+  # matches what production writes into .env; on Linux it is a no-op.
+  dir="$(realpath_portable "${dir}")"
   base="$(basename "${dir}")"
   [ -n "${base}" ] || base="dir"
   # sanitize: lowercase -> [^a-z0-9] -> "-" -> collapse runs -> strip edges ->
@@ -3397,9 +3402,9 @@ set +e
 (
   set +e
   PATH="${E1_DIR}"
-  # shellcheck disable=SC2329 # stubs are used by the sourced preflight_os
+  # shellcheck disable=SC2329,SC2317 # stubs are used by the sourced preflight_os
   die() { printf 'DIE:%s\n' "$*" >&2; exit 1; }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2329,SC2317
   msg_ok() { printf '%s\n' "$*"; }
   # shellcheck source=/dev/null
   . "${E_PREFLIGHT}"
@@ -3581,9 +3586,9 @@ set +e
 (
   set +e
   PATH="${E4_DIR}"
-  # shellcheck disable=SC2329 # stubs are used by the sourced preflight_os
+  # shellcheck disable=SC2329,SC2317 # stubs are used by the sourced preflight_os
   die() { printf 'DIE:%s\n' "$*" >&2; exit 1; }
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2329,SC2317
   msg_ok() { printf '%s\n' "$*"; }
   # shellcheck source=/dev/null
   . "${E_PREFLIGHT}"
