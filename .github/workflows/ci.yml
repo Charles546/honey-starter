@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Keep hermetic: never pick up a host .env (the Makefile/scripts honor this).
+env:
+  HONEY_STARTER_NO_ENV: "1"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + setup-dryrun + validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-latest has a docker engine, so the docker-gated gates
+        # (check-config / compose-config / smoke / e2e / setup-e2e) run for
+        # real. macos-15 is the current public ARM64 (Apple Silicon) macOS
+        # hosted runner label; it has no docker, so those same gates skip
+        # cleanly (each gate exits 0 when docker is absent).
+        os: [ubuntu-latest, macos-15]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install macOS prerequisites (Homebrew)
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash shellcheck jq openssl httpd
+          # The frozen Makefile invokes bare `bash` for every script; macOS
+          # ships bash 3.2 as /bin/bash, so put the brew bash (>= 4) first on
+          # PATH. Also prepend the brew httpd prefix so `htpasswd` (shipped by
+          # the httpd formula, NOT on PATH by default) is found.
+          echo "$(brew --prefix)/bin"    >> "$GITHUB_PATH"
+          echo "$(brew --prefix httpd)/bin" >> "$GITHUB_PATH"
+          echo "Using bash: $(command -v bash)"
+          bash --version | head -1
+
+      - name: Verify bash >= 4 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          v="$(bash -c 'echo ${BASH_VERSINFO[0]}')"
+          if [ "$v" -lt 4 ]; then
+            echo "ERROR: need bash >= 4, got $v" >&2
+            exit 1
+          fi
+          echo "bash $v OK"
+
+      - name: Install Ubuntu prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          # make validate includes check-bcrypt, which HARD-requires htpasswd
+          # (from apache2-utils, which is NOT preinstalled on ubuntu-latest).
+          # (The shellcheck package is already present; pinning it explicitly
+          # is harmless insurance.)
+          sudo apt-get update
+          sudo apt-get install -y shellcheck apache2-utils
+
+      - name: Lint (shellcheck)
+        run: make lint
+
+      - name: Setup dry-run (hermetic, no docker)
+        run: make setup-dryrun
+
+      # Docker-gated gates: run for real on ubuntu (docker present, network
+      # available, no secrets needed); skip cleanly on macOS (no docker).
+      - name: Validate
+        run: make validate
