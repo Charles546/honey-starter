@@ -339,6 +339,12 @@ sed_inplace() {
 # stty_dev -> prints "-F" (GNU/BusyBox stty -F DEV) or "-f" (BSD stty -f DEV)
 # for the /dev/tty device; PROBEd once against /dev/tty and cached. Used by
 # setup.sh's masked-input (masked_read / read_secret_key).
+# BSD/macOS semantics: the device flag PRECEDES the device (`stty -f /dev/tty
+# ...` BSD vs `stty -F /dev/tty ...` GNU); -g save/restore parity is guaranteed
+# by read_secret_key saving `stty <flag> /dev/tty -g` and masked_read restoring
+# with the SAME flag + saved state in its EXIT trap; the raw-mode line
+# `stty <flag> /dev/tty -icanon -isig -echo min 1 time 0` is valid on both
+# (BSD accepts min/time; the dd bs=1 loop reads the raw chars).
 STTY_DEV_FLAG=""
 stty_dev() {
   if [ -z "${STTY_DEV_FLAG}" ]; then
@@ -373,17 +379,22 @@ realpath_portable() {
 
 # cp_recursive SRC DST - GNU `cp -a` vs BSD `cp -pR` (macOS cp has no -a).
 # PROBEd once and cached; used by materialize_new's EXDEV cross-filesystem
-# fallback.
+# fallback (`cp <args> "${tmpdir}/." "${target}/"`). BSD `cp -pR` preserves
+# mode/ownership/timestamps but NOT xattrs (a GNU -a nicety) - acceptable for
+# the rendered config/identity trees this fallback copies; flagged for the
+# real-Mac verification checklist.
 CP_RECURSIVE_ARGS=""
 cp_recursive() {
   local src="$1" dst="$2" tmpd
   if [ -z "${CP_RECURSIVE_ARGS}" ]; then
     tmpd="$(mktemp -d 2>/dev/null)" || tmpd="/tmp/honey-starter.cpprobe.$$"
-    mkdir -p "${tmpd}/s" 2>/dev/null || true
+    mkdir -p "${tmpd}/s" "${tmpd}/a" "${tmpd}/b" 2>/dev/null || true
     printf 'x' > "${tmpd}/s/f" 2>/dev/null || true
-    if cp -a "${tmpd}/s" "${tmpd}/a" 2>/dev/null && [ -f "${tmpd}/a/f" ]; then
+    # Probe the EXACT EXDEV call shape: contents-copy `src/.` into a
+    # pre-created dst dir (GNU and BSD cp both accept the trailing /.).
+    if cp -a "${tmpd}/s/." "${tmpd}/a/" 2>/dev/null && [ -f "${tmpd}/a/f" ]; then
       CP_RECURSIVE_ARGS="-a"
-    elif cp -pR "${tmpd}/s" "${tmpd}/b" 2>/dev/null && [ -f "${tmpd}/b/f" ]; then
+    elif cp -pR "${tmpd}/s/." "${tmpd}/b/" 2>/dev/null && [ -f "${tmpd}/b/f" ]; then
       CP_RECURSIVE_ARGS="-pR"
     else
       CP_RECURSIVE_ARGS="-a"
@@ -1123,8 +1134,15 @@ preflight_docker() {
     # Docker Desktop on macOS routes through a user-mode socket at
     # ~/.docker/run/docker.sock (no /var/run/docker.sock by default); point
     # DOCKER_HOST at it so `docker info` can reach a running desktop daemon.
+    # Rancher Desktop (moby backend) exposes the same ~/.docker/run path;
+    # with the containerd backend its CLI wrapper (~/.rd/bin/docker) manages
+    # DOCKER_HOST itself, and older RD builds used ~/.rd/docker.sock - probe
+    # that as a fallback so a running RD daemon is found on every layout.
     if [ -S "${HOME}/.docker/run/docker.sock" ]; then
       DOCKER_HOST="unix://${HOME}/.docker/run/docker.sock"
+      export DOCKER_HOST
+    elif [ -S "${HOME}/.rd/docker.sock" ]; then
+      DOCKER_HOST="unix://${HOME}/.rd/docker.sock"
       export DOCKER_HOST
     fi
     if [ "${have_docker}" -eq 1 ] \
@@ -2549,6 +2567,17 @@ run_questionnaire() {
   valid_port "${EFFECTIVE_UI_PORT}" || die "HD_UI_HOST_PORT must be an integer 1-65535 (got: ${EFFECTIVE_UI_PORT})"
   valid_ns "${EFFECTIVE_NS}" || die "HONEY_NS must be a single Vault path segment ([A-Za-z0-9._-]+), got: ${EFFECTIVE_NS}"
   valid_user "${EFFECTIVE_USER}" || die "HONEY_USER must be a plain subject token ([A-Za-z0-9@._-]+), got: ${EFFECTIVE_USER}"
+
+  # Darwin host-port hint: AirPlay Receiver / ControlCenter commonly hold ports
+  # 5000/7000 on macOS; the defaults 9000/8090 are free. Hint only - start.sh's
+  # curl preflight catches a LIVE conflict on every platform.
+  if [ "$(platform_os)" = "darwin" ]; then
+    case " ${EFFECTIVE_API_PORT} ${EFFECTIVE_UI_PORT} " in
+      *" 5000 "*|*" 7000 "*)
+        msg_warn "on macOS, AirPlay Receiver / ControlCenter may hold port 5000/7000 - if the stack fails to bind, choose different HD_API_HOST_PORT / HD_UI_HOST_PORT values"
+        ;;
+    esac
+  fi
 }
 
 report_missing_if_any() {
