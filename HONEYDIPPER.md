@@ -21,6 +21,14 @@ is the exact questionnaire contract.
 ## KEEP-IN-SYNC
 - Rich-output block (marker → `usage_die`) is byte-for-byte duplicated: `scripts/setup.sh` is the ORIGINAL (byte-identical-frozen); `scripts/lib.sh` holds the shared copy — the KEEP-IN-SYNC comment lives only there.
 - Change one → update BOTH + tests (D8 sync-guard in `test/setup-dryrun.sh`).
+- **7-shim platform block** (`platform_os` → end marker) is likewise byte-for-byte between `scripts/setup.sh` (ORIGINAL) and `scripts/lib.sh` (shared; KEEP-IN-SYNC comment lives there). Change one → update BOTH + tests (D8b sync-guard).
+
+## macOS gotchas (agents: read this first)
+- **bash ≥ 4.** macOS ships **bash 3.2** by default — the scripts need bash 4+ (arrays, `${var,,}`, `set -o pipefail`). Install a newer bash (`brew install bash`) and invoke the scripts with it (`/usr/local/bin/bash scripts/setup.sh`, or `chsh -s` to a brew bash). The preflight and `start.sh` surface this FIRST, before anything can fail cryptically.
+- **htpasswd is NOT on PATH after `brew install httpd`.** It lives at `$(brew --prefix httpd)/bin/htpasswd` (typically `/opt/homebrew/bin`). The shared `resolve_htpasswd` shim probes `command -v htpasswd` then the brew prefix on darwin and exports the dir onto PATH — so setup.sh's optional-tools preflight and start.sh's `require_cmd htpasswd` both resolve it without a manual PATH edit. Keep `/opt/homebrew/bin` on your PATH for the rest of the toolchain.
+- **Path canonicalization differs.** `realpath_portable` canonicalizes an absolute path via `readlink -f` (Linux) or `cd && pwd -P` (macOS, which has no `readlink -f`). On macOS `/var` is a symlink to `/private/var`, so an install dir under `/var/…` resolves to `/private/var/…` — and because the derived per-instance `COMPOSE_PROJECT_NAME` (`hs-<basename>-<hash8>`) hashes the **resolved** install dir, the same logical path can hash differently across hosts that canonicalize differently. Use the same resolved form when comparing/porting names.
+- **Cross-platform shims exist — use them, don't re-implement GNU-only calls.** `realpath_portable`, `sha256_digest`, and `sed_inplace` (plus `cp_recursive`, `stty_dev`, `resolve_htpasswd`/`_htpasswd_probe`) route GNU-only behavior through BSD/brew-compatible probes so Linux behavior is unchanged and macOS works. `sha256_digest` accepts `sha256sum`, `shasum -a 256`, or `openssl dgst -sha256`; `sed_inplace` probes GNU `-i` vs BSD `-i ''` rather than guessing from the OS name.
+- **Runtimes.** macOS 12+ (Apple Silicon / arm64) is supported via **Docker Desktop** or **Rancher Desktop** — there is no `docker` group on macOS, so no `usermod -aG docker`. Preflight probes the desktop CLIs/sockets (`~/.rd/bin/docker`, `/usr/local/bin/docker`, `~/.docker/run/docker.sock`) before dying and links the two desktops; `start.sh` shares the same guards.
 
 ## Test / assert notes
 - Rich detection is cached → probe each mode (plain / pty+dumb / pty+color) in a separate subprocess.
