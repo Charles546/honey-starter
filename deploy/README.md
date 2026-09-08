@@ -1,7 +1,8 @@
 # Deployment (docker-compose)
 
 This directory contains the container orchestration for the honey-starter
-deployment. The compose file provisions four services on a Linux docker host:
+deployment. The compose file provisions four services on a Linux or macOS docker host
+(macOS 12+ / Apple Silicon via Docker Desktop or Rancher Desktop):
 
 | Service    | Image (default)                                 | Role                                             |
 |------------|-------------------------------------------------|--------------------------------------------------|
@@ -90,8 +91,8 @@ make start          # or: bash scripts/start.sh
 
 ### Guided install (setup.sh)
 
-For a bare Linux Docker host with no repo present and no host git, the guided
-installer (`scripts/setup.sh`) is the entry point:
+For a bare Linux or macOS Docker host with no repo present and no host git,
+the guided installer (`scripts/setup.sh`) is the entry point:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
@@ -274,8 +275,8 @@ guarantee).
 
 What it does, in order:
 
-1. **Preflight** — Linux-only guard; requires `docker` + compose v2, `curl`,
-   `jq`, `openssl`, `htpasswd`; `docker info` reachability; best-effort
+1. **Preflight** — Linux/macOS (arm64) guard; requires `docker` + compose v2,
+   `curl`, `jq`, `openssl`, `htpasswd`; `docker info` reachability; best-effort
    host-port conflict check for the published API/UI ports (skipped while this
    stack's daemon is already running).
 2. **Load `.env`** (repo root) if present, honoring the documented env
@@ -712,7 +713,7 @@ newline is fragile against non-entrypoint consumers). Do **not** `echo`
 secrets through shell history, and keep the root token and unseal key out of
 shell history and terminal logs.
 
-**Windows / WSL2 note.** Under Docker Desktop's WSL2 backend, a bind mount
+**Windows / WSL2 note.** Under Docker Desktop's WSL2 backend on Linux, a bind mount
 from the WSL filesystem preserves the WSL uid (typically 1000) and mode, and
 container-root is **not** mapped to the host user for permission purposes on
 the Linux side — so the `cap_drop` rule above applies verbatim: `0600` files

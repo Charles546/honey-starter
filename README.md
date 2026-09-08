@@ -1,12 +1,12 @@
 # 🍯 honey-starter
 
-Single-command starter to spin up a [Honeydipper](https://github.com/honeydipper/honeydipper) instance with a web UI on a Linux docker-enabled host or workstation.
+Single-command starter to spin up a [Honeydipper](https://github.com/honeydipper/honeydipper) instance with a web UI on a Linux or macOS docker-enabled host or workstation.
 
-> 🚀 One command brings up **Valkey** (event bus + cache), a **file-backed Vault** (initialized + unsealed + seeded), the **Honeydipper daemon** (engine / receiver / operator / API / agent), and the **UI** on a Linux docker host: `make start`.
+> 🚀 One command brings up **Valkey** (event bus + cache), a **file-backed Vault** (initialized + unsealed + seeded), the **Honeydipper daemon** (engine / receiver / operator / API / agent), and the **UI** on a Linux or macOS docker host: `make start`.
 
 ## 🚀 Quick start
 
-**Bare Linux docker host — nothing to clone, no host git needed:**
+**Bare docker host (Linux or macOS) — nothing to clone, no host git needed:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scripts/setup.sh | bash
@@ -20,7 +20,7 @@ make start            # or: bash scripts/start.sh
 
 What happens (safe to re-run — it converges):
 
-1. **Preflight** — Linux, docker + compose v2, and the script tools are checked; a host with no viable docker is never prompted.
+1. **Preflight** — macOS/Linux, docker + compose v2, and the script tools are checked; a host with no viable docker is never prompted.
 2. **Download & verify** — (piped install only) the release tarball is fetched, verified, and extracted to `~/honey-starter`; the questionnaire writes `.env` (chmod 600) and delegates to `start.sh`.
 3. **Vault** — on first run: initialized + unsealed, AppRole identity written, secrets seeded; then Valkey + Vault start, followed by the daemon + UI.
 4. **Summary** — UI + API URLs and the admin token.
@@ -109,15 +109,17 @@ Replay a whole questionnaire from a file — `HONEY_STARTER_ANSWERS_FILE` (one a
 - **Plain by default on pipes** — redirected logs, CI, and `TERM=dumb` always render plain (a redirected script never leaks escape bytes). Set `NO_COLOR` or `HONEY_STARTER_NO_COLOR` to any value — even empty — to force plain.
 - **Menus & secrets** — provider/model questions pick by number, exact value, or Enter; API keys are masked with `*` and confirmed by a re-type. Mechanics: [HONEYDIPPER.md](./HONEYDIPPER.md).
 
-## 🧪 Requirements & WSL2
+## 🧪 Requirements
 
-- **Docker** (with compose v2) on Linux — or Docker Desktop's WSL2 backend.
-- **Script tools:** bash, curl, tar, sha256sum, jq, openssl, htpasswd.
+- **Platforms:** Linux; or macOS 12+ on **Apple Silicon / arm64** only.
+- **Docker** (with compose v2) — on Linux, Docker (or compatible); on macOS, **Docker Desktop** or **Rancher Desktop**.
+- **Script tools:** bash ≥ 4, curl, tar, a sha256 digester (`sha256sum`, or `shasum`/`openssl`), jq, openssl, htpasswd. The installer auto-detects GNU vs BSD coreutils.
+- **macOS:** ships **bash 3.2** by default — the scripts need bash ≥ 4, so install a newer bash: `brew install bash`. `htpasswd` comes from `brew install httpd`, but it is **not on PATH by default** (it lives at `$(brew --prefix httpd)/bin/htpasswd`) — the installer resolves it for you; keep `/opt/homebrew/bin` on your PATH.
 - **Developers:** shellcheck → `make lint`; full gate → `make validate` (details: [`deploy/README.md`](./deploy/README.md) → *Validation*).
-- **cap_drop / WSL2:** the daemon runs as root-without-caps (`cap_drop: [ALL]`), so files it reads through bind mounts must be readable by root-without-caps; under WSL2 that includes WSL-owned files — run `sudo make start` (or keep sudo available). Details: [`deploy/README.md`](./deploy/README.md) → *Hardening notes*.
+- **cap_drop / WSL2 (Linux):** the daemon runs as root-without-caps (`cap_drop: [ALL]`), so files it reads through bind mounts must be readable by root-without-caps; under WSL2 that includes WSL-owned files — run `sudo make start` (or keep sudo available). Details: [`deploy/README.md`](./deploy/README.md) → *Hardening notes*.
 
 ## 📖 More docs
 
-- **HONEYDIPPER.md** — installer & UX engineering guidance: rich-output detection, menus, masked input, the non-interactive contract, testing gotchas.
+- **HONEYDIPPER.md** — installer & UX engineering guidance: rich-output detection, menus, masked input, the non-interactive contract, testing gotchas, macOS gotchas.
 - **deploy/README.md** — deployment & compose topology, Vault & **secrets** lifecycle, **bootstrap config** & config reload, **validation gates**, WSL2 details.
 - **[MIT](./LICENSE)**
