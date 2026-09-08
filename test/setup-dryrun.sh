@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 154 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 155 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -151,11 +151,12 @@
 # portable canned reference, htpasswd brew-path resolution, unsupported-OS
 # die) + the 4 Phase 2 BSD-branch mocks (BS1-BS4: sed_inplace / stty_dev /
 # cp_recursive / realpath_portable BSD branches exercised hermetically via fake
-# BSD sed / stty / cp / readlink, no Mac required) + the 10 Phase 5a hybrid
-# model-menu checks (F1-F7 pty: hybrid adoption / invalid die / out-of-range
-# retry / exact-match precedence / type-your-own + sentinel-never-adopted; F8
-# answers-file raw-value byte-identity; F9a env passthrough + F9b invalid-env
-# die - the 17d/17g regression guards).
+# BSD sed / stty / cp / readlink, no Mac required) + the 11 Phase 5a hybrid
+# model-menu checks (G1-G7 pty: hybrid adoption / invalid die / out-of-range
+# retry / exact-match precedence / type-your-own + sentinel-never-adopted; G8
+# answers-file raw-value byte-identity; G9a env passthrough + G9b invalid-env
+# die - the 17d/17g regression guards; G10 the raw __type_your_own__
+# typed at the menu routes to the type-your-own sub-prompt, never adopted).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -2528,257 +2529,289 @@ fi
 rm -rf "${TB6}" "${SB6}"
 
 # ---------------------------------------------------------------------------
-# Phase 5a hybrid model-menu adoption (F-series, pty + answers-file + NI):
-#   * F1 - typing a charset-valid unlisted model directly at the model menu is
+# Phase 5a hybrid model-menu adoption (G-series, pty + answers-file + NI):
+#   * G1 - typing a charset-valid unlisted model directly at the model menu is
 #          adopted (the bug repro: `claude-opus-4-8` no longer dies)
-#   * F2 - a second charset-valid unlisted model (my-custom-model-2) is adopted
-#   * F3 - a charset-invalid free string typed directly at the menu (`bad
+#   * G2 - a second charset-valid unlisted model (my-custom-model-2) is adopted
+#   * G3 - a charset-invalid free string typed directly at the menu (`bad
 #          model`) dies with the byte-identical invalid-HD_AI_MODEL message,
 #          no .env
-#   * F4 - an out-of-range model integer (99) is warned + retried and NEVER
+#   * G4 - an out-of-range model integer (99) is warned + retried and NEVER
 #          written (B5 regression guard)
-#   * F5 - an exact listed value (`gpt-4o`) typed is accepted as the item
+#   * G5 - an exact listed value (`gpt-4o`) typed is accepted as the item
 #          (exact-match precedence)
-#   * F6 - the literal "type your own" label still routes to the free-string
+#   * G6 - the literal "type your own" label still routes to the free-string
 #          sub-prompt; the __type_your_own__ sentinel is NEVER adopted (B7
 #          regression guard)
-#   * F7 - a listed value (`gpt-5.4`) typed is matched as the exact item, NOT
-#          double-processed by the hybrid (distinct from F5)
-#   * F8 - answers-file raw-value path (non-pty): an unlisted-but-valid model
+#   * G7 - a listed value (`gpt-5.4`) typed is matched as the exact item, NOT
+#          double-processed by the hybrid (distinct from G5)
+#   * G8 - answers-file raw-value path (non-pty): an unlisted-but-valid model
 #          produces the SAME .env as pre-change (raw-value path untouched -
 #          byte-identity guard)
-#   * F9 - HD_AI_MODEL env passthrough (F9a) + invalid-env die rc 1 (F9b) -
+#   * G9 - HD_AI_MODEL env passthrough (G9a) + invalid-env die rc 1 (G9b) -
 #          17d/17g regression guard
-#   F1-F7 are python3-gated (pty); they skip cleanly when python3 is absent.
+#   * G10 - typing the raw literal sentinel __type_your_own__ at the model
+#          menu routes to the type-your-own sub-prompt; the sentinel is NEVER
+#          adopted as a model (defensive resolver-branch lock, B7 guarantee)
+#   G1-G7 and G10 are python3-gated (pty); they skip cleanly when python3 is absent.
 if command -v python3 >/dev/null 2>&1; then
-  # F1. (pty) bug repro: `claude-opus-4-8` typed directly at the model menu is
+  # G1. (pty) bug repro: `claude-opus-4-8` typed directly at the model menu is
   #     adopted (hybrid) - no die, .env ends HD_AI_MODEL=claude-opus-4-8.
-  TF1="$(fresh_tree)"; SF1="$(mktemp -d)"
+  TG1="$(fresh_tree)"; SG1="$(mktemp -d)"
   set +e
   (
-    cd "${TF1}"
+    cd "${TG1}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" HD_STATE_DIR="${SF1}" TERM=dumb \
+      HOME="${HOME}" HD_STATE_DIR="${SG1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TF1}/scripts/setup.sh" "Compose project name" \
-        projf1 ansns ansuser openai claude-opus-4-8 sk-f1 sk-f1 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.f1.out 2>&1
-  RC_F1=$?
+        "${TG1}/scripts/setup.sh" "Compose project name" \
+        projg1 ansns ansuser openai claude-opus-4-8 sk-f1 sk-f1 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g1.out 2>&1
+  RC_G1=$?
   set -e
-  if [ "${RC_F1}" -eq 0 ] \
-    && grep -q '^HD_AI_MODEL=claude-opus-4-8$' "${TF1}/.env"; then
-    ok "F1: hybrid adoption - claude-opus-4-8 typed at the menu written directly (bug repro)"
+  if [ "${RC_G1}" -eq 0 ] \
+    && grep -q '^HD_AI_MODEL=claude-opus-4-8$' "${TG1}/.env"; then
+    ok "G1: hybrid adoption - claude-opus-4-8 typed at the menu written directly (bug repro)"
   else
-    bad "F1 rc=${RC_F1} (want hybrid adoption of claude-opus-4-8):"
-    sed 's/^/    | /' /tmp/setup-dryrun.f1.out >&2 || true
+    bad "G1 rc=${RC_G1} (want hybrid adoption of claude-opus-4-8):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g1.out >&2 || true
   fi
-  rm -rf "${TF1}" "${SF1}"
+  rm -rf "${TG1}" "${SG1}"
 
-  # F2. (pty) a second charset-valid unlisted model is adopted the same way.
-  TF2="$(fresh_tree)"; SF2="$(mktemp -d)"
+  # G2. (pty) a second charset-valid unlisted model is adopted the same way.
+  TG2="$(fresh_tree)"; SG2="$(mktemp -d)"
   set +e
   (
-    cd "${TF2}"
+    cd "${TG2}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" HD_STATE_DIR="${SF2}" TERM=dumb \
+      HOME="${HOME}" HD_STATE_DIR="${SG2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TF2}/scripts/setup.sh" "Compose project name" \
-        projf2 ansns ansuser openai my-custom-model-2 sk-f2 sk-f2 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.f2.out 2>&1
-  RC_F2=$?
+        "${TG2}/scripts/setup.sh" "Compose project name" \
+        projg2 ansns ansuser openai my-custom-model-2 sk-f2 sk-f2 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g2.out 2>&1
+  RC_G2=$?
   set -e
-  if [ "${RC_F2}" -eq 0 ] \
-    && grep -q '^HD_AI_MODEL=my-custom-model-2$' "${TF2}/.env"; then
-    ok "F2: hybrid adoption - my-custom-model-2 typed at the menu written directly"
+  if [ "${RC_G2}" -eq 0 ] \
+    && grep -q '^HD_AI_MODEL=my-custom-model-2$' "${TG2}/.env"; then
+    ok "G2: hybrid adoption - my-custom-model-2 typed at the menu written directly"
   else
-    bad "F2 rc=${RC_F2} (want hybrid adoption of my-custom-model-2):"
-    sed 's/^/    | /' /tmp/setup-dryrun.f2.out >&2 || true
+    bad "G2 rc=${RC_G2} (want hybrid adoption of my-custom-model-2):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g2.out >&2 || true
   fi
-  rm -rf "${TF2}" "${SF2}"
+  rm -rf "${TG2}" "${SG2}"
 
-  # F3. (pty) a charset-invalid free string typed directly at the menu dies
+  # G3. (pty) a charset-invalid free string typed directly at the menu dies
   #     with the byte-identical invalid-HD_AI_MODEL message; no .env.
-  TF3="$(fresh_tree)"; SF3="$(mktemp -d)"
+  TG3="$(fresh_tree)"; SG3="$(mktemp -d)"
   set +e
   (
-    cd "${TF3}"
+    cd "${TG3}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" HD_STATE_DIR="${SF3}" TERM=dumb \
+      HOME="${HOME}" HD_STATE_DIR="${SG3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TF3}/scripts/setup.sh" "Compose project name" \
-        projf3 ansns ansuser openai "bad model" 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.f3.out 2>&1
-  RC_F3=$?
+        "${TG3}/scripts/setup.sh" "Compose project name" \
+        projg3 ansns ansuser openai "bad model" 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g3.out 2>&1
+  RC_G3=$?
   set -e
-  if [ "${RC_F3}" -eq 1 ] \
-    && grep -q "invalid HD_AI_MODEL: 'bad model'" /tmp/setup-dryrun.f3.out \
-    && [ ! -f "${TF3}/.env" ]; then
-    ok "F3 (5a hybrid): charset-invalid 'bad model' typed at menu dies rc 1, no .env (byte-identical die)"
+  if [ "${RC_G3}" -eq 1 ] \
+    && grep -q "invalid HD_AI_MODEL: 'bad model'" /tmp/setup-dryrun.g3.out \
+    && [ ! -f "${TG3}/.env" ]; then
+    ok "G3 (5a hybrid): charset-invalid 'bad model' typed at menu dies rc 1, no .env (byte-identical die)"
   else
-    bad "F3 (5a hybrid) rc=${RC_F3} (want invalid-HD_AI_MODEL die, no .env):"
-    sed 's/^/    | /' /tmp/setup-dryrun.f3.out >&2 || true
+    bad "G3 (5a hybrid) rc=${RC_G3} (want invalid-HD_AI_MODEL die, no .env):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g3.out >&2 || true
   fi
-  rm -rf "${TF3}" "${SF3}"
+  rm -rf "${TG3}" "${SG3}"
 
-  # F4. (pty) out-of-range model integer 99 is warned + retried, then a valid
+  # G4. (pty) out-of-range model integer 99 is warned + retried, then a valid
   #     selection succeeds; '99' is NEVER written (B5 regression guard).
-  TF4="$(fresh_tree)"; SF4="$(mktemp -d)"
+  TG4="$(fresh_tree)"; SG4="$(mktemp -d)"
   set +e
   (
-    cd "${TF4}"
+    cd "${TG4}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" HD_STATE_DIR="${SF4}" TERM=dumb \
+      HOME="${HOME}" HD_STATE_DIR="${SG4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TF4}/scripts/setup.sh" "Compose project name" \
-        projf4 ansns ansuser openai 99 3 sk-f4 sk-f4 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.f4.out 2>&1
-  RC_F4=$?
+        "${TG4}/scripts/setup.sh" "Compose project name" \
+        projg4 ansns ansuser openai 99 3 sk-f4 sk-f4 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g4.out 2>&1
+  RC_G4=$?
   set -e
-  if [ "${RC_F4}" -eq 0 ] \
-    && grep -q "invalid selection '99': enter a number 1-7" /tmp/setup-dryrun.f4.out \
-    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TF4}/.env" \
-    && ! grep -q '^HD_AI_MODEL=99$' "${TF4}/.env"; then
-    ok "F4: model 99 out-of-range - warn + retry - gpt-4o; '99' NEVER written (B5 guard)"
+  if [ "${RC_G4}" -eq 0 ] \
+    && grep -q "invalid selection '99': enter a number 1-7" /tmp/setup-dryrun.g4.out \
+    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TG4}/.env" \
+    && ! grep -q '^HD_AI_MODEL=99$' "${TG4}/.env"; then
+    ok "G4: model 99 out-of-range - warn + retry - gpt-4o; '99' NEVER written (B5 guard)"
   else
-    bad "F4 rc=${RC_F4} (want 99 warned/retried, then gpt-4o, no 99 in .env):"
-    sed 's/^/    | /' /tmp/setup-dryrun.f4.out >&2 || true
+    bad "G4 rc=${RC_G4} (want 99 warned/retried, then gpt-4o, no 99 in .env):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g4.out >&2 || true
   fi
-  rm -rf "${TF4}" "${SF4}"
+  rm -rf "${TG4}" "${SG4}"
 
-  # F5. (pty) an exact listed value (gpt-4o) typed is accepted as the item
+  # G5. (pty) an exact listed value (gpt-4o) typed is accepted as the item
   #     (exact-match precedence in prompt_menu, before the hybrid resolver).
-  TF5="$(fresh_tree)"; SF5="$(mktemp -d)"
+  TG5="$(fresh_tree)"; SG5="$(mktemp -d)"
   set +e
   (
-    cd "${TF5}"
+    cd "${TG5}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" HD_STATE_DIR="${SF5}" TERM=dumb \
+      HOME="${HOME}" HD_STATE_DIR="${SG5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TF5}/scripts/setup.sh" "Compose project name" \
-        projf5 ansns ansuser openai gpt-4o sk-f5 sk-f5 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.f5.out 2>&1
-  RC_F5=$?
+        "${TG5}/scripts/setup.sh" "Compose project name" \
+        projg5 ansns ansuser openai gpt-4o sk-f5 sk-f5 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g5.out 2>&1
+  RC_G5=$?
   set -e
-  if [ "${RC_F5}" -eq 0 ] \
-    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TF5}/.env"; then
-    ok "F5: exact listed value gpt-4o typed - accepted as the menu item (exact-match precedence)"
+  if [ "${RC_G5}" -eq 0 ] \
+    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TG5}/.env"; then
+    ok "G5: exact listed value gpt-4o typed - accepted as the menu item (exact-match precedence)"
   else
-    bad "F5 rc=${RC_F5} (want gpt-4o adopted as listed item):"
-    sed 's/^/    | /' /tmp/setup-dryrun.f5.out >&2 || true
+    bad "G5 rc=${RC_G5} (want gpt-4o adopted as listed item):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g5.out >&2 || true
   fi
-  rm -rf "${TF5}" "${SF5}"
+  rm -rf "${TG5}" "${SG5}"
 
-  # F6. (pty) the literal "type your own" label still routes to the free-string
+  # G6. (pty) the literal "type your own" label still routes to the free-string
   #     sub-prompt; a valid free-string model is written and the
   #     __type_your_own__ sentinel is NEVER adopted (B7 regression guard).
-  TF6="$(fresh_tree)"; SF6="$(mktemp -d)"
+  TG6="$(fresh_tree)"; SG6="$(mktemp -d)"
   set +e
   (
-    cd "${TF6}"
+    cd "${TG6}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" HD_STATE_DIR="${SF6}" TERM=dumb \
+      HOME="${HOME}" HD_STATE_DIR="${SG6}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TF6}/scripts/setup.sh" "Compose project name" \
-        projf6 ansns ansuser openai "type your own" my-custom-f6 sk-f6 sk-f6 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.f6.out 2>&1
-  RC_F6=$?
+        "${TG6}/scripts/setup.sh" "Compose project name" \
+        projg6 ansns ansuser openai "type your own" my-custom-f6 sk-f6 sk-f6 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g6.out 2>&1
+  RC_G6=$?
   set -e
-  if [ "${RC_F6}" -eq 0 ] \
-    && grep -q '^HD_AI_MODEL=my-custom-f6$' "${TF6}/.env" \
-    && ! grep -q '^HD_AI_MODEL=__type_your_own__$' "${TF6}/.env"; then
-    ok "F6: 'type your own' routes to sub-prompt; my-custom-f6 written, sentinel never adopted (B7 guard)"
+  if [ "${RC_G6}" -eq 0 ] \
+    && grep -q '^HD_AI_MODEL=my-custom-f6$' "${TG6}/.env" \
+    && ! grep -q '^HD_AI_MODEL=__type_your_own__$' "${TG6}/.env"; then
+    ok "G6: 'type your own' routes to sub-prompt; my-custom-f6 written, sentinel never adopted (B7 guard)"
   else
-    bad "F6 rc=${RC_F6} (want type-your-own route, sentinel never written):"
-    sed 's/^/    | /' /tmp/setup-dryrun.f6.out >&2 || true
+    bad "G6 rc=${RC_G6} (want type-your-own route, sentinel never written):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g6.out >&2 || true
   fi
-  rm -rf "${TF6}" "${SF6}"
+  rm -rf "${TG6}" "${SG6}"
 
-  # F7. (pty) a listed value (gpt-5.4) typed is matched as the exact item, NOT
-  #     double-processed by the hybrid (distinct from F5).
-  TF7="$(fresh_tree)"; SF7="$(mktemp -d)"
+  # G7. (pty) a listed value (gpt-5.4) typed is matched as the exact item, NOT
+  #     double-processed by the hybrid (distinct from G5).
+  TG7="$(fresh_tree)"; SG7="$(mktemp -d)"
   set +e
   (
-    cd "${TF7}"
+    cd "${TG7}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
-      HOME="${HOME}" HD_STATE_DIR="${SF7}" TERM=dumb \
+      HOME="${HOME}" HD_STATE_DIR="${SG7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
-        "${TF7}/scripts/setup.sh" "Compose project name" \
-        projf7 ansns ansuser openai gpt-5.4 sk-f7 sk-f7 9300 9390 -- --dry-run
-  ) >/tmp/setup-dryrun.f7.out 2>&1
-  RC_F7=$?
+        "${TG7}/scripts/setup.sh" "Compose project name" \
+        projg7 ansns ansuser openai gpt-5.4 sk-f7 sk-f7 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g7.out 2>&1
+  RC_G7=$?
   set -e
-  if [ "${RC_F7}" -eq 0 ] \
-    && grep -q '^HD_AI_MODEL=gpt-5.4$' "${TF7}/.env"; then
-    ok "F7: listed value gpt-5.4 typed - matched as exact item, not double-processed by hybrid"
+  if [ "${RC_G7}" -eq 0 ] \
+    && grep -q '^HD_AI_MODEL=gpt-5.4$' "${TG7}/.env"; then
+    ok "G7: listed value gpt-5.4 typed - matched as exact item, not double-processed by hybrid"
   else
-    bad "F7 rc=${RC_F7} (want gpt-5.4 adopted as listed item):"
-    sed 's/^/    | /' /tmp/setup-dryrun.f7.out >&2 || true
+    bad "G7 rc=${RC_G7} (want gpt-5.4 adopted as listed item):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g7.out >&2 || true
   fi
-  rm -rf "${TF7}" "${SF7}"
+  rm -rf "${TG7}" "${SG7}"
+
+  # G10. (pty) the raw literal sentinel __type_your_own__ typed at the model
+  #      menu routes to the type-your-own sub-prompt and is NEVER adopted as a
+  #      model (the defensive resolver-branch lock: the sentinel is
+  #      charset-valid and exact-matches the marker item, so without the guard
+  #      it would be written as HD_AI_MODEL=__type_your_own__ - B7 guarantee
+  #      holds even when typed raw).
+  TG10="$(fresh_tree)"; SG10="$(mktemp -d)"
+  set +e
+  (
+    cd "${TG10}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SG10}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TG10}/scripts/setup.sh" "Compose project name" \
+        projg10 ansns ansuser openai __type_your_own__ my-custom-g10 sk-g10 sk-g10 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.g10.out 2>&1
+  RC_G10=$?
+  set -e
+  if [ "${RC_G10}" -eq 0 ] \
+    && grep -q '^HD_AI_MODEL=my-custom-g10$' "${TG10}/.env" \
+    && ! grep -q '^HD_AI_MODEL=__type_your_own__$' "${TG10}/.env"; then
+    ok "G10: raw sentinel __type_your_own__ typed at menu routes to sub-prompt; my-custom-g10 written, sentinel never adopted"
+  else
+    bad "G10 rc=${RC_G10} (want sentinel routed to type-your-own, never adopted):"
+    sed 's/^/    | /' /tmp/setup-dryrun.g10.out >&2 || true
+  fi
+  rm -rf "${TG10}" "${SG10}"
 else
-  ok "Phase 5a hybrid model-menu hermetics (F1-F7) SKIPPED (python3 unavailable)"
+  ok "Phase 5a hybrid model-menu hermetics (G1-G7, G10) SKIPPED (python3 unavailable)"
 fi
 
-# F8. (answers-file, non-pty) an unlisted-but-valid model produces the SAME
+# G8. (answers-file, non-pty) an unlisted-but-valid model produces the SAME
 #     .env as pre-change: the raw-value answers-file path is untouched
 #     (byte-identity guard) - no menu is rendered.
-TF8="$(fresh_tree)"; SF8="$(mktemp -d)"
-printf 'projf8\nansns\nansuser\nopenai\nmy-custom-model-f8\nsk-f8\n9300\n9390\n' > /tmp/setup-dryrun.ansF8
+TG8="$(fresh_tree)"; SG8="$(mktemp -d)"
+printf 'projg8\nansns\nansuser\nopenai\nmy-custom-model-f8\nsk-f8\n9300\n9390\n' > /tmp/setup-dryrun.ansG8
 set +e
 (
-  cd "${TF8}"
+  cd "${TG8}"
   env -i HOME="${HOME}" PATH="${PATH}" \
-    HONEY_STARTER_INSTALL_DIR="${TF8}" \
-    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansF8 HD_STATE_DIR="${SF8}" \
+    HONEY_STARTER_INSTALL_DIR="${TG8}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansG8 HD_STATE_DIR="${SG8}" \
     TERM=xterm-256color bash scripts/setup.sh --dry-run
-) >/tmp/setup-dryrun.f8.out 2>&1
-RC_F8=$?
+) >/tmp/setup-dryrun.g8.out 2>&1
+RC_G8=$?
 set -e
-if [ "${RC_F8}" -eq 0 ] \
-  && grep -q '^HD_AI_MODEL=my-custom-model-f8$' "${TF8}/.env" \
-  && ! grep -q 'select a number' /tmp/setup-dryrun.f8.out; then
-  ok "F8: answers-file raw-value path - unlisted-but-valid model byte-identical (no menu)"
+if [ "${RC_G8}" -eq 0 ] \
+  && grep -q '^HD_AI_MODEL=my-custom-model-f8$' "${TG8}/.env" \
+  && ! grep -q 'select a number' /tmp/setup-dryrun.g8.out; then
+  ok "G8: answers-file raw-value path - unlisted-but-valid model byte-identical (no menu)"
 else
-  bad "F8 rc=${RC_F8} (want raw-value passthrough of my-custom-model-f8):"
-  sed 's/^/    | /' /tmp/setup-dryrun.f8.out >&2 || true
+  bad "G8 rc=${RC_G8} (want raw-value passthrough of my-custom-model-f8):"
+  sed 's/^/    | /' /tmp/setup-dryrun.g8.out >&2 || true
 fi
-rm -rf "${TF8}" "${SF8}"
+rm -rf "${TG8}" "${SG8}"
 
-# F9. (NI) HD_AI_MODEL env passthrough (F9a, 17d guard) + invalid-env die
-#     (F9b, 17g guard) - both still rc-0/rc-1 as pre-change.
-TF9A="$(fresh_tree)"; SF9A="$(mktemp -d)"
-printf 'projf9a\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ansF9A
+# G9. (NI) HD_AI_MODEL env passthrough (G9a, 17d guard) + invalid-env die
+#     (G9b, 17g guard) - both still rc-0/rc-1 as pre-change.
+TG9A="$(fresh_tree)"; SG9A="$(mktemp -d)"
+printf 'projg9a\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ansG9A
 set +e
 (
-  cd "${TF9A}"
+  cd "${TG9A}"
   env -i HOME="${HOME}" PATH="${PATH}" HD_AI_MODEL=custom-override \
-    HONEY_STARTER_INSTALL_DIR="${TF9A}" \
-    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansF9A HD_STATE_DIR="${SF9A}" \
+    HONEY_STARTER_INSTALL_DIR="${TG9A}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansG9A HD_STATE_DIR="${SG9A}" \
     bash scripts/setup.sh --dry-run
-) >/tmp/setup-dryrun.f9a.out 2>&1
-RC_F9A=$?
+) >/tmp/setup-dryrun.g9a.out 2>&1
+RC_G9A=$?
 set -e
-if [ "${RC_F9A}" -eq 0 ] && grep -q '^HD_AI_MODEL=custom-override$' "${TF9A}/.env"; then
-  ok "F9a: HD_AI_MODEL env passthrough still rc 0 (17d regression guard)"
+if [ "${RC_G9A}" -eq 0 ] && grep -q '^HD_AI_MODEL=custom-override$' "${TG9A}/.env"; then
+  ok "G9a: HD_AI_MODEL env passthrough still rc 0 (17d regression guard)"
 else
-  bad "F9a rc=${RC_F9A} (want env passthrough):"; tail -5 /tmp/setup-dryrun.f9a.out >&2 || true
+  bad "G9a rc=${RC_G9A} (want env passthrough):"; tail -5 /tmp/setup-dryrun.g9a.out >&2 || true
 fi
-rm -rf "${TF9A}" "${SF9A}"
+rm -rf "${TG9A}" "${SG9A}"
 
-TF9B="$(fresh_tree)"; SF9B="$(mktemp -d)"
-assert_rc "F9b: invalid HD_AI_MODEL env (NI) still dies rc 1 (17g regression guard)" 1 bash -c "
-  cd '${TF9B}' && HONEY_STARTER_INSTALL_DIR='${TF9B}' HONEY_STARTER_NONINTERACTIVE=1 \
+TG9B="$(fresh_tree)"; SG9B="$(mktemp -d)"
+assert_rc "G9b: invalid HD_AI_MODEL env (NI) still dies rc 1 (17g regression guard)" 1 bash -c "
+  cd '${TG9B}' && HONEY_STARTER_INSTALL_DIR='${TG9B}' HONEY_STARTER_NONINTERACTIVE=1 \
   HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
   HD_AI_MODEL='bad model' HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
-  HD_STATE_DIR='${SF9B}' bash scripts/setup.sh --dry-run"
-rm -rf "${TF9B}" "${SF9B}"
+  HD_STATE_DIR='${SG9B}' bash scripts/setup.sh --dry-run"
+rm -rf "${TG9B}" "${SG9B}"
 
 
 # ============================================================================
