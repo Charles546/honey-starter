@@ -56,6 +56,16 @@ jobs:
           fi
           echo "bash $v OK"
 
+      - name: Install Ubuntu prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          # make validate includes check-bcrypt, which HARD-requires htpasswd
+          # (from apache2-utils, which is NOT preinstalled on ubuntu-latest).
+          # (The shellcheck package is already present; pinning it explicitly
+          # is harmless insurance.)
+          sudo apt-get update
+          sudo apt-get install -y shellcheck apache2-utils
+
       - name: Lint (shellcheck)
         run: make lint
 
