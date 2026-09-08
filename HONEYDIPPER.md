@@ -36,7 +36,8 @@ is the exact questionnaire contract.
 - `msg_ok` = green ✅ + one space + text + reset (no bold).
 
 ## Menus (TTY-only)
-- Number = index; type the exact value; Enter = default; the model menu's trailing *type your own* is a sentinel; an out-of-range integer is warned + re-asked, never adopted.
+- Number = index; type the exact value; Enter = default; an out-of-range integer is warned + re-asked, never adopted.
+- **Model menu (hybrid adoption):** a charset-valid model string typed directly at the menu is adopted as-is (no re-prompt) — e.g. `claude-opus-4-8` or `my-custom-model-2`. The trailing *type your own* option (or its literal label) still routes to the free-string sub-prompt; its `__type_your_own__` sentinel is never adopted as a model, even if typed raw. Charset-invalid input (whitespace/control or otherwise outside `[A-Za-z0-9._:/@+-]`) dies with `invalid HD_AI_MODEL: '<value>' (no whitespace/control; charset [A-Za-z0-9._:/@+-]). Fix the model and re-run.` and no `.env` is written. The answers-file / non-interactive paths are unchanged (raw-value passthrough).
 
 ## Masked input (API keys)
 - Raw-mode loop on `/dev/tty`: `stty -icanon -isig -echo`; per-char `dd bs=1` (not `read -N1` — re-enables ISIG); one `*` per char to stderr; Backspace pops; `^C` → exit 130 (scoped EXIT trap restores termios).

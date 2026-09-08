@@ -1914,15 +1914,24 @@ prompt_menu() {
   done
 }
 
-# resolve_model_menu_unlisted RAW: the model menu's RESOLVE_FN. The approved
-# mapping: a free-text model typed at the interactive menu is ONLY accepted via
-# the explicit "type your own" option — a raw model string at the menu (exact
-# listed-value matches are already handled inside prompt_menu) is unparseable
-# input and keeps the existing invalid-HD_AI_MODEL die, byte for byte. The
-# literal "type your own" label is also accepted as a synonym for the option.
+# resolve_model_menu_unlisted RAW: the model menu's RESOLVE_FN. Phase 5a
+# hybrid mapping: a charset-valid model string typed directly at the menu is
+# adopted as-is (valid_model passthrough, no re-prompt) — so e.g.
+# `claude-opus-4-8` typed at the prompt is accepted; the explicit "type your
+# own" option (and its literal label) still routes to the free-string
+# sub-prompt for anything the user prefers to type there. The
+# __type_your_own__ sentinel is charset-valid but is NEVER adopted as a model:
+# it routes to the type-your-own handling (B7 guarantee holds even when typed
+# raw). Any other input (whitespace/control or otherwise charset-invalid) keeps
+# the existing invalid-HD_AI_MODEL die, byte for byte. Exact listed-value
+# matches are already handled inside prompt_menu before this resolver runs.
 resolve_model_menu_unlisted() {
-  if [ "$1" = "${MENU_TYPE_OWN_LABEL}" ]; then
+  if [ "$1" = "${MENU_TYPE_OWN_LABEL}" ] || [ "$1" = "${MENU_TYPE_OWN}" ]; then
     REPLY="${MENU_TYPE_OWN}"
+    return 0
+  fi
+  if valid_model "$1"; then
+    REPLY="$1"
     return 0
   fi
   die "invalid HD_AI_MODEL: '$1' (no whitespace/control; charset [A-Za-z0-9._:/@+-]). Fix the model and re-run."
@@ -2391,14 +2400,15 @@ run_questionnaire() {
         INVALID_SEEN=0
         INVALID_VALUE=""
         if [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
-          # TTY-only curated select-from-list menu (Phase B): an in-range
-          # integer = menu index; an exact listed-value match = that value; an
-          # integer OUT of menu range (e.g. 99) is warned + retried and NEVER
-          # written as a model (valid_model would otherwise accept '99' — the
-          # exact trap the plan avoids); Enter accepts the pin default. A
-          # free-string model is ONLY accepted via the explicit "type your own"
-          # option; any other free text keeps the standard invalid-HD_AI_MODEL
-          # die (byte-identical message).
+          # TTY-only curated select-from-list menu (Phase B + Phase 5a hybrid):
+          # an in-range integer = menu index; an exact listed-value match =
+          # that value; an integer OUT of menu range (e.g. 99) is warned +
+          # retried and NEVER written as a model (valid_model would otherwise
+          # accept '99' — the exact trap the plan avoids); Enter accepts the
+          # pin default. A charset-valid model string typed at the menu is
+          # adopted directly (hybrid); "type your own" / the sentinel route to
+          # the explicit free-string sub-prompt; any other free text keeps the
+          # standard invalid-HD_AI_MODEL die (byte-identical message).
           if prompt_menu HD_AI_MODEL "AI model (HD_AI_MODEL)" \
             "${model_default}" resolve_model_menu_unlisted \
             "${AI_MODEL_MENU[@]}" "${MENU_TYPE_OWN}"; then
