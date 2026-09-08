@@ -2838,7 +2838,7 @@ if command -v python3 >/dev/null 2>&1; then
   RC_D3B=$?
   set -e
   if [ "${RC_D3B}" -eq 0 ] \
-    && tail -n +2 /tmp/setup-dryrun.d3b.out | grep -q '^  \[ok\] probe\r\?$' \
+    && tail -n +2 /tmp/setup-dryrun.d3b.out | grep -q '^  \[ok\] probe'$'\r''\?$' \
     && ! grep -q $'\x1b' /tmp/setup-dryrun.d3b.out; then
     ok "D3b: pty + TERM=dumb -> PLAIN (exact line, no ESC)"
   else
