@@ -107,7 +107,7 @@ Replay a whole questionnaire from a file — `HONEY_STARTER_ANSWERS_FILE` (one a
 
 - **Rich output** — ✅ ❌ ⚠️ ℹ 🚀 glyphs + color when fd 1 is a real terminal with a color-capable `TERM` (e.g. `xterm-256color`).
 - **Plain by default on pipes** — redirected logs, CI, and `TERM=dumb` always render plain (a redirected script never leaks escape bytes). Set `NO_COLOR` or `HONEY_STARTER_NO_COLOR` to any value — even empty — to force plain.
-- **Menus & secrets** — provider/model questions pick by number, exact value, or Enter; API keys are masked with `*` and confirmed by a re-type. Mechanics: [HONEYDIPPER.md](./HONEYDIPPER.md).
+- **Menus & secrets** — provider/model questions pick by number, exact value, or Enter; API keys are masked with `*` and confirmed by a re-type. At the **model menu** (interactive/TTY only) a hint reminds you that you can **type any model directly** instead of choosing a number — a valid model string is adopted as-is (no re-prompt), so an unlisted model like `claude-opus-4-8` or `my-custom-model-2` works right from the menu. The hint is additive and never appears on piped/automated runs. Mechanics: [HONEYDIPPER.md](./HONEYDIPPER.md).
 
 ## 🧪 Requirements
 
