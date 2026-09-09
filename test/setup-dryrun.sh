@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 157 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 170 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -159,13 +159,22 @@
 # typed at the menu routes to the type-your-own sub-prompt, never adopted)
 # + the 2 Phase 5b model-menu-hint checks (H1 pty: the additive TTY-only hint
 # line renders on a real terminal; H2 answers-file: the hint is NEVER emitted
-# on the non-interactive path — the dryrun byte-identical guard).
+# on the non-interactive path — the dryrun byte-identical guard)
+# + the 13 Phase 6a corporate root CA checks (I1-I3/I6a pty: the TTY-only
+# prompt with the detected SSL_CERT_FILE path, y/n/Enter semantics, and the
+# interactive unreadable-file warn+skip; I4/I6b opt-in NI: HONEY_STARTER_USE_CA
+# =1 + valid file enables both keys, unreadable file warns+skips; I5/I8/I10b
+# NI byte-identity: no opt-in, no SSL_CERT_FILE, or not-enabled -> NEITHER
+# key and zero delta; I9a round-trip disable + I9b stable re-enable; I10a
+# enabled adds exactly two HD_CA lines; I11 a path with spaces is stored as one
+# single-quoted string).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
 # / typed-invalid-model tests (17k/19/20), the Phase B menu hermetics (B1-B5,
-# B7), the Phase C masked-key hermetics (C1-C6) and the Phase D lifecycle
-# rich-output hermetics (D3/D5/D6); when python3 is absent
+# B7), the Phase C masked-key hermetics (C1-C6), the Phase D lifecycle
+# rich-output hermetics (D3/D5/D6) and the Phase 6a corporate CA pty hermetics
+# (I1-I3, I6a); when python3 is absent
 # those checks are skipped cleanly. setup.sh itself never needs python3.
 set -euo pipefail
 
@@ -1332,7 +1341,8 @@ if command -v python3 >/dev/null 2>&1; then
   CWD19A="$(mktemp -d)"
   set +e
   ( cd "${CWD19A}" && env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
-      -u HONEY_STARTER_INSTALL_DIR HOME="${PH19A}" TERM=dumb HD_STATE_DIR="${S19A}" \
+      -u HONEY_STARTER_INSTALL_DIR -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
+      HOME="${PH19A}" TERM=dumb HD_STATE_DIR="${S19A}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
         "" projname19a ansns ansuser openai gpt-4o sk-key-pty sk-key-pty 9300 9390 -- --dry-run \
@@ -1361,7 +1371,8 @@ if command -v python3 >/dev/null 2>&1; then
   CWD19B="$(mktemp -d)"
   set +e
   ( cd "${CWD19B}" && env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
-      -u HONEY_STARTER_INSTALL_DIR HOME="${TH19B}" TERM=dumb HD_STATE_DIR="${S19B}" \
+      -u HONEY_STARTER_INSTALL_DIR -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
+      HOME="${TH19B}" TERM=dumb HD_STATE_DIR="${S19B}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
         "~" projname19b ansns ansuser openai gpt-4o sk-key-pty2 sk-key-pty2 9301 9391 -- --dry-run \
@@ -1986,6 +1997,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TP12}"
     env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
       -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
       DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p12.state \
       DOCKER_STUB_LOG=/tmp/setup-dryrun.p12.log \
@@ -2025,6 +2037,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TP13}"
     env -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
       -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
       DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p13.state \
       DOCKER_STUB_LOG=/tmp/setup-dryrun.p13.log \
@@ -2220,6 +2233,7 @@ if command -v python3 >/dev/null 2>&1; then
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR \
       -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
       -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SA2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA2}/scripts/setup.sh" "Compose project name" \
@@ -2251,6 +2265,7 @@ if command -v python3 >/dev/null 2>&1; then
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR \
       -u HONEY_STARTER_NONINTERACTIVE -u HONEY_STARTER_ANSWERS_FILE \
       -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SA3}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA3}/scripts/setup.sh" "Compose project name" \
@@ -2283,6 +2298,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TA4A}"
     env -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       NO_COLOR=1 HOME="${HOME}" HD_STATE_DIR="${SA4A}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4A}/scripts/setup.sh" "Compose project name" \
@@ -2304,6 +2320,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TA4B}"
     env -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       NO_COLOR= HOME="${HOME}" HD_STATE_DIR="${SA4B}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4B}/scripts/setup.sh" "Compose project name" \
@@ -2349,6 +2366,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TB1}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SB1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB1}/scripts/setup.sh" "Compose project name" \
@@ -2375,6 +2393,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TB2}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SB2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB2}/scripts/setup.sh" "Compose project name" \
@@ -2399,6 +2418,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TB3}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SB3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB3}/scripts/setup.sh" "Compose project name" \
@@ -2424,6 +2444,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TB4}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SB4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB4}/scripts/setup.sh" "Compose project name" \
@@ -2450,6 +2471,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TB5}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SB5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB5}/scripts/setup.sh" "Compose project name" \
@@ -2478,6 +2500,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TB7}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SB7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB7}/scripts/setup.sh" "Compose project name" \
@@ -2566,6 +2589,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG1}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG1}/scripts/setup.sh" "Compose project name" \
@@ -2589,6 +2613,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG2}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG2}/scripts/setup.sh" "Compose project name" \
@@ -2613,6 +2638,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG3}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG3}/scripts/setup.sh" "Compose project name" \
@@ -2638,6 +2664,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG4}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG4}/scripts/setup.sh" "Compose project name" \
@@ -2664,6 +2691,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG5}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG5}/scripts/setup.sh" "Compose project name" \
@@ -2689,6 +2717,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG6}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG6}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG6}/scripts/setup.sh" "Compose project name" \
@@ -2714,6 +2743,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG7}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG7}/scripts/setup.sh" "Compose project name" \
@@ -2742,6 +2772,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TG10}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SG10}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG10}/scripts/setup.sh" "Compose project name" \
@@ -2832,6 +2863,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TH1}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SH1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TH1}/scripts/setup.sh" "Compose project name" \
@@ -2876,6 +2908,417 @@ else
   sed 's/^/    | /' /tmp/setup-dryrun.h2.out >&2 || true
 fi
 rm -rf "${TH2}" "${SH2}"
+rm -rf "${TH2}" "${SH2}"
+
+
+# ============================================================================
+# Phase 6a corporate root CA (I-series): host SSL_CERT_FILE detection, a
+# TTY-only yes/no prompt, validation, and the two managed .env keys
+# HD_CA_CERT_FILE + HD_CA_BUNDLE (written TOGETHER only when enabled; absent
+# otherwise). SSL_CERT_FILE is a SINGLE host path to ONE bundled PEM CA file
+# (multiple CAs are already concatenated inside); NO list parsing, NO
+# concatenation. Validation = readable + contains a 'BEGIN CERTIFICATE';
+# unreadable/invalid -> warn + skip (never enable, never die) on BOTH the
+# interactive and the HONEY_STARTER_USE_CA=1 opt-in path. The prompt is
+# TTY-only (never consumes an answers-file line, never fires in NI/answers
+# mode); default = YES. NI default = OFF unless HONEY_STARTER_USE_CA=1 + a
+# valid file. When not enabled -> NEITHER key, ZERO new .env lines, ZERO new
+# output (dryrun byte-identity). I1-I3/I6a are python3-gated (pty); I4-I5,
+# I6b, I8-I11 are hermetic NI/answers runs (env -i).
+# ---------------------------------------------------------------------------
+# Shared CA fixtures (cleaned up by the suite trap under /tmp/setup-dryrun.*).
+cat > /tmp/setup-dryrun.ca.pem <<'CAEOF'
+-----BEGIN CERTIFICATE-----
+MIIBhTCCASugAwIBAgIQS0v3r7v3r7v3r7v3r7v3r7v3r7v3r7v3r7v3r7AwDQYJ
+KoZIhvcNAQELBQAwFDESMBAGA1UEAwwJdGVzdC1jYS1hMB4XDTI0MDEwMTAwMDAw
+MFoXDTI5MDEwMTAwMDAwMFowFDESMBAGA1UEAwwJdGVzdC1jYS1hMFwwDQYJKoZI
+hvcNAQELBQADSwAwSAJBAKc0gKQKQKQKQKQKQKQKQKQKQKQKQKQKQKQKQKQKQKQ
+AgMBAAEwDQYJKoZIhvcNAQELBQADQQAQAQBAEBAQEBAQEBAQEBAQEBAQEBAQEB
+AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+-----END CERTIFICATE-----
+CAEOF
+I_CA_FILE="/tmp/setup-dryrun.ca.pem"
+I_CA_BAD="/tmp/setup-dryrun.ca.missing.pem"
+rm -f "${I_CA_BAD}"
+
+# I1. (pty) SSL_CERT_FILE=<valid> + interactive -> the TTY prompt is shown with
+#     the path; answering y -> .env gets BOTH HD_CA_CERT_FILE=<path> and
+#     HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt (written together).
+if command -v python3 >/dev/null 2>&1; then
+  TI1="$(fresh_tree)"; SI1="$(mktemp -d)"
+  set +e
+  (
+    cd "${TI1}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
+      SSL_CERT_FILE="${I_CA_FILE}" \
+      HOME="${HOME}" HD_STATE_DIR="${SI1}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TI1}/scripts/setup.sh" "Compose project name" \
+        proji1 ansns ansuser openai gpt-4o sk-i1 sk-i1 9300 9390 y -- --dry-run
+  ) >/tmp/setup-dryrun.i1.out 2>&1
+  RC_I1=$?
+  set -e
+  if [ "${RC_I1}" -eq 0 ] \
+    && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI1}/.env" \
+    && grep -q '^HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt$' "${TI1}/.env" \
+    && grep -q "Detected SSL_CERT_FILE=${I_CA_FILE}" /tmp/setup-dryrun.i1.out; then
+    ok "I1: SSL_CERT_FILE interactive prompt shown with path; y -> both HD_CA keys written"
+  else
+    bad "I1 rc=${RC_I1} (want prompt + y -> both keys):"
+    sed 's/^/    | /' /tmp/setup-dryrun.i1.out >&2 || true
+  fi
+  rm -rf "${TI1}" "${SI1}"
+
+  # I2. (pty) answering n -> neither key; the run still succeeds (no enable).
+  TI2="$(fresh_tree)"; SI2="$(mktemp -d)"
+  set +e
+  (
+    cd "${TI2}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
+      SSL_CERT_FILE="${I_CA_FILE}" \
+      HOME="${HOME}" HD_STATE_DIR="${SI2}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TI2}/scripts/setup.sh" "Compose project name" \
+        proji2 ansns ansuser openai gpt-4o sk-i2 sk-i2 9300 9390 n -- --dry-run
+  ) >/tmp/setup-dryrun.i2.out 2>&1
+  RC_I2=$?
+  set -e
+  if [ "${RC_I2}" -eq 0 ] \
+    && ! grep -q '^HD_CA_CERT_FILE=' "${TI2}/.env" \
+    && ! grep -q '^HD_CA_BUNDLE=' "${TI2}/.env"; then
+    ok "I2: SSL_CERT_FILE prompt answered n -> neither HD_CA key (no enable)"
+  else
+    bad "I2 rc=${RC_I2} (want n -> no HD_CA keys):"
+    sed 's/^/    | /' /tmp/setup-dryrun.i2.out >&2 || true
+  fi
+  rm -rf "${TI2}" "${SI2}"
+
+  # I3. (pty) Enter (blank) at the prompt -> default-yes -> enabled (both keys).
+  TI3="$(fresh_tree)"; SI3="$(mktemp -d)"
+  set +e
+  (
+    cd "${TI3}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
+      SSL_CERT_FILE="${I_CA_FILE}" \
+      HOME="${HOME}" HD_STATE_DIR="${SI3}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TI3}/scripts/setup.sh" "Compose project name" \
+        proji3 ansns ansuser openai gpt-4o sk-i3 sk-i3 9300 9390 "" -- --dry-run
+  ) >/tmp/setup-dryrun.i3.out 2>&1
+  RC_I3=$?
+  set -e
+  if [ "${RC_I3}" -eq 0 ] \
+    && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI3}/.env" \
+    && grep -q '^HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt$' "${TI3}/.env"; then
+    ok "I3: SSL_CERT_FILE prompt Enter (default-yes) -> enabled (both HD_CA keys)"
+  else
+    bad "I3 rc=${RC_I3} (want default-yes on Enter -> both keys):"
+    sed 's/^/    | /' /tmp/setup-dryrun.i3.out >&2 || true
+  fi
+  rm -rf "${TI3}" "${SI3}"
+
+  # I6a. (pty) an unreadable/missing SSL_CERT_FILE -> warn + skip (never enable,
+  #      never die): no HD_CA keys, run succeeds rc 0, warn message present, and
+  #      NO TTY prompt fires (validation precedes the prompt).
+  TI6A="$(fresh_tree)"; SI6A="$(mktemp -d)"
+  set +e
+  (
+    cd "${TI6A}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
+      SSL_CERT_FILE="${I_CA_BAD}" \
+      HOME="${HOME}" HD_STATE_DIR="${SI6A}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TI6A}/scripts/setup.sh" "Compose project name" \
+        proji6a ansns ansuser openai gpt-4o sk-i6a sk-i6a 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.i6a.out 2>&1
+  RC_I6A=$?
+  set -e
+  if [ "${RC_I6A}" -eq 0 ] \
+    && ! grep -q '^HD_CA_CERT_FILE=' "${TI6A}/.env" \
+    && ! grep -q '^HD_CA_BUNDLE=' "${TI6A}/.env" \
+    && ! grep -q "Detected SSL_CERT_FILE=" /tmp/setup-dryrun.i6a.out \
+    && grep -q "skipping corporate root CA support" /tmp/setup-dryrun.i6a.out; then
+    ok "I6a: unreadable SSL_CERT_FILE (interactive) -> warn + skip, no keys, no prompt"
+  else
+    bad "I6a rc=${RC_I6A} (want warn+skip, no keys, no prompt):"
+    sed 's/^/    | /' /tmp/setup-dryrun.i6a.out >&2 || true
+  fi
+  rm -rf "${TI6A}" "${SI6A}"
+else
+  ok "Phase 6a corporate CA interactive hermetics (I1-I3, I6a) SKIPPED (python3 unavailable)"
+fi
+
+# I4. (NI opt-in) SSL_CERT_FILE set + HONEY_STARTER_USE_CA=1 -> enabled: BOTH
+#     HD_CA keys written (prompt never fires on the answers-file path).
+TI4="$(fresh_tree)"; SI4="$(mktemp -d)"
+printf 'proji4\nansns\nansuser\nopenai\ngpt-4o\nsk-i4\n9300\n9390\n' > /tmp/setup-dryrun.ansI4
+set +e
+(
+  cd "${TI4}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI4}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI4 HD_STATE_DIR="${SI4}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i4.out 2>&1
+RC_I4=$?
+set -e
+if [ "${RC_I4}" -eq 0 ] \
+  && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI4}/.env" \
+  && grep -q '^HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt$' "${TI4}/.env" \
+  && ! grep -q "Detected SSL_CERT_FILE=" /tmp/setup-dryrun.i4.out; then
+  ok "I4: NI + HONEY_STARTER_USE_CA=1 + valid SSL_CERT_FILE -> both HD_CA keys (opt-in, no prompt)"
+else
+  bad "I4 rc=${RC_I4} (want opt-in enable, both keys, no prompt):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i4.out >&2 || true
+fi
+rm -rf "${TI4}" "${SI4}"
+
+# I5. (NI) SSL_CERT_FILE set + NO opt-in -> NEITHER key; .env byte-identical to
+#     a run without SSL_CERT_FILE (zero delta) - the dryrun byte-identity guard.
+TI5A="$(fresh_tree)"; SI5A="$(mktemp -d)"
+printf 'proji5\nansns\nansuser\nopenai\ngpt-4o\nsk-i5\n9300\n9390\n' > /tmp/setup-dryrun.ansI5
+set +e
+(
+  cd "${TI5A}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" \
+    HONEY_STARTER_INSTALL_DIR="${TI5A}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI5 HD_STATE_DIR="${SI5A}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i5a.out 2>&1
+RC_I5A=$?
+set -e
+cp "${TI5A}/.env" /tmp/setup-dryrun.i5.env
+TI5B="$(fresh_tree)"; SI5B="$(mktemp -d)"
+set +e
+(
+  cd "${TI5B}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${TI5B}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI5 HD_STATE_DIR="${SI5B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i5b.out 2>&1
+RC_I5B=$?
+set -e
+if [ "${RC_I5A}" -eq 0 ] && [ "${RC_I5B}" -eq 0 ] \
+  && ! grep -q '^HD_CA_CERT_FILE=' "${TI5A}/.env" \
+  && ! grep -q '^HD_CA_BUNDLE=' "${TI5A}/.env" \
+  && diff -q /tmp/setup-dryrun.i5.env "${TI5B}/.env" >/dev/null 2>&1; then
+  ok "I5: SSL_CERT_FILE set + no opt-in (NI) -> neither HD_CA key; .env byte-identical (zero delta)"
+else
+  bad "I5 rcA=${RC_I5A} rcB=${RC_I5B} (want no keys + byte-identical .env):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i5a.out >&2 || true
+fi
+rm -rf "${TI5A}" "${SI5A}" "${TI5B}" "${SI5B}"
+
+# I6b. (NI opt-in) SSL_CERT_FILE unreadable/missing + HONEY_STARTER_USE_CA=1 ->
+#      warn + skip (no enable, no die): no keys.
+TI6B="$(fresh_tree)"; SI6B="$(mktemp -d)"
+printf 'proji6b\nansns\nansuser\nopenai\ngpt-4o\nsk-i6b\n9300\n9390\n' > /tmp/setup-dryrun.ansI6B
+set +e
+(
+  cd "${TI6B}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_BAD}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI6B}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI6B HD_STATE_DIR="${SI6B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i6b.out 2>&1
+RC_I6B=$?
+set -e
+if [ "${RC_I6B}" -eq 0 ] \
+  && ! grep -q '^HD_CA_CERT_FILE=' "${TI6B}/.env" \
+  && ! grep -q '^HD_CA_BUNDLE=' "${TI6B}/.env" \
+  && grep -q "skipping corporate root CA support" /tmp/setup-dryrun.i6b.out; then
+  ok "I6b: unreadable SSL_CERT_FILE + HONEY_STARTER_USE_CA=1 (NI opt-in) -> warn + skip, no keys"
+else
+  bad "I6b rc=${RC_I6B} (want opt-in warn+skip, no keys):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i6b.out >&2 || true
+fi
+rm -rf "${TI6B}" "${SI6B}"
+
+# I8. (hermetic NI) env WITHOUT SSL_CERT_FILE -> zero CA behavior/output: no
+#     prompt, no warn, no keys (byte-identical default path).
+TI8="$(fresh_tree)"; SI8="$(mktemp -d)"
+printf 'proji8\nansns\nansuser\nopenai\ngpt-4o\nsk-i8\n9300\n9390\n' > /tmp/setup-dryrun.ansI8
+set +e
+(
+  cd "${TI8}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${TI8}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI8 HD_STATE_DIR="${SI8}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i8.out 2>&1
+RC_I8=$?
+set -e
+if [ "${RC_I8}" -eq 0 ] \
+  && ! grep -q '^HD_CA_CERT_FILE=' "${TI8}/.env" \
+  && ! grep -q '^HD_CA_BUNDLE=' "${TI8}/.env" \
+  && ! grep -q "Detected SSL_CERT_FILE=" /tmp/setup-dryrun.i8.out \
+  && ! grep -q "skipping corporate root CA" /tmp/setup-dryrun.i8.out; then
+  ok "I8: hermetic env without SSL_CERT_FILE -> zero CA behavior/output (.env clean)"
+else
+  bad "I8 rc=${RC_I8} (want no CA prompt/warn/keys):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i8.out >&2 || true
+fi
+rm -rf "${TI8}" "${SI8}"
+
+# I9a. Round-trip disable: enable (opt-in) then not-enabled -> BOTH keys ABSENT
+#      on the 2nd run (no stale lines left behind).
+TI9A="$(fresh_tree)"; SI9A="$(mktemp -d)"
+printf 'proji9a\nansns\nansuser\nopenai\ngpt-4o\nsk-i9a\n9300\n9390\n' > /tmp/setup-dryrun.ansI9A
+set +e
+(
+  cd "${TI9A}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI9A}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI9A HD_STATE_DIR="${SI9A}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i9a1.out 2>&1
+RC_I9A1=$?
+set -e
+set +e
+(
+  cd "${TI9A}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${TI9A}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI9A HD_STATE_DIR="${SI9A}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i9a2.out 2>&1
+RC_I9A2=$?
+set -e
+if [ "${RC_I9A1}" -eq 0 ] && [ "${RC_I9A2}" -eq 0 ] \
+  && ! grep -q '^HD_CA_CERT_FILE=' "${TI9A}/.env" \
+  && ! grep -q '^HD_CA_BUNDLE=' "${TI9A}/.env"; then
+  ok "I9a: enabled then not-enabled -> both HD_CA keys absent on 2nd run (no stale lines)"
+else
+  bad "I9a rc1=${RC_I9A1} rc2=${RC_I9A2} (want no stale keys after disable):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i9a2.out >&2 || true
+fi
+rm -rf "${TI9A}" "${SI9A}"
+
+# I9b. Round-trip stable: enable (opt-in) then enable again -> .env byte-identical
+#      with both keys present (idempotent).
+TI9B="$(fresh_tree)"; SI9B="$(mktemp -d)"
+printf 'proji9b\nansns\nansuser\nopenai\ngpt-4o\nsk-i9b\n9300\n9390\n' > /tmp/setup-dryrun.ansI9B
+set +e
+(
+  cd "${TI9B}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI9B}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI9B HD_STATE_DIR="${SI9B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i9b1.out 2>&1
+RC_I9B1=$?
+set -e
+cp "${TI9B}/.env" /tmp/setup-dryrun.i9b.env1
+set +e
+(
+  cd "${TI9B}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI9B}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI9B HD_STATE_DIR="${SI9B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i9b2.out 2>&1
+RC_I9B2=$?
+set -e
+if [ "${RC_I9B1}" -eq 0 ] && [ "${RC_I9B2}" -eq 0 ] \
+  && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI9B}/.env" \
+  && diff -q /tmp/setup-dryrun.i9b.env1 "${TI9B}/.env" >/dev/null 2>&1; then
+  ok "I9b: enabled-then-enabled -> .env byte-identical (stable, both keys)"
+else
+  bad "I9b rc1=${RC_I9B1} rc2=${RC_I9B2} (want stable byte-identical .env with both keys):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i9b2.out >&2 || true
+fi
+rm -rf "${TI9B}" "${SI9B}"
+
+# I10a. Dryrun byte-identity (enabled): the run adds EXACTLY the two HD_CA
+#       lines (no more, no fewer).
+TI10A="$(fresh_tree)"; SI10A="$(mktemp -d)"
+printf 'proji10a\nansns\nansuser\nopenai\ngpt-4o\nsk-i10a\n9300\n9390\n' > /tmp/setup-dryrun.ansI10A
+set +e
+(
+  cd "${TI10A}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI10A}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI10A HD_STATE_DIR="${SI10A}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i10a.out 2>&1
+RC_I10A=$?
+set -e
+if [ "${RC_I10A}" -eq 0 ] && [ "$(grep -c '^HD_CA_' "${TI10A}/.env" || true)" -eq 2 ]; then
+  ok "I10a: enabled run adds exactly the two HD_CA lines (dryrun byte-identity)"
+else
+  bad "I10a rc=${RC_I10A} (want exactly 2 HD_CA lines):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i10a.out >&2 || true
+fi
+rm -rf "${TI10A}" "${SI10A}"
+
+# I10b. Dryrun byte-identity (not-enabled): the run adds ZERO HD_CA lines
+#       (zero delta).
+TI10B="$(fresh_tree)"; SI10B="$(mktemp -d)"
+printf 'proji10b\nansns\nansuser\nopenai\ngpt-4o\nsk-i10b\n9300\n9390\n' > /tmp/setup-dryrun.ansI10B
+set +e
+(
+  cd "${TI10B}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" \
+    HONEY_STARTER_INSTALL_DIR="${TI10B}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI10B HD_STATE_DIR="${SI10B}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i10b.out 2>&1
+RC_I10B=$?
+set -e
+if [ "${RC_I10B}" -eq 0 ] && [ "$(grep -c '^HD_CA_' "${TI10B}/.env" || true)" -eq 0 ]; then
+  ok "I10b: not-enabled run adds zero HD_CA lines (zero delta, byte-identity)"
+else
+  bad "I10b rc=${RC_I10B} (want zero HD_CA lines):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i10b.out >&2 || true
+fi
+rm -rf "${TI10B}" "${SI10B}"
+
+# I11. A single SSL_CERT_FILE whose path contains spaces -> stored/emitted as
+#      ONE single-quoted string (shell_quote) and handled correctly.
+TI11="$(fresh_tree)"; SI11="$(mktemp -d)"
+I11_CA="/tmp/setup-dryrun.ca dir with spaces/root bundle.pem"
+mkdir -p "$(dirname "${I11_CA}")"
+cp "${I_CA_FILE}" "${I11_CA}"
+printf 'proji11\nansns\nansuser\nopenai\ngpt-4o\nsk-i11\n9300\n9390\n' > /tmp/setup-dryrun.ansI11
+set +e
+(
+  cd "${TI11}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    SSL_CERT_FILE="${I11_CA}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI11}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansI11 HD_STATE_DIR="${SI11}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.i11.out 2>&1
+RC_I11=$?
+set -e
+if [ "${RC_I11}" -eq 0 ] \
+  && grep -q "^HD_CA_CERT_FILE='${I11_CA}'$" "${TI11}/.env"; then
+  ok "I11: SSL_CERT_FILE path with spaces stored/emitted as one single-quoted string"
+else
+  bad "I11 rc=${RC_I11} (want single-quoted HD_CA_CERT_FILE):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i11.out >&2 || true
+  grep 'HD_CA' "${TI11}/.env" >&2 || true
+fi
+rm -rf "${TI11}" "${SI11}"
+
+
 
 
 # ============================================================================
@@ -2898,6 +3341,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TC1}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC1}" TERM=dumb \
       HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
@@ -2926,6 +3370,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TC2}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC2}" TERM=dumb \
       HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
@@ -2959,6 +3404,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TC3}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC3}" TERM=dumb \
       HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
@@ -2994,6 +3440,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${TC4}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC4}" TERM=dumb \
       HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
@@ -3038,6 +3485,7 @@ CSTUBEOF
     cd "${TC5}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC5}" TERM=dumb PATH="${CSTUB}:${PATH}" \
       HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
@@ -3070,6 +3518,7 @@ CSTUBEOF
     cd "${TC6}"
     env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC6}" TERM=dumb \
       HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
