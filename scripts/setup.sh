@@ -2409,6 +2409,15 @@ run_questionnaire() {
           # adopted directly (hybrid); "type your own" / the sentinel route to
           # the explicit free-string sub-prompt; any other free text keeps the
           # standard invalid-HD_AI_MODEL die (byte-identical message).
+          #
+          # Phase 5b (UX polish): a TTY-only hint so the user learns they can
+          # type any model directly at the numbered menu (Phase 5a hybrid
+          # adoption) rather than only choosing a number. Rendered ONLY when
+          # the model menu is shown to a real terminal — the answers-file /
+          # non-interactive / dryrun paths never emit it (the dryrun suite and
+          # CI assert exact outputs). Strictly additive; the 17h/17k
+          # invalid-HD_AI_MODEL contract string is untouched.
+          msg_note "Tip: you can also type any model directly instead of choosing a number" >&2
           if prompt_menu HD_AI_MODEL "AI model (HD_AI_MODEL)" \
             "${model_default}" resolve_model_menu_unlisted \
             "${AI_MODEL_MENU[@]}" "${MENU_TYPE_OWN}"; then

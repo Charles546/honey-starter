@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 155 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 157 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -156,7 +156,10 @@
 # retry / exact-match precedence / type-your-own + sentinel-never-adopted; G8
 # answers-file raw-value byte-identity; G9a env passthrough + G9b invalid-env
 # die - the 17d/17g regression guards; G10 the raw __type_your_own__
-# typed at the menu routes to the type-your-own sub-prompt, never adopted).
+# typed at the menu routes to the type-your-own sub-prompt, never adopted)
+# + the 2 Phase 5b model-menu-hint checks (H1 pty: the additive TTY-only hint
+# line renders on a real terminal; H2 answers-file: the hint is NEVER emitted
+# on the non-interactive path — the dryrun byte-identical guard).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -2812,6 +2815,67 @@ assert_rc "G9b: invalid HD_AI_MODEL env (NI) still dies rc 1 (17g regression gua
   HD_AI_MODEL='bad model' HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR='${SG9B}' bash scripts/setup.sh --dry-run"
 rm -rf "${TG9B}" "${SG9B}"
+
+# Phase 5b UX-polish hermetics: the model-menu hint line is rendered ONLY on
+# a real TTY (H1, pty) and NEVER on the answers-file / non-interactive path
+# (H2, non-pty). The hint is additive — it must not disturb the 17h/17k
+# invalid-HD_AI_MODEL contract string (checked unchanged across the suite) or
+# the dryrun byte-identical assertions. H1 is python3-gated (pty); it skips
+# cleanly when python3 is absent.
+if command -v python3 >/dev/null 2>&1; then
+  # H1. (pty) interactive model menu renders the 5b hint line ("you can also
+  #     type any model directly") on a real terminal, and the run still
+  #     succeeds (rc 0) with the model selected by number.
+  TH1="$(fresh_tree)"; SH1="$(mktemp -d)"
+  set +e
+  (
+    cd "${TH1}"
+    env -u NO_COLOR -u HONEY_STARTER_NO_COLOR -u HONEY_STARTER_NONINTERACTIVE \
+      -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
+      HOME="${HOME}" HD_STATE_DIR="${SH1}" TERM=dumb \
+      python3 "${HERE}/test/pty-helper.py" --on-disk \
+        "${TH1}/scripts/setup.sh" "Compose project name" \
+        projh1 ansns ansuser openai 3 sk-h1 sk-h1 9300 9390 -- --dry-run
+  ) >/tmp/setup-dryrun.h1.out 2>&1
+  RC_H1=$?
+  set -e
+  if [ "${RC_H1}" -eq 0 ] \
+    && grep -q 'HD_AI_MODEL=gpt-4o' "${TH1}/.env" \
+    && grep -q 'you can also type any model directly' /tmp/setup-dryrun.h1.out; then
+    ok "H1: model menu hint rendered on TTY (you can also type any model directly); model 3=gpt-4o, rc 0"
+  else
+    bad "H1 rc=${RC_H1} (want TTY hint line present + gpt-4o):"
+    sed 's/^/    | /' /tmp/setup-dryrun.h1.out >&2 || true
+  fi
+  rm -rf "${TH1}" "${SH1}"
+else
+  ok "Phase 5b model-menu hint hermetics (H1) SKIPPED (python3 unavailable)"
+fi
+
+# H2. (answers-file, non-pty) the hint line is NEVER emitted on the
+#     answers-file / non-interactive path — no menu, no hint, raw values pass
+#     through unchanged (dryrun byte-identical guard).
+TH2="$(fresh_tree)"; SH2="$(mktemp -d)"
+printf 'projh2\nansns\nansuser\nopenai\ngpt-hint2\nsk-h2\n9300\n9390\n' > /tmp/setup-dryrun.ansH2
+set +e
+(
+  cd "${TH2}"
+  env -i HOME="${HOME}" PATH="${PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${TH2}" \
+    HONEY_STARTER_ANSWERS_FILE=/tmp/setup-dryrun.ansH2 HD_STATE_DIR="${SH2}" \
+    TERM=xterm-256color bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.h2.out 2>&1
+RC_H2=$?
+set -e
+if [ "${RC_H2}" -eq 0 ] \
+  && grep -q '^HD_AI_MODEL=gpt-hint2$' "${TH2}/.env" \
+  && ! grep -q 'you can also type any model directly' /tmp/setup-dryrun.h2.out; then
+  ok "H2: model-menu hint NOT emitted on answers-file path (no menu, no hint; raw gpt-hint2)"
+else
+  bad "H2 rc=${RC_H2} (want no hint on answers-file path + raw gpt-hint2):"
+  sed 's/^/    | /' /tmp/setup-dryrun.h2.out >&2 || true
+fi
+rm -rf "${TH2}" "${SH2}"
 
 
 # ============================================================================
