@@ -40,13 +40,25 @@ is the exact questionnaire contract.
 - **Model menu (hybrid adoption):** a charset-valid model string typed directly at the menu is adopted as-is (no re-prompt) — e.g. `claude-opus-4-8` or `my-custom-model-2`. The trailing *type your own* option (or its literal label) still routes to the free-string sub-prompt; its `__type_your_own__` sentinel is never adopted as a model, even if typed raw. Charset-invalid input (whitespace/control or otherwise outside `[A-Za-z0-9._:/@+-]`) dies with `invalid HD_AI_MODEL: '<value>' (no whitespace/control; charset [A-Za-z0-9._:/@+-]). Fix the model and re-run.` and no `.env` is written. The answers-file / non-interactive paths are unchanged (raw-value passthrough).
 - **Model menu hint (Phase 5b):** when the model menu is shown on a real TTY, an additive `msg_note` hint ("you can also type any model directly instead of choosing a number") is emitted so the user learns they need not pick a number. The hint is rendered ONLY on the interactive TTY path — it never appears on the answers-file / non-interactive / dryrun paths, which assert exact outputs. It is strictly additive: it does not disturb the `invalid HD_AI_MODEL: '<value>' ...` grep-asserted contract string (17h/17k) or any dryrun byte-identical assertion. Keep the hint behind the TTY-only menu branch and routed through a `msg_*` helper (prefix-only rule — never rewrite message text).
 
+## Corporate root CA (Phase 6a)
+- **Host `SSL_CERT_FILE`** is a SINGLE host path to ONE bundled PEM CA file (any multiple CAs are already pre-concatenated inside that file). There is NO list parsing and NO concatenation — Phase 6b mounts the user's file directly. Detection is `[ -n "${SSL_CERT_FILE:-}" ]`.
+- **Validation:** the file must be readable AND contain at least one `BEGIN CERTIFICATE`. An unreadable/invalid file → `warn` + **skip** (never enable, never die) — consistent on BOTH the interactive and the `HONEY_STARTER_USE_CA=1` opt-in path.
+- **Interactive prompt (TTY-only, no answers file):** when a valid `SSL_CERT_FILE` is detected on a real terminal, a `msg_input` yes/no prompt (`Detected SSL_CERT_FILE=<path>; use it as the daemon container root CA bundle? [Y/n] `) is shown; **default = YES** (`y`/`Y`/`yes`/`YES` or Enter → enable; explicit `n` → disable). It reads `/dev/tty` DIRECTLY, so it never consumes an answers-file line and never fires in non-interactive/answers mode.
+- **NI / answers default = OFF:** the prompt never fires on the NI/answers path (conservative, keeps it byte-identical). Opt-in override: `HONEY_STARTER_USE_CA=1` in the environment + a valid file → enable. With opt-in set but `SSL_CERT_FILE` empty/invalid → `warn` + skip (no enable, no die).
+- **Two managed `.env` keys, written TOGETHER when enabled, ABSENT otherwise** (no remove/delete semantics — nothing was generated, so nothing to clean up):
+  - `HD_CA_CERT_FILE=<host path of SSL_CERT_FILE>` — the Phase 6b compose bind-mount source.
+  - `HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt` — the container path fed to the trust env vars in Phase 6b (`SSL_CERT_FILE`, `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`).
+  - Not enabled → NEITHER key, ZERO new `.env` lines, ZERO new output (dryrun byte-identity: all existing suite assertions stay green regardless of whether the host has `SSL_CERT_FILE` set).
+- **Spaces in the path** are stored/emitted as a single quoted string (`shell_quote`).
+
 ## Masked input (API keys)
 - Raw-mode loop on `/dev/tty`: `stty -icanon -isig -echo`; per-char `dd bs=1` (not `read -N1` — re-enables ISIG); one `*` per char to stderr; Backspace pops; `^C` → exit 130 (scoped EXIT trap restores termios).
 - Value returned via a 600-mode temp file, never stdout; `read -s` no-echo fallback; every key prompt re-types for confirmation.
 
 ## Frozen files
 - Byte-identical vs main — no edits without a documented exception: `scripts/setup.sh`, `bootstrap/*`, `deploy/docker-compose.yaml`, `Makefile`, `test/pty-helper.py`, `.env.example`.
-- Documented `scripts/setup.sh` freeze-exceptions: Phases 1-2 (platform/runtime polish), Phase 5a (`resolve_model_menu_unlisted` hybrid adoption), and Phase 5b (the additive TTY-only model-menu hint).
+- Documented `scripts/setup.sh` freeze-exceptions: Phases 1-2 (platform/runtime polish), Phase 5a (`resolve_model_menu_unlisted` hybrid adoption), Phase 5b (the additive TTY-only model-menu hint), and Phase 6a (the corporate-root-CA `SSL_CERT_FILE` detection / TTY prompt / two managed `HD_CA_CERT_FILE`+`HD_CA_BUNDLE` keys).
+- `deploy/docker-compose.yaml` remains frozen in Phase 6a (the CA bind-mount + five trust env vars are Phase 6b, under its own future exception).
 
 ## status.sh gotchas
 - `stack is not running …` = stdout today (`msg_info`, no `>&2`) — don't "correct" it to stderr.

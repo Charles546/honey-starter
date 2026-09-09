@@ -103,6 +103,14 @@ INSTALLED_TREE_FILES=(
 #     the last written ONLY when explicitly supplied (env or an existing .env
 #     line), otherwise absent so the compose default of 30m applies by
 #     construction (never 1m).
+#   * HD_CA_CERT_FILE + HD_CA_BUNDLE (Phase 6a corporate root CA) -- written
+#     TOGETHER ONLY when a validated host SSL_CERT_FILE is enabled (an
+#     interactive TTY default-yes prompt, or the HONEY_STARTER_USE_CA=1 opt-in
+#     on the NI/answers path); HD_CA_CERT_FILE holds the single host path (the
+#     Phase 6b compose bind-mount source) and HD_CA_BUNDLE the fixed container
+#     path /etc/honeydipper/ca/ca-bundle.crt fed to the trust env vars. When
+#     not enabled, NEITHER key is written (a stale line is removed so a disable
+#     never leaves a partial key).
 #
 # Secret .env keys (replaced ONLY on an explicit value; with no
 # explicit value an existing line is left untouched; with no explicit value and
@@ -2046,6 +2054,8 @@ EFFECTIVE_API_PORT=""
 EFFECTIVE_UI_PORT=""
 EFFECTIVE_UI_URL=""
 EFFECTIVE_CONFIG_INTERVAL=""
+EFFECTIVE_CA_ENABLED=0
+EFFECTIVE_CA_CERT_FILE=""
 # Phase 6 per-instance COMPOSE_PROJECT_NAME state. IS_FRESH is computed ONCE in
 # on_disk_main right after read_provision (Req 2: fresh = never-provisioned, i.e.
 # ! state_dir_has_artifacts). RENAMING (writer) is 1 for a confirmed rename or a
@@ -2240,7 +2250,7 @@ resolve_existing_project() {
 }
 
 run_questionnaire() {
-  local p base_default key_default msg model_default project_default
+  local p base_default key_default msg model_default project_default ca_ans
 
   # --- COMPOSE_PROJECT_NAME (FIRST item; FRESH-only) --------------------------
   # A never-provisioned instance gets the per-instance name persisted in .env:
@@ -2581,6 +2591,50 @@ run_questionnaire() {
   EFFECTIVE_UI_URL="$(first_nonempty "${HD_UI_URL:-}" "$(cur_value HD_UI_URL)" "http://localhost:${EFFECTIVE_UI_PORT}")"
   EFFECTIVE_CONFIG_INTERVAL="$(first_nonempty "${HD_CONFIG_CHECK_INTERVAL:-}" "$(cur_value HD_CONFIG_CHECK_INTERVAL)")"
 
+  # --- corporate root CA bundle (Phase 6a): host SSL_CERT_FILE --------------
+  # A single host path to ONE bundled PEM CA file (any multiple CAs are already
+  # pre-concatenated inside that file). There is NO list parsing and NO
+  # concatenation - Phase 6b mounts the user's file directly. Detection is
+  # [ -n "${SSL_CERT_FILE:-}" ]; the file must be readable AND contain at least
+  # one 'BEGIN CERTIFICATE'. Validation is warn + skip (never enable, never
+  # die) on BOTH the interactive and the HONEY_STARTER_USE_CA=1 opt-in path.
+  # The prompt is TTY-only (never consumes an answers-file line, never fires in
+  # NI/answers mode); default = YES. NI default = OFF unless
+  # HONEY_STARTER_USE_CA=1 + valid file (opt-in). When not enabled, NEITHER
+  # key is written and ZERO new output is produced (dryrun byte-identity).
+  EFFECTIVE_CA_ENABLED=0
+  EFFECTIVE_CA_CERT_FILE=""
+  if [ -n "${SSL_CERT_FILE:-}" ]; then
+    if [ -r "${SSL_CERT_FILE}" ] && grep -q 'BEGIN CERTIFICATE' "${SSL_CERT_FILE}" 2>/dev/null; then
+      if [ "${NONINTERACTIVE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
+        # TTY-only yes/no confirm (default = YES); read /dev/tty DIRECTLY so it
+        # never consumes an answers-file line and never fires in NI mode.
+        ca_ans=""
+        msg_input "Detected SSL_CERT_FILE=${SSL_CERT_FILE}; use it as the daemon container root CA bundle? [Y/n] " >&2
+        IFS= read -r -u "${TTY_FD}" ca_ans || true
+        case "${ca_ans}" in
+          n|N|no|NO)
+            # explicitly declined: OFF (no keys)
+            EFFECTIVE_CA_ENABLED=0
+            ;;
+          *)
+            # default-yes: y/Y/yes/YES or Enter -> enable
+            EFFECTIVE_CA_ENABLED=1
+            EFFECTIVE_CA_CERT_FILE="${SSL_CERT_FILE}"
+            ;;
+        esac
+      elif [ "${HONEY_STARTER_USE_CA:-0}" = "1" ]; then
+        # NI/answers opt-in: HONEY_STARTER_USE_CA=1 + valid file -> enable
+        EFFECTIVE_CA_ENABLED=1
+        EFFECTIVE_CA_CERT_FILE="${SSL_CERT_FILE}"
+      fi
+    else
+      # unreadable / invalid: warn + skip (never enable, never die) on BOTH
+      # the interactive and the opt-in path.
+      warn "SSL_CERT_FILE is set but is not a readable bundled PEM CA file (${SSL_CERT_FILE}); skipping corporate root CA support"
+    fi
+  fi
+
   # --- final validation of effective values -----------------------------------
   valid_port "${EFFECTIVE_API_PORT}" || die "HD_API_HOST_PORT must be an integer 1-65535 (got: ${EFFECTIVE_API_PORT})"
   valid_port "${EFFECTIVE_UI_PORT}" || die "HD_UI_HOST_PORT must be an integer 1-65535 (got: ${EFFECTIVE_UI_PORT})"
@@ -2672,6 +2726,16 @@ build_env_content() {
     set_action HD_CONFIG_CHECK_INTERVAL set "${EFFECTIVE_CONFIG_INTERVAL}"
   else
     set_action HD_CONFIG_CHECK_INTERVAL remove ""
+  fi
+  # corporate root CA (Phase 6a): both keys written TOGETHER only when enabled;
+  # absent otherwise (a stale line is removed so a disable never leaves a
+  # partial/broken key; nothing was generated, so nothing else to clean up).
+  if [ "${EFFECTIVE_CA_ENABLED:-0}" -eq 1 ]; then
+    set_action HD_CA_CERT_FILE set "${EFFECTIVE_CA_CERT_FILE}"
+    set_action HD_CA_BUNDLE set "/etc/honeydipper/ca/ca-bundle.crt"
+  else
+    set_action HD_CA_CERT_FILE remove ""
+    set_action HD_CA_BUNDLE remove ""
   fi
   # secret keys: explicit value -> replace; else keep existing (never downgrade)
   if [ -n "${EXPLICIT_OPENAI_KEY}" ]; then
