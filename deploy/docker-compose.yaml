@@ -142,10 +142,25 @@ services:
       HD_JWT_SIGNING_KEY: ${HD_JWT_SIGNING_KEY:-}
       # git / the remote-driver installer want a writable home + temp area.
       HOME: /tmp
+      # Corporate root CA trust (Phase 6b): each var is consumed by a different
+      # TLS stack inside the daemon (Go/daemon/web/AI/slack, git, curl, node,
+      # Python requests). All are fed ${HD_CA_BUNDLE:-} and are inert when it
+      # is empty (each consumer treats an empty value as unset).
+      SSL_CERT_FILE: ${HD_CA_BUNDLE:-}
+      GIT_SSL_CAINFO: ${HD_CA_BUNDLE:-}
+      CURL_CA_BUNDLE: ${HD_CA_BUNDLE:-}
+      NODE_EXTRA_CA_CERTS: ${HD_CA_BUNDLE:-}
+      REQUESTS_CA_BUNDLE: ${HD_CA_BUNDLE:-}
     volumes:
       - ${HD_STATE_DIR:-../.honey-starter}/config:/etc/honeydipper/config:ro
       - ${HD_STATE_DIR:-../.honey-starter}/identity:/var/hd-secrets/identity:ro
       - daemon-driver-cache:/opt/honeydipper/drivers/cache
+      # Optional corporate root CA bundle (Phase 6b): when HD_CA_CERT_FILE is
+      # set (a host PEM bundle authored by setup.sh from SSL_CERT_FILE), mount
+      # it read-only at the container path the trust env vars below point at.
+      # When unset, fall back to /dev/null (always exists, harmless, read-only)
+      # so the mount renders valid with no CA configured.
+      - ${HD_CA_CERT_FILE:-/dev/null}:/etc/honeydipper/ca/ca-bundle.crt:ro
     tmpfs:
       - /tmp
     read_only: true

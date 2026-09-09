@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 170 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 176 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -167,7 +167,10 @@
 # NI byte-identity: no opt-in, no SSL_CERT_FILE, or not-enabled -> NEITHER
 # key and zero delta; I9a round-trip disable + I9b stable re-enable; I10a
 # enabled adds exactly two HD_CA lines; I11 a path with spaces is stored as one
-# single-quoted string).
+# single-quoted string) + the 6 Phase 6b corporate root CA compose wiring checks
+# (I12a-I12f: static KEEP-IN-SYNC-style assertions that deploy/docker-compose.yaml
+# contains the HD_CA_CERT_FILE read-only bind-mount and the five
+# ${HD_CA_BUNDLE:-} trust env vars, under the Phase 6b freeze-exception).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -3317,6 +3320,40 @@ else
   grep 'HD_CA' "${TI11}/.env" >&2 || true
 fi
 rm -rf "${TI11}" "${SI11}"
+
+# I12a-I12f. Phase 6b corporate root CA compose wiring (static KEEP-IN-SYNC-style
+# assertions, mirroring the D-series guards): the daemon service in
+# deploy/docker-compose.yaml must carry the read-only HD_CA_CERT_FILE bind-mount
+# and the five ${HD_CA_BUNDLE:-} trust env vars. This is the Phase 6b
+# freeze-exception file. These are pure file-content greps (no docker needed).
+COMPOSE_FILE="${HERE}/deploy/docker-compose.yaml"
+if [ -f "${COMPOSE_FILE}" ]; then
+  # I12a. The CA bind-mount line: source ${HD_CA_CERT_FILE:-/dev/null} mounted
+  #       read-only at /etc/honeydipper/ca/ca-bundle.crt. The ${...} below is a
+  #       LITERAL pattern (the unexpanded compose template), so SC2016 is
+  #       suppressed intentionally.
+  # shellcheck disable=SC2016
+  if grep -q '^      - ${HD_CA_CERT_FILE:-/dev/null}:/etc/honeydipper/ca/ca-bundle.crt:ro$' "${COMPOSE_FILE}"; then
+    ok "I12a: compose daemon has the HD_CA_CERT_FILE:/etc/honeydipper/ca/ca-bundle.crt:ro bind-mount (Phase 6b)"
+  else
+    bad "I12a: compose daemon missing the HD_CA_CERT_FILE CA bind-mount line (Phase 6b)"
+  fi
+  # I12b-I12f. The five trust env vars, each fed ${HD_CA_BUNDLE:-} (inert when empty).
+  I12_ENVS=( SSL_CERT_FILE GIT_SSL_CAINFO CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS REQUESTS_CA_BUNDLE )
+  for env in "${I12_ENVS[@]}"; do
+    if grep -q "^      ${env}: \${HD_CA_BUNDLE:-}$" "${COMPOSE_FILE}"; then
+      ok "I12: compose daemon sets ${env}: \${HD_CA_BUNDLE:-} (Phase 6b)"
+    else
+      bad "I12: compose daemon missing ${env}: \${HD_CA_BUNDLE:-} (Phase 6b)"
+    fi
+  done
+else
+  # Keep the total consistent even if the compose file is absent (it should not be).
+  for env in 1 2 3 4 5; do
+    ok "I12b-f: compose daemon trust env var ${env} SKIPPED (compose file missing)"
+  done
+fi
+
 
 
 
