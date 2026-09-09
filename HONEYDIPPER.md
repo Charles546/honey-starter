@@ -51,6 +51,20 @@ is the exact questionnaire contract.
   - Not enabled → NEITHER key, ZERO new `.env` lines, ZERO new output (dryrun byte-identity: all existing suite assertions stay green regardless of whether the host has `SSL_CERT_FILE` set).
 - **Spaces in the path** are stored/emitted as a single quoted string (`shell_quote`).
 
+## Corporate root CA — container wiring (Phase 6b)
+- The daemon container runs `read_only: true` with `cap_drop: [ALL]` and `no-new-privileges`, so it cannot run `update-ca-certificates` at runtime. Env-based trust backed by a read-only file bind-mount is the only viable mechanism.
+- **`deploy/docker-compose.yaml` (Phase 6b freeze-exception), daemon service:**
+  - **volumes** (new line): `- ${HD_CA_CERT_FILE:-/dev/null}:/etc/honeydipper/ca/ca-bundle.crt:ro`
+  - **environment** (five new lines, all fed `${HD_CA_BUNDLE:-}`):
+    - `SSL_CERT_FILE` (Go / daemon / web / AI / slack)
+    - `GIT_SSL_CAINFO` (git)
+    - `CURL_CA_BUNDLE` (curl)
+    - `NODE_EXTRA_CA_CERTS` (node)
+    - `REQUESTS_CA_BUNDLE` (Python requests)
+  - A brief YAML comment documents the optional corporate root CA support and the `/dev/null` fallback.
+- **Inert when no CA is configured:** `HD_CA_CERT_FILE`/`HD_CA_BUNDLE` are only present in `.env` when Phase 6a enabled them. Unset → the mount source falls back to `/dev/null` (always exists, harmless, read-only) and all five env vars render empty (present-but-empty is treated as unset by every consumer). `docker compose config` therefore renders valid with no bundle.
+- **Keys reach compose via `start.sh` unchanged:** `scripts/lib.sh` does `set -a; . .env; set +a` at source time, and `start.sh` sources lib.sh before any `compose()` call, so `HD_CA_CERT_FILE`/`HD_CA_BUNDLE` are exported to the compose subprocess exactly like the existing `HD_*_HOST_PORT` / `HD_AI_*` keys. No `start.sh` change is needed.
+
 ## Masked input (API keys)
 - Raw-mode loop on `/dev/tty`: `stty -icanon -isig -echo`; per-char `dd bs=1` (not `read -N1` — re-enables ISIG); one `*` per char to stderr; Backspace pops; `^C` → exit 130 (scoped EXIT trap restores termios).
 - Value returned via a 600-mode temp file, never stdout; `read -s` no-echo fallback; every key prompt re-types for confirmation.
@@ -58,7 +72,7 @@ is the exact questionnaire contract.
 ## Frozen files
 - Byte-identical vs main — no edits without a documented exception: `scripts/setup.sh`, `bootstrap/*`, `deploy/docker-compose.yaml`, `Makefile`, `test/pty-helper.py`, `.env.example`.
 - Documented `scripts/setup.sh` freeze-exceptions: Phases 1-2 (platform/runtime polish), Phase 5a (`resolve_model_menu_unlisted` hybrid adoption), Phase 5b (the additive TTY-only model-menu hint), and Phase 6a (the corporate-root-CA `SSL_CERT_FILE` detection / TTY prompt / two managed `HD_CA_CERT_FILE`+`HD_CA_BUNDLE` keys).
-- `deploy/docker-compose.yaml` remains frozen in Phase 6a (the CA bind-mount + five trust env vars are Phase 6b, under its own future exception).
+- Documented `deploy/docker-compose.yaml` freeze-exception: Phase 6b (the optional corporate-root-CA read-only bind-mount `- ${HD_CA_CERT_FILE:-/dev/null}:/etc/honeydipper/ca/ca-bundle.crt:ro` + the five `${HD_CA_BUNDLE:-}` trust env vars `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `CURL_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE`, plus the explanatory comment). No other edits to the compose file are permitted without a new documented exception.
 
 ## status.sh gotchas
 - `stack is not running …` = stdout today (`msg_info`, no `>&2`) — don't "correct" it to stderr.
