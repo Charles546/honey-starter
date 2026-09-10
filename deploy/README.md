@@ -543,6 +543,30 @@ daemon:
 With `watchConfig: false`, config/secret changes require
 `docker compose restart daemon` — there is no periodic reload at all.
 
+#### Automatic config reload (host-side reload-watch)
+
+`scripts/reload-watch.sh` (`make reload-watch`) is an optional host-side watcher
+that makes config edits apply **immediately** instead of waiting up to
+`HD_CONFIG_CHECK_INTERVAL` (default 30m). It watches the rendered config dir
+(`${HD_STATE_DIR}/config`) and, after a short debounce, POSTs to the daemon's
+loopback-only `/reload` webhook (published at `127.0.0.1:${HD_WEBHOOK_PORT:-18080}`
+-> container `:8080`), which triggers the `reload` workflow and re-assembles +
+reloads the config. Because it runs on the host (not in a container), it reads
+the reload token from `${HD_STATE_DIR}/reload_token` (chmod 600, persisted by
+start.sh) — never from the environment.
+
+* Watcher selection: inotifywait -> fswatch -> polling fallback (overridable
+  with `HD_RELOAD_WATCHER`); the polling fallback uses the newest-config-mtime
+  signature and needs no extra binaries.
+* It is a singleton (PID file `${HD_STATE_DIR}/reload-watch.pid`, chmod 600;
+  stale pids are reclaimed; `--stop` sends SIGTERM). `make status` reports
+  whether it is running.
+* On an interactive TTY, `make start` starts it in the foreground at the end of
+  bring-up (Ctrl-C to stop). On non-tty runs it prints a `make reload-watch`
+  hint and does not block; if the watcher can't start, start.sh warns and
+  continues — the daemon still reloads on `HD_CONFIG_CHECK_INTERVAL`.
+* A failed reload POST warns and keeps watching (retries on the next change).
+
 #### Vault outage behavior
 
 * **Vault reachable, all seeded keys present:** daemon boots and serves
@@ -804,6 +828,11 @@ host before merge.
 | `HD_AI_BASE_URL` | `https://api.openai.com/v1` | non-secret AI base URL override (template `.env.AI_BASE_URL`) |
 | `HD_AI_MODEL` | `gpt-5.4-mini` | non-secret AI model override (template `.env.AI_MODEL`) |
 | `HD_CONFIG_CHECK_INTERVAL` | `30m` | daemon config watch interval (deliberate tradeoff — see "Config reload behavior") |
+| `HD_WEBHOOK_PORT` | `18080` | loopback host port for the daemon's `/reload` webhook (compose maps `127.0.0.1:<this>` -> container `:8080`); used by reload-watch |
+| `HD_WEBHOOK_URL` | `http://127.0.0.1:18080/reload` | full webhook URL the reload-watch POSTs to (default derived from `HD_WEBHOOK_PORT`) |
+| `HD_RELOAD_DEBOUNCE_SECONDS` | `3` | reload-watch debounce window (coalesce config changes into at most one reload per window) |
+| `HD_RELOAD_POLL_INTERVAL` | `2` | reload-watch polling fallback interval (used only when neither inotifywait nor fswatch is installed) |
+| `HD_RELOAD_WATCHER` | auto | reload-watch watcher: `inotifywait` \| `fswatch` \| `poll` (auto-detect in that order) |
 | `HD_JWT_SIGNING_KEY` | empty | API session-token signing key (optional; prefer `hd-lookup:` Vault form) |
 | `HONEYDIPPER_IMAGE` | pinned build | daemon image tag |
 | `VALKEY_IMAGE` | `valkey/valkey:8.1.0` | valkey image tag |

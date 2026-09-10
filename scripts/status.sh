@@ -76,6 +76,31 @@ else
   ok=false
 fi
 
+# --- automatic config reload (host-side watcher) state ------------------------
+# Resolve the state dir with the same rules as start.sh / reload-watch.sh, so
+# `make status` and `make reload-watch` agree on where reload-watch.pid lives.
+reload_state=""
+if [ -z "${HD_STATE_DIR:-}" ]; then
+  reload_state="${HONEY_STARTER_DIR}/.honey-starter"
+else
+  case "${HD_STATE_DIR}" in
+    /*) reload_state="${HD_STATE_DIR}" ;;
+    *)  reload_state="${HONEY_STARTER_DIR}/${HD_STATE_DIR}" ;;
+  esac
+fi
+RELOAD_WATCH_PID="${reload_state}/reload-watch.pid"
+if [ -f "${RELOAD_WATCH_PID}" ]; then
+  rw_pid="$(cat "${RELOAD_WATCH_PID}" 2>/dev/null || true)"
+  if [ -n "${rw_pid}" ] && kill -0 "${rw_pid}" 2>/dev/null; then
+    msg_ok "reload-watch:               RUNNING (pid ${rw_pid})"
+  else
+    msg_fail "reload-watch:               NOT RUNNING (stale pid file ${RELOAD_WATCH_PID})" >&2
+    ok=false
+  fi
+else
+  msg_info "reload-watch:               not running (start it with: make reload-watch)"
+fi
+
 info ""
 if [ "${ok}" = "true" ]; then
   msg_section "=== honey-starter is healthy ==="

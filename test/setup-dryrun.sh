@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 184 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 192 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -180,7 +180,15 @@
 # and seeds reload_token plaintext into Vault at secrets/data/<ns>/daemon, and
 # that bootstrap/stubs/compat.yaml no-op stubs workflow_announcement +
 # workflow_status (the essentials _default-context hooks every workflow runs),
-# under the Phase 7 freeze-exception).
+# under the Phase 7 freeze-exception)
+# + the 8 Phase 7 host-side reload-watch checks (K1-K8: static
+# KEEP-IN-SYNC-style assertions that the non-frozen scripts/reload-watch.sh
+# sources lib.sh + guards bash 4+, implements the reload-watch.pid singleton
+# guard (chmod 600, stale reclaim, EXIT trap), the inotifywait->fswatch->poll
+# watcher selection (HD_RELOAD_WATCHER), the debounce loop + curl POST with
+# --max-time (token read from the reload_token FILE), and that start.sh /
+# status.sh / Makefile / .env.example wire the watcher up, under the Phase 2
+# freeze-exceptions for Makefile + .env.example).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -3027,6 +3035,117 @@ if [ -f "${COMPAT_FILE_J}" ]; then
   fi
 else
   ok "J8: compat.yaml missing — SKIPPED (Phase 7)"
+fi
+
+# K1-K8. Phase 7 (automatic config reload — host-side reload-watch): static
+# KEEP-IN-SYNC-style assertions (mirroring the D-series guards) that the
+# non-frozen host-side watcher scripts/reload-watch.sh sources lib.sh and
+# implements the singleton PID guard, the inotifywait->fswatch->poll watcher
+# selection, the debounced curl POST (token read from the reload_token FILE),
+# and that start.sh / status.sh / Makefile / .env.example wire the watcher up.
+# Pure file-content greps (no docker, no network, no watcher binaries needed).
+RELOAD_WATCH_K="${HERE}/scripts/reload-watch.sh"
+START_K="${HERE}/scripts/start.sh"
+STATUS_K="${HERE}/scripts/status.sh"
+MAKEFILE_K="${HERE}/Makefile"
+ENVEX_K="${HERE}/.env.example"
+if [ -f "${RELOAD_WATCH_K}" ]; then
+  # K1. reload-watch.sh sources lib.sh (it is a standalone non-frozen script,
+  #     not a docker wrapper) and requires bash 4+.
+  # shellcheck disable=SC2016
+  if grep -q 'source "\$(cd "\$(dirname "\$0")" && pwd)/lib.sh"' "${RELOAD_WATCH_K}" \
+     && grep -q 'BASH_VERSINFO\[0\]' "${RELOAD_WATCH_K}"; then
+    ok "K1: reload-watch.sh sources lib.sh + guards bash 4+ (Phase 7)"
+  else
+    bad "K1: reload-watch.sh missing lib.sh source / bash 4+ guard (Phase 7)"
+  fi
+  # K2. singleton guard: PID file ${HD_STATE_DIR}/reload-watch.pid with chmod
+  #     600, a live-pid check (kill -0), stale-pid reclaim, and an EXIT trap.
+  # shellcheck disable=SC2016
+  if grep -q 'reload-watch.pid' "${RELOAD_WATCH_K}" \
+     && grep -q 'chmod 600 "\${PID_FILE}"' "${RELOAD_WATCH_K}" \
+     && grep -q 'kill -0' "${RELOAD_WATCH_K}" \
+     && grep -q 'trap cleanup EXIT' "${RELOAD_WATCH_K}"; then
+    ok "K2: reload-watch singleton PID guard (reload-watch.pid, chmod 600, stale reclaim, EXIT trap) (Phase 7)"
+  else
+    bad "K2: reload-watch missing the singleton PID guard (Phase 7)"
+  fi
+  # K3. watcher selection inotifywait -> fswatch -> poll, overridable via
+  #     HD_RELOAD_WATCHER.
+  if grep -q 'HD_RELOAD_WATCHER' "${RELOAD_WATCH_K}" \
+     && grep -q 'inotifywait' "${RELOAD_WATCH_K}" \
+     && grep -q 'fswatch' "${RELOAD_WATCH_K}" \
+     && grep -q 'HD_RELOAD_WATCHER=poll' "${RELOAD_WATCH_K}"; then
+    ok "K3: reload-watch watcher selection inotifywait->fswatch->poll (HD_RELOAD_WATCHER) (Phase 7)"
+  else
+    bad "K3: reload-watch missing watcher selection (Phase 7)"
+  fi
+  # K4. debounce loop: HD_RELOAD_DEBOUNCE_SECONDS (default 3) + curl POST to
+  #     HD_WEBHOOK_URL with --max-time.
+  # shellcheck disable=SC2016
+  if grep -q 'HD_RELOAD_DEBOUNCE_SECONDS:=3' "${RELOAD_WATCH_K}" \
+     && grep -q 'curl -fsS --max-time 10 -X POST' "${RELOAD_WATCH_K}" \
+     && grep -q '\${HD_WEBHOOK_URL}' "${RELOAD_WATCH_K}"; then
+    ok "K4: reload-watch debounce loop + curl POST (debounce 3s, --max-time, HD_WEBHOOK_URL) (Phase 7)"
+  else
+    bad "K4: reload-watch missing the debounce/curl POST (Phase 7)"
+  fi
+  # K5. token is read from the reload_token FILE (${HD_STATE_DIR}/reload_token),
+  #     NOT from the environment.
+  # shellcheck disable=SC2016
+  if grep -q 'reload_token' "${RELOAD_WATCH_K}" \
+     && grep -q 'TOKEN_FILE=' "${RELOAD_WATCH_K}" \
+     && grep -q 'data-urlencode "token=' "${RELOAD_WATCH_K}"; then
+    ok "K5: reload-watch reads reload_token from the state-dir FILE (Phase 7)"
+  else
+    bad "K5: reload-watch missing the token-from-file transport (Phase 7)"
+  fi
+else
+  ok "K1: scripts/reload-watch.sh missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${START_K}" ]; then
+  # K6. start.sh invokes reload-watch.sh in the foreground TTY-gated, and
+  #     prints the make reload-watch hint on a non-tty run.
+  if grep -q 'reload-watch.sh' "${START_K}" \
+     && grep -q 'if \[ -t 1 \]' "${START_K}" \
+     && grep -q 'make reload-watch' "${START_K}"; then
+    ok "K6: start.sh invokes reload-watch.sh (TTY-gated foreground + non-tty hint) (Phase 7)"
+  else
+    bad "K6: start.sh missing the reload-watch invocation (Phase 7)"
+  fi
+else
+  ok "K6: scripts/start.sh missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${STATUS_K}" ]; then
+  # K7. status.sh reports the reload-watch running state from the pid file.
+  if grep -q 'reload-watch.pid' "${STATUS_K}" \
+     && grep -q 'reload-watch:' "${STATUS_K}" \
+     && grep -q 'make reload-watch' "${STATUS_K}"; then
+    ok "K7: status.sh reports reload-watch running state from pid file (Phase 7)"
+  else
+    bad "K7: status.sh missing the reload-watch report (Phase 7)"
+  fi
+else
+  ok "K7: scripts/status.sh missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${MAKEFILE_K}" ] && [ -f "${ENVEX_K}" ]; then
+  # K8. Makefile has the reload-watch lifecycle target (+ .PHONY) and
+  #     .env.example documents the HD_WEBHOOK_PORT / HD_WEBHOOK_URL /
+  #     HD_RELOAD_DEBOUNCE_SECONDS / HD_RELOAD_POLL_INTERVAL / HD_RELOAD_WATCHER
+  #     tunables (Phase 7 freeze-exception for Makefile + .env.example).
+  if grep -q '^reload-watch:' "${MAKEFILE_K}" \
+     && grep -q 'reload-watch' "${MAKEFILE_K}" \
+     && grep -q 'HD_WEBHOOK_PORT' "${ENVEX_K}" \
+     && grep -q 'HD_WEBHOOK_URL' "${ENVEX_K}" \
+     && grep -q 'HD_RELOAD_DEBOUNCE_SECONDS' "${ENVEX_K}" \
+     && grep -q 'HD_RELOAD_POLL_INTERVAL' "${ENVEX_K}" \
+     && grep -q 'HD_RELOAD_WATCHER' "${ENVEX_K}"; then
+    ok "K8: Makefile reload-watch target + .env.example webhook/reload-watch tunables (Phase 7)"
+  else
+    bad "K8: Makefile reload-watch target / .env.example tunables missing (Phase 7)"
+  fi
+else
+  ok "K8: Makefile / .env.example missing — SKIPPED (Phase 7)"
 fi
 
 # ============================================================================

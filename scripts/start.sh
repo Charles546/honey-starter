@@ -717,3 +717,26 @@ msg_info "Root token/unseal key:       ${STATE_DIR} (chmod 600, host-only, never
 info ""
 msg_info "Lifecycle:  make stop | make down | make down-volumes | make status | make logs"
 msg_info "To unseal after a host reboot / 'docker compose restart': re-run make start"
+
+# --- automatic config reload (host-side watcher) ------------------------------
+# The reload-watch script watches ${CONFIG_DIR} and POSTs to the daemon's
+# loopback webhook on change, so editing bootstrap/ + re-rendering takes effect
+# without a restart. It is started IN THE FOREGROUND so the operator can Ctrl-C
+# it (and re-start it later with `make reload-watch`). It is TTY-gated: on a
+# real terminal we block in the watcher; on a redirected/non-tty run (CI, e2e,
+# setup-e2e) we print the hint and do NOT block, so the daemon bring-up still
+# completes. If the watcher cannot start we warn and continue — the daemon is
+# already up and reloads on HD_CONFIG_CHECK_INTERVAL anyway.
+if [ -t 1 ]; then
+  if [ -x "${HONEY_STARTER_DIR}/scripts/reload-watch.sh" ]; then
+    info ""
+    info "--- starting automatic config reload (Ctrl-C to stop; re-start with make reload-watch)"
+    # shellcheck source=scripts/reload-watch.sh
+    bash "${HONEY_STARTER_DIR}/scripts/reload-watch.sh" || warn "reload-watch exited with an error; daemon is up and will still reload on HD_CONFIG_CHECK_INTERVAL"
+  else
+    warn "scripts/reload-watch.sh not found; automatic config reload not started"
+  fi
+else
+  info ""
+  msg_info "Automatic config reload: start it in a terminal with  make reload-watch  (watches ${CONFIG_DIR} and POSTs to the daemon webhook on change)"
+fi

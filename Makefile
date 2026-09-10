@@ -1,5 +1,5 @@
 .PHONY: all lint check-bcrypt check-config compose-config smoke e2e validate \
-	setup-dryrun setup-e2e start stop down down-volumes status logs
+	setup-dryrun setup-e2e start stop down down-volumes status reload-watch logs
 
 # Default target: the full validation gate.
 #   lint           -> shellcheck over scripts/*.sh and test/*.sh (no docker)
@@ -96,6 +96,13 @@ down-volumes:
 # Report compose ps + /healthz + vault seal status + UI reachability.
 status:
 	@bash scripts/status.sh
+
+# Run the host-side automatic config reload watcher in the foreground (Ctrl-C to
+# stop; it watches ${HD_STATE_DIR}/config and POSTs to the daemon webhook on
+# change). Needs a started stack (rendered config + reload_token in the state
+# dir). Stop a background watcher with: bash scripts/reload-watch.sh --stop
+reload-watch:
+	@bash scripts/reload-watch.sh
 
 # Follow the daemon logs (extra args pass through to `docker compose logs`).
 logs:
