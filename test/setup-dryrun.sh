@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 176 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 183 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -170,7 +170,15 @@
 # single-quoted string) + the 6 Phase 6b corporate root CA compose wiring checks
 # (I12a-I12f: static KEEP-IN-SYNC-style assertions that deploy/docker-compose.yaml
 # contains the HD_CA_CERT_FILE read-only bind-mount and the five
-# ${HD_CA_BUNDLE:-} trust env vars, under the Phase 6b freeze-exception).
+# ${HD_CA_BUNDLE:-} trust env vars, under the Phase 6b freeze-exception)
+# + the 7 Phase 7 automatic config reload checks (J1-J7: static
+# KEEP-IN-SYNC-style assertions that bootstrap/reload.yaml defines the reloader
+# system + webhook hit trigger + reload rule, that bootstrap/init.yaml includes
+# reload.yaml, that deploy/docker-compose.yaml publishes the loopback-only
+# 127.0.0.1:${HD_WEBHOOK_PORT:-18080}->8080 webhook port, and that
+# scripts/start.sh generates/persists ${HD_STATE_DIR}/reload_token (chmod 600)
+# and seeds reload_token plaintext into Vault at secrets/data/<ns>/daemon,
+# under the Phase 7 freeze-exception).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -2913,6 +2921,88 @@ fi
 rm -rf "${TH2}" "${SH2}"
 rm -rf "${TH2}" "${SH2}"
 
+
+# J1-J4. Phase 7 automatic config reload — daemon-side webhook endpoint +
+# reload token plumbing (static KEEP-IN-SYNC-style assertions, mirroring the
+# D-series guards): the new bootstrap/reload.yaml webhook rule, the init.yaml
+# include, the compose daemon loopback-only webhook port publish, and the
+# reload_token file/seed in scripts/start.sh. These are pure file-content
+# greps (no docker, no vault needed).
+COMPOSE_FILE_J="${HERE}/deploy/docker-compose.yaml"
+INIT_FILE_J="${HERE}/bootstrap/init.yaml"
+RELOAD_FILE_J="${HERE}/bootstrap/reload.yaml"
+START_FILE_J="${HERE}/scripts/start.sh"
+if [ -f "${RELOAD_FILE_J}" ]; then
+  # J1. reload.yaml defines the reloader system with the /reload webhook path
+  #     and a Vault-backed LOOKUP token at secrets/data/<ns>/daemon#reload_token.
+  # shellcheck disable=SC2016
+  if grep -q 'LOOKUP\[vault,/secrets/data/<ns>/daemon#reload_token\]' "${RELOAD_FILE_J}"; then
+    ok "J1: bootstrap/reload.yaml defines reloader system with Vault LOOKUP reload_token (Phase 7)"
+  else
+    bad "J1: bootstrap/reload.yaml missing the Vault LOOKUP reload_token (Phase 7)"
+  fi
+  # J2. reload.yaml wires the reloader hit trigger (webhook driver, POST, form
+  #     token from sysData.token, url from sysData.path).
+  # shellcheck disable=SC2016
+  if grep -q '^        driver: webhook$' "${RELOAD_FILE_J}" \
+     && grep -q '^          method: POST$' "${RELOAD_FILE_J}" \
+     && grep -q '^            token: \$?sysData.token$' "${RELOAD_FILE_J}" \
+     && grep -q "^          url: '{{ .sysData.path }}'$" "${RELOAD_FILE_J}"; then
+    ok "J2: reload.yaml webhook hit trigger (driver/POST/form.token/url) (Phase 7)"
+  else
+    bad "J2: reload.yaml missing the webhook hit trigger shape (Phase 7)"
+  fi
+  # J3. reload.yaml defines the reload rule -> call_workflow: reload.
+  if grep -q '^      call_workflow: reload$' "${RELOAD_FILE_J}" \
+     && grep -q '^      description: reload daemon config on webhook from host reload-watch$' "${RELOAD_FILE_J}"; then
+    ok "J3: reload.yaml reload rule calls the reload workflow (Phase 7)"
+  else
+    bad "J3: reload.yaml missing the reload rule -> call_workflow reload (Phase 7)"
+  fi
+else
+  ok "J1: bootstrap/reload.yaml missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${INIT_FILE_J}" ] && grep -q '^  - reload.yaml$' "${INIT_FILE_J}"; then
+  ok "J4: bootstrap/init.yaml includes reload.yaml (Phase 7)"
+else
+  bad "J4: bootstrap/init.yaml missing the reload.yaml include (Phase 7)"
+fi
+if [ -f "${COMPOSE_FILE_J}" ]; then
+  # J5. The daemon publishes the loopback-only webhook endpoint at
+  #     HD_WEBHOOK_PORT (default 18080) -> container :8080.
+  # shellcheck disable=SC2016
+  if grep -q '^      - "127.0.0.1:\${HD_WEBHOOK_PORT:-18080}:8080"$' "${COMPOSE_FILE_J}"; then
+    ok "J5: compose daemon publishes loopback-only 127.0.0.1:${HD_WEBHOOK_PORT:-18080}->8080 (Phase 7)"
+  else
+    bad "J5: compose daemon missing the loopback-only webhook port publish (Phase 7)"
+  fi
+else
+  ok "J5: compose file missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${START_FILE_J}" ]; then
+  # J6. start.sh persists the reload token to ${HD_STATE_DIR}/reload_token with
+  #     chmod 600 (idempotent, never clobbers an existing token).
+  # shellcheck disable=SC2016
+  if grep -q 'RELOAD_TOKEN_FILE="\${STATE_DIR}/reload_token"' "${START_FILE_J}" \
+     && grep -q 'chmod 600 "\${RELOAD_TOKEN_FILE}"' "${START_FILE_J}" \
+     && grep -q 'openssl rand -hex 24' "${START_FILE_J}"; then
+    ok "J6: start.sh generates/persists reload_token (chmod 600, idempotent) (Phase 7)"
+  else
+    bad "J6: start.sh missing reload_token generation/persist (Phase 7)"
+  fi
+  # J7. start.sh seeds reload_token into Vault at secrets/data/<ns>/daemon
+  #     (both the create kv put and the seed_one env path), never hashed.
+  # shellcheck disable=SC2016
+  if grep -q 'seed_one reload_token "\${RELOAD_TOKEN}" env' "${START_FILE_J}" \
+     && grep -q 'reload_token=\${RELOAD_TOKEN}' "${START_FILE_J}" \
+     && grep -q 'MUST stay PLAINTEXT' "${START_FILE_J}"; then
+    ok "J7: start.sh seeds reload_token plaintext into Vault (kv put + seed_one env) (Phase 7)"
+  else
+    bad "J7: start.sh missing reload_token Vault seeding (Phase 7)"
+  fi
+else
+  ok "J6: start.sh missing — SKIPPED (Phase 7)"
+fi
 
 # ============================================================================
 # Phase 6a corporate root CA (I-series): host SSL_CERT_FILE detection, a

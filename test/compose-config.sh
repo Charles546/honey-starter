@@ -17,6 +17,14 @@
 #             readable (the daemon runs read_only: true, so it must read the
 #             bundle from the mount rather than update-ca-certificates).
 #
+# Phase 7: also verifies the daemon publishes exactly the loopback-only webhook
+# endpoint (the reload endpoint) and nothing else new:
+#   * C-W1 — the daemon renders the loopback-only publish
+#            127.0.0.1:${HD_WEBHOOK_PORT:-18080}->8080 (default 18080) and the
+#            API publish; no other ports are added.
+#   * C-W2 — the same publish renders correctly when HD_WEBHOOK_PORT is set to
+#            a custom host port.
+#
 # Requires: docker with compose v2 (C-CA3 additionally pulls a tiny base image).
 # Skips gracefully (exit 0) when docker/compose is unavailable.
 #
@@ -124,4 +132,47 @@ else
   exit 1
 fi
 
-echo "=== Compose config (with corporate root CA wiring) OK ==="
+# --- C-W1. Loopback-only webhook publish (default HD_WEBHOOK_PORT) -----------
+# The daemon must publish the reload webhook endpoint bound to 127.0.0.1 only,
+# at ${HD_WEBHOOK_PORT:-18080} -> container :8080, and nothing else new.
+echo "=== C-W1: compose config loopback-only webhook publish (default port) ==="
+RENDERED_W1=""
+env -u HD_WEBHOOK_PORT \
+  docker compose -f "${COMPOSE_FILE}" config > "${TMPDIR_CA}/rendered-w1.yaml"
+RENDERED_W1="${TMPDIR_CA}/rendered-w1.yaml"
+if grep -q 'host_ip: 127.0.0.1' "${RENDERED_W1}" \
+   && grep -q 'published: "18080"' "${RENDERED_W1}" \
+   && grep -q 'target: 8080' "${RENDERED_W1}"; then
+  echo "ok - C-W1: daemon publishes 127.0.0.1:18080->8080 (loopback-only reload endpoint, default port)"
+else
+  echo "FAIL - C-W1: expected loopback-only 127.0.0.1:18080->8080 publish in rendered config"
+  grep -n -A8 'published:' "${RENDERED_W1}" || true
+  exit 1
+fi
+# The daemon must publish ONLY the API + webhook ports (no accidental extra
+# ports). Count the daemon's published ports in the rendered config.
+DAEMON_PUBLISHED="$(awk '/^  daemon:/{f=1} f&&/published:/{n++} f&&/^  [a-z]/{if($0!~/^  daemon:/)f=0} END{print n+0}' "${RENDERED_W1}")"
+if [ "${DAEMON_PUBLISHED}" = "2" ]; then
+  echo "ok - C-W1: daemon publishes exactly 2 host ports (API + loopback webhook), nothing else"
+else
+  echo "FAIL - C-W1: expected 2 daemon published ports, got ${DAEMON_PUBLISHED}"
+  grep -n -B2 -A8 'published:' "${RENDERED_W1}" || true
+  exit 1
+fi
+
+# --- C-W2. Loopback-only webhook publish (custom HD_WEBHOOK_PORT) -------------
+echo "=== C-W2: compose config loopback-only webhook publish (custom port) ==="
+HD_WEBHOOK_PORT=19091 \
+  docker compose -f "${COMPOSE_FILE}" config > "${TMPDIR_CA}/rendered-w2.yaml"
+RENDERED_W2="${TMPDIR_CA}/rendered-w2.yaml"
+if grep -q 'host_ip: 127.0.0.1' "${RENDERED_W2}" \
+   && grep -q 'published: "19091"' "${RENDERED_W2}" \
+   && grep -q 'target: 8080' "${RENDERED_W2}"; then
+  echo "ok - C-W2: daemon publishes 127.0.0.1:19091->8080 when HD_WEBHOOK_PORT=19091"
+else
+  echo "FAIL - C-W2: expected loopback-only 127.0.0.1:19091->8080 publish with HD_WEBHOOK_PORT=19091"
+  grep -n -A8 'published:' "${RENDERED_W2}" || true
+  exit 1
+fi
+
+echo "=== Compose config (with corporate root CA wiring + webhook port) OK ==="
