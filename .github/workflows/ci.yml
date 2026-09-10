@@ -72,6 +72,12 @@ jobs:
       - name: Setup dry-run (hermetic, no docker)
         run: make setup-dryrun
 
+      - name: Reload-watch tests (hermetic, no docker)
+        # test/test-reload-watch.sh is also part of `make validate` below; an
+        # explicit step keeps the hermetic reload-watch result visible on both
+        # runners even when the docker-gated gates skip (macOS).
+        run: make reload-watch-test
+
       # Docker-gated gates: run for real on ubuntu (docker present, network
       # available, no secrets needed); skip cleanly on macOS (no docker).
       - name: Validate

@@ -17,6 +17,8 @@
 #   T-R5  stale pid: a dead pid file is reclaimed and the watcher starts
 #   T-R6  polling fallback: HD_RELOAD_WATCHER=poll drives a reload via mtime change
 #   T-R7  fswatch branch: HD_RELOAD_WATCHER=fswatch drives a reload; + status.sh assert
+#   T-R8  self-heal: killing the watcher coproc is detected and restarted, no busy-spin,
+#         and reloads still fire after the heal
 #
 # Run: bash test/test-reload-watch.sh
 set -euo pipefail
@@ -219,6 +221,82 @@ fi
 sleep 1
 kill -0 "$WATCH_PID4" 2>/dev/null && { kill -TERM "$WATCH_PID4" 2>/dev/null || true; }
 wait "$WATCH_PID4" 2>/dev/null || true
+
+echo ""
+echo "=== T-R8: watcher-death self-heal (coproc killed, restarted, no busy-spin) ==="
+SD4="${WORK}/t4-state"
+setup_state "$SD4"
+FAKE_BIN4="${WORK}/t4-bin"
+mkdir -p "$FAKE_BIN4"
+CURL_LOG4="${WORK}/t4-curl.log"
+make_fake_curl "$CURL_LOG4" "${FAKE_BIN4}/curl"
+: > "$CURL_LOG4"
+
+export HD_STATE_DIR="$SD4"
+export HD_RELOAD_WATCHER=poll
+export HD_RELOAD_POLL_INTERVAL=1
+export HD_RELOAD_DEBOUNCE_SECONDS=1
+export HD_WEBHOOK_URL=http://127.0.0.1:1/reload
+export HONEY_STARTER_NO_ENV=1
+export PATH="$FAKE_BIN4:$PATH"
+
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+"${RELOAD_WATCH}" > "${WORK}/t4-watch.log" 2>&1 &
+WATCH_PID5=$!
+sleep 2   # let the polling watcher establish its baseline coproc
+
+# The watcher coproc (polling `bash -c` loop) is the direct child of the main
+# reload-watch process, so pgrep -P finds it. Record it, then kill -9 it to
+# simulate a watcher crash (watched dir removed / inotifywait killed / OOM).
+OLD_WP="$(pgrep -P "$WATCH_PID5" | head -1 || true)"
+if [ -z "$OLD_WP" ]; then
+  bad "T-R8: could not find the watcher coproc child of $WATCH_PID5"
+else
+  kill -9 "$OLD_WP" 2>/dev/null || true
+fi
+
+# Give the loop a moment to notice the dead fd and self-heal.
+sleep 2
+
+RESTARTED="$(grep -c 'watcher process ended; restarted' "${WORK}/t4-watch.log" 2>/dev/null || echo 0)"
+NEW_WP="$(pgrep -P "$WATCH_PID5" | head -1 || true)"
+
+if [ "$RESTARTED" -ge 1 ]; then
+  ok "T-R8: watcher death detected; logged 'watcher process ended; restarted' ($RESTARTED restart(s))"
+else
+  bad "T-R8: watcher death not self-healed (log: $(tr '\n' ' ' < "${WORK}/t4-watch.log" 2>/dev/null || echo empty))"
+fi
+
+# A NEW coproc must be alive (not a crash-loop / busy-spin of the read).
+if [ -n "$NEW_WP" ] && [ "$NEW_WP" != "$OLD_WP" ] && kill -0 "$NEW_WP" 2>/dev/null; then
+  ok "T-R8: restarted watcher coproc is alive (new pid $NEW_WP)"
+else
+  bad "T-R8: no healthy restarted watcher coproc (old=$OLD_WP new=$NEW_WP)"
+fi
+
+# Self-heal means reloads STILL fire after the restart: write a change.
+printf 'post-heal\n' > "${SD4}/config/c4.yaml"
+sleep 3   # debounce 1s + poll 1s + margin
+HEAL_POSTS="$(wc -l < "$CURL_LOG4" 2>/dev/null || echo 0)"
+if [ "$HEAL_POSTS" -ge 1 ]; then
+  ok "T-R8: reload still fires after self-heal ($HEAL_POSTS POST(s))"
+else
+  bad "T-R8: no reload POST after self-heal (log: $(tr '\n' ' ' < "${WORK}/t4-watch.log" 2>/dev/null || echo empty))"
+fi
+
+# The main loop must not busy-spin into a restart storm: the restarted watcher
+# should stay up (a busy-spin would show many rapid restarts). Allow a couple of
+# logs lines for a possible transient; assert it is not a storm.
+if [ "$RESTARTED" -le 3 ]; then
+  ok "T-R8: no restart storm (only $RESTARTED restart(s) logged)"
+else
+  bad "T-R8: suspected restart storm/busy-spin ($RESTARTED restarts logged)"
+fi
+
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+sleep 1
+kill -0 "$WATCH_PID5" 2>/dev/null && { kill -TERM "$WATCH_PID5" 2>/dev/null || true; }
+wait "$WATCH_PID5" 2>/dev/null || true
 
 echo ""
 echo "=== reload-watch tests: ${PASS} passed, ${FAIL} failed ==="

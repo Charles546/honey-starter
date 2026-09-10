@@ -1,5 +1,6 @@
 .PHONY: all lint check-bcrypt check-config compose-config smoke e2e validate \
-	setup-dryrun setup-e2e start stop down down-volumes status reload-watch logs
+	setup-dryrun setup-e2e reload-watch-test start stop down down-volumes status \
+	reload-watch logs
 
 # Default target: the full validation gate.
 #   lint           -> shellcheck over scripts/*.sh and test/*.sh (no docker)
@@ -17,7 +18,9 @@
 #   setup-e2e      -> full-stack E2E through the real scripts/setup.sh guided
 #                     installer path (writes .env, delegates to start.sh;
 #                     docker + network; skips when docker is unavailable)
-all: lint check-bcrypt setup-dryrun check-config compose-config smoke e2e setup-e2e
+#   reload-watch-test -> hermetic unit tests for scripts/reload-watch.sh
+#                     (no docker)
+all: lint check-bcrypt setup-dryrun check-config compose-config smoke e2e setup-e2e reload-watch-test
 
 # Shellcheck lint gate over all project bash scripts. No docker required.
 lint:
@@ -34,6 +37,13 @@ check-bcrypt:
 # error paths, and the answers-file interactive branch.
 setup-dryrun:
 	@bash test/setup-dryrun.sh
+
+# R1-R8: hermetic no-docker unit tests for scripts/reload-watch.sh (the host-side
+# automatic config reload watcher): debounce, burst coalescing, token transport,
+# singleton, stale-pid reclaim, polling fallback, fswatch branch, and
+# watcher-death self-heal. No docker required.
+reload-watch-test:
+	@bash test/test-reload-watch.sh
 
 # B2: validate the assembled bootstrap config via honeydipper configcheck
 # running inside the published docker image (REPO + CHECK_REMOTE=1).
@@ -63,7 +73,7 @@ setup-e2e:
 	@bash test/setup-e2e.sh
 
 # Full validation gate.
-validate: lint check-bcrypt setup-dryrun check-config compose-config smoke e2e setup-e2e
+validate: lint check-bcrypt setup-dryrun check-config compose-config smoke e2e setup-e2e reload-watch-test
 
 # --- Lifecycle ----------------------------------------------------------------
 # The lifecycle targets require a running docker daemon and a rendered state
