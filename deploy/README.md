@@ -350,6 +350,10 @@ touch `.honey-starter/` except `start.sh`.
 │                                    #   never mounted; used by scripts only)
 ├── unseal_key                       # chmod 600 — unseal key(s), one per line
 ├── provision.env                    # chmod 600 — <ns>/<user> used on first run
+├── reload_token                     # chmod 600 — reload webhook token (host-only,
+│                                    #   never mounted; POSTed by reload-watch)
+├── reload-watch.pid                 # chmod 600 — reload-watch singleton PID file
+│                                    #   (only present while reload-watch runs)
 ├── config/                          # chmod 755 dir; files a+rX — RENDERED
 │   └── ...                          #   bootstrap/ copy with placeholders
 └── identity/                        # chmod 755 dir
@@ -360,9 +364,13 @@ touch `.honey-starter/` except `start.sh`.
 The `identity/` and `config/` files are bind-mounted into the daemon, whose
 container runs as root-without-caps (`cap_drop: [ALL]`) — see *Hardening
 notes* (the `cap_drop`/`CAP_DAC_OVERRIDE rule`) below for why the modes
-matter. The `admin_token`, `root_token`, `unseal_key` and `provision.env`
-files are host only: nothing is mounted from them, and they are created with
-chmod 600.
+matter. The `admin_token`, `root_token`, `unseal_key`, `provision.env`,
+`reload_token` and `reload-watch.pid` files are host only: nothing is
+mounted from them, and they are created with chmod 600. The `reload_token`
+is the reload webhook token that the host-side `reload-watch` process POSTs
+to the daemon (its plaintext also lives in Vault at
+`secrets/data/<ns>/daemon#reload_token`); `reload-watch.pid` exists only
+while the watcher is running.
 
 ## Bring-up sequence
 
@@ -566,6 +574,33 @@ start.sh) — never from the environment.
   hint and does not block; if the watcher can't start, start.sh warns and
   continues — the daemon still reloads on `HD_CONFIG_CHECK_INTERVAL`.
 * A failed reload POST warns and keeps watching (retries on the next change).
+
+**Using it (edit → apply immediately).** The rendered config is a copy of
+`bootstrap/`; `bootstrap/` is the single source of truth, so **edit files under
+`bootstrap/`**, not the rendered copy. `make start` re-renders `bootstrap/` into
+`${HD_STATE_DIR}/config` on every run, and `reload-watch` watches exactly that
+rendered dir — so a change becomes visible to the daemon after the debounce
+(no restart, and no waiting up to `HD_CONFIG_CHECK_INTERVAL`):
+
+```bash
+# terminal 1 — keep the watcher running in the foreground (Ctrl-C to stop)
+make reload-watch
+# …or, after `make start` on a TTY, start.sh already launched it in the
+# foreground; just leave that terminal open.
+
+# terminal 2 — edit bootstrap config, then re-render + apply it live
+# (re-render via start.sh; the watcher picks up the refreshed config/)
+make start            # idempotent; re-renders bootstrap/ -> config/, then exits
+
+# status / stop
+make status            # shows "reload-watch: RUNNING (pid N)" when active
+bash scripts/reload-watch.sh --stop   # stop a background watcher (Ctrl-C if foreground)
+```
+
+The watcher must already be running for an edit to apply immediately. If you
+only ran `make start` on a non-tty (piped/CI) run, start it yourself with
+`make reload-watch` in a terminal — otherwise edits still apply, just on the
+next `HD_CONFIG_CHECK_INTERVAL` tick or after `docker compose restart daemon`.
 
 #### Vault outage behavior
 
