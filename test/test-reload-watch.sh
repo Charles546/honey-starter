@@ -196,7 +196,7 @@ sleep 3
 if grep -q 'watcher: fswatch' "${WORK}/t3-watch.log" && [ "$(wc -l < "${WORK}/t3-curl.log" 2>/dev/null || echo 0)" -ge 1 ]; then
   ok "T-R7: fswatch branch selected and drove a reload"
 else
-  bad "T-R7: fswatch branch did not fire (log: $(cat "${WORK}/t3-watch.log" 2>/dev/null | tr '\n' ' '))"
+  bad "T-R7: fswatch branch did not fire (log: $(tr '\n' ' ' < "${WORK}/t3-watch.log" 2>/dev/null || echo empty))"
 fi
 
 # T-R7 status.sh assert: with the watcher running, status.sh reports RUNNING.
