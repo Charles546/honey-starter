@@ -86,7 +86,7 @@ claim_pid() {
   chmod 600 "${PID_FILE}"
 }
 cleanup() {
-  if [ -n "${EVENTS_PID}" ] && kill -0 "${EVENTS_PID}" 2>/dev/null; then
+  if [ -n "${EVENTS_PID:-}" ] && kill -0 "${EVENTS_PID}" 2>/dev/null; then
     kill -TERM "${EVENTS_PID}" 2>/dev/null || true
   fi
   if [ -f "${PID_FILE}" ] && [ "$(cat "${PID_FILE}" 2>/dev/null || true)" = "$$" ]; then
@@ -94,6 +94,17 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# Defensive signal handling: trap INT/TERM so the EXIT-trap cleanup (pid-file
+# removal + coproc teardown) always runs. We do NOT call `exit` from inside the
+# signal handler: when bash is blocked in `read -t` on the coproc fd, running
+# `exit` from within a trap can crash bash (intermittent SIGSEGV). Instead the
+# handler only sets a flag; the main loop notices it (the pending read returns
+# as soon as the trap fires) and breaks out, then `exit`s normally from the top
+# level so the EXIT trap runs cleanup and the status is 128+signo.
+STOP=0
+STOP_SIG=""
+trap 'STOP=1; STOP_SIG=TERM' TERM
+trap 'STOP=1; STOP_SIG=INT' INT
 
 # --- stop mode ----------------------------------------------------------------
 if [ "${1:-}" = "--stop" ]; then
@@ -227,18 +238,60 @@ fi
 start_watcher
 msg_ok "watcher: ${WATCHER}"
 
-# EVENTS_PID is set by bash's coproc for the named coproc EVENTS. Read with a
-# per-iteration timeout so a quiet config dir still lets us notice --stop.
+# EVENTS_PID / EVENTS[] are managed by bash's named coproc EVENTS: they are set
+# when the coproc starts and UNSET when it dies. We read the watcher's output
+# with a per-iteration timeout so a quiet config dir still lets us notice
+# --stop. NOTE: `read -t`'s exit status on a timed-out coproc read is NOT
+# reliable (it can be 142 or 0 depending on the bash context), so we never
+# branch on it to decide "timeout vs EOF" — we check the watcher's liveness
+# directly with kill -0. If the watcher dies (inotifywait killed, watched dir
+# removed, watcher crash) we RESTART it instead of busy-spinning the read.
 pending=0
+restarts=0
 while :; do
-  if IFS= read -r -t "${HD_RELOAD_DEBOUNCE_SECONDS}" -u "${EVENTS[0]}" _line; then
+  if [ "${STOP:-0}" -eq 1 ]; then
+    break
+  fi
+  fd="${EVENTS[0]-}"
+  if [ -z "${fd}" ]; then
+    # watcher ended (coproc fd gone) -> restart it (self-heal, no busy-spin)
+    start_watcher
+    restarts=$((restarts + 1))
+    msg_warn "watcher process ended; restarted (${WATCHER}, restart #${restarts})"
+    pending=0
+    continue
+  fi
+  if IFS= read -r -t "${HD_RELOAD_DEBOUNCE_SECONDS}" -u "${fd}" _line && [ -n "${_line}" ]; then
+    # a real event line arrived: mark pending; the reload fires after a quiet
+    # window. (The -n guard ignores a spurious "read succeeded but empty" — we
+    # never want a phantom line to mark a change.)
     pending=1
-  else
-    # read timed out (no event within the window) -> fire the debounced reload
+    continue
+  fi
+  # No data this round: either a debounce timeout (watcher alive + quiet) or
+  # the watcher just died. Distinguish by liveness, not by read's exit code.
+  if kill -0 "${EVENTS_PID:-}" 2>/dev/null; then
+    # watcher alive -> true debounce timeout; fire if something changed.
     if [ "${pending}" -eq 1 ]; then
       pending=0
       msg_info "config changed; requesting reload"
       send_reload || true
+    else
+      # Nothing pending. Brief pause so a dying-but-not-yet-reaped watcher can
+      # never turn this into a busy-spin; in steady state we just timed out a
+      # full debounce window, so this is harmless.
+      sleep 0.1
     fi
+  else
+    # watcher dead: bash hasn't unset EVENTS[0] yet; the top-of-loop guard
+    # restarts it on the next pass. Sleep briefly to avoid a hot loop.
+    sleep 0.1
+    pending=0
   fi
 done
+if [ "${STOP:-0}" -eq 1 ]; then
+  case "${STOP_SIG}" in
+    TERM) exit 143 ;;
+    INT)  exit 130 ;;
+  esac
+fi
