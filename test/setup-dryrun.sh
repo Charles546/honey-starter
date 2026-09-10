@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 183 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 184 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -171,13 +171,15 @@
 # (I12a-I12f: static KEEP-IN-SYNC-style assertions that deploy/docker-compose.yaml
 # contains the HD_CA_CERT_FILE read-only bind-mount and the five
 # ${HD_CA_BUNDLE:-} trust env vars, under the Phase 6b freeze-exception)
-# + the 7 Phase 7 automatic config reload checks (J1-J7: static
+# + the 8 Phase 7 automatic config reload checks (J1-J8: static
 # KEEP-IN-SYNC-style assertions that bootstrap/reload.yaml defines the reloader
 # system + webhook hit trigger + reload rule, that bootstrap/init.yaml includes
 # reload.yaml, that deploy/docker-compose.yaml publishes the loopback-only
-# 127.0.0.1:${HD_WEBHOOK_PORT:-18080}->8080 webhook port, and that
+# 127.0.0.1:${HD_WEBHOOK_PORT:-18080}->8080 webhook port, that
 # scripts/start.sh generates/persists ${HD_STATE_DIR}/reload_token (chmod 600)
-# and seeds reload_token plaintext into Vault at secrets/data/<ns>/daemon,
+# and seeds reload_token plaintext into Vault at secrets/data/<ns>/daemon, and
+# that bootstrap/stubs/compat.yaml no-op stubs workflow_announcement +
+# workflow_status (the essentials _default-context hooks every workflow runs),
 # under the Phase 7 freeze-exception).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
@@ -2925,9 +2927,11 @@ rm -rf "${TH2}" "${SH2}"
 # J1-J4. Phase 7 automatic config reload — daemon-side webhook endpoint +
 # reload token plumbing (static KEEP-IN-SYNC-style assertions, mirroring the
 # D-series guards): the new bootstrap/reload.yaml webhook rule, the init.yaml
-# include, the compose daemon loopback-only webhook port publish, and the
-# reload_token file/seed in scripts/start.sh. These are pure file-content
-# greps (no docker, no vault needed).
+# include, the compose daemon loopback-only webhook port publish, the
+# reload_token file/seed in scripts/start.sh, and (J8) the compat.yaml no-op
+# stubs for the essentials _default-context hooks (workflow_announcement +
+# workflow_status) every workflow runs. These are pure file-content greps (no
+# docker, no vault needed).
 COMPOSE_FILE_J="${HERE}/deploy/docker-compose.yaml"
 INIT_FILE_J="${HERE}/bootstrap/init.yaml"
 RELOAD_FILE_J="${HERE}/bootstrap/reload.yaml"
@@ -3002,6 +3006,27 @@ if [ -f "${START_FILE_J}" ]; then
   fi
 else
   ok "J6: start.sh missing — SKIPPED (Phase 7)"
+fi
+COMPAT_FILE_J="${HERE}/bootstrap/stubs/compat.yaml"
+if [ -f "${COMPAT_FILE_J}" ]; then
+  # J8. compat.yaml no-op stubs for workflow_announcement + workflow_status.
+  #     essentials contexts.yaml attaches _events hooks (on_first_action:
+  #     workflow_announcement, on_exit: workflow_status) to EVERY workflow under
+  #     the _default context, but those workflows are generated only when Slack
+  #     is enabled. Without these no-ops every workflow session crashes on first
+  #     action ("workflow_announcement not found") before it does any work; the
+  #     Phase 1 reload webhook is the first workflow to execute end-to-end and
+  #     surfaced this latent gap.
+  if grep -q '^  workflow_announcement:$' "${COMPAT_FILE_J}" \
+     && grep -q '^  workflow_status:$' "${COMPAT_FILE_J}" \
+     && grep -q 'on_first_action hook' "${COMPAT_FILE_J}" \
+     && grep -q 'on_exit hook' "${COMPAT_FILE_J}"; then
+    ok "J8: compat.yaml no-op stubs workflow_announcement + workflow_status (Phase 7)"
+  else
+    bad "J8: compat.yaml missing the no-op hook workflow stubs (Phase 7)"
+  fi
+else
+  ok "J8: compat.yaml missing — SKIPPED (Phase 7)"
 fi
 
 # ============================================================================

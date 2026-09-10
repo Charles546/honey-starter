@@ -13,6 +13,16 @@
 # These no-ops are never triggered while the corresponding integrations stay
 # disabled. If you enable Slack or GitHub in init.yaml, remove this include and
 # the file.
+#
+# Phase 7 freeze-exception (automatic config reload): also stubs
+# `workflow_announcement` and `workflow_status`. essentials contexts.yaml
+# attaches `_events` hooks to EVERY workflow under the `_default` context
+# (`on_first_action: [workflow_announcement]`, `on_exit: [workflow_status]`),
+# but those two hook workflows are generated only when Slack is enabled (they
+# live inside the `without_slack` block of workflow_helper.yaml). Without these
+# no-ops every workflow session crashes on first action with
+# "workflow_announcement not found". Phase 1's reload webhook is the first
+# workflow that executes end-to-end and surfaced this latent gap.
 workflows:
   notify:
     description: no-op chat notification stub when no chat system is configured.
@@ -21,6 +31,16 @@ workflows:
     with:
       notify+: []
       notify_on_error+: []
+  workflow_announcement:
+    description: >-
+      no-op hook stub for the essentials on_first_action hook, which references
+      this workflow for every session even when Slack is disabled. A bare
+      workflow completes cleanly (engine noop), so the parent session proceeds.
+  workflow_status:
+    description: >-
+      no-op hook stub for the essentials on_exit hook, which references this
+      workflow for every session even when Slack is disabled. A bare workflow
+      completes cleanly (engine noop), so the parent session finishes.
   github_getContent:
     description: no-op file fetching stub when the GitHub integration is disabled.
     call_driver: redispubsub.send
