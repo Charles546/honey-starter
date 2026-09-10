@@ -112,7 +112,7 @@ chmod 755 "${STATE}/config" "${STATE}/identity"
 cp -r "${HERE}/bootstrap/." "${STATE}/config/"
 sed -i "s/<ns>/${SMOKE_NS}/g" "${STATE}/config/init.yaml" \
   "${STATE}/config/auth.yaml" "${STATE}/config/engines.yaml" \
-  "${STATE}/config/contexts.yaml"
+  "${STATE}/config/contexts.yaml" "${STATE}/config/reload.yaml"
 sed -i "s/<user>/${SMOKE_USER}/g" "${STATE}/config/init.yaml" \
   "${STATE}/config/auth.yaml" "${STATE}/config/contexts.yaml" \
   "${STATE}/config/tests/api_auth_tests.yaml"
@@ -123,6 +123,14 @@ echo "--- rendered config with ns=${SMOKE_NS} user=${SMOKE_USER}"
 ADMIN_TOKEN="smoke-admin-$(openssl rand -hex 12)"
 ADMIN_TOKEN_HASH="$(htpasswd -bnBC 12 "" "${ADMIN_TOKEN}" | cut -d: -f2 | tr -d '\n')"
 echo "--- admin token generated (bcrypt hash stored in Vault only)"
+
+# --- reload token (Phase 7 automatic-config-reload) -------------------------
+# The daemon resolves LOOKUP[vault,secrets/<ns>/daemon#reload_token] from
+# bootstrap/reload.yaml at config-load time; the vault driver panics if the key
+# is absent. Generate a token here (mirroring scripts/start.sh) and seed it
+# plaintext into Vault below.
+RELOAD_TOKEN="smoke-reload-$(openssl rand -hex 12)"
+echo "--- reload token generated (seeded plaintext into Vault for reload.yaml LOOKUP)"
 
 # --- start infrastructure ---------------------------------------------------
 echo "--- starting valkey + vault"
@@ -211,10 +219,16 @@ chmod 644 "${STATE}/identity/role_id" "${STATE}/identity/secret_id"
 echo "--- AppRole identity files written (chmod 644, readable by daemon root-without-caps; no trailing newline)"
 
 # --- seed namespace secrets ---------------------------------------------------
+# The daemon loads bootstrap/reload.yaml (the Phase 7 automatic-config-reload
+# feature), whose webhook endpoint resolves LOOKUP[vault,secrets/<ns>/daemon#reload_token]
+# at config-load time. The vault driver panics if that key is absent, so seed a
+# reload_token here exactly like start.sh does (plaintext: the webhook if_match
+# compares the incoming form token against this decrypted value).
 vault_exec_token "${ROOT_TOKEN}" kv put "secrets/${SMOKE_NS}/daemon" \
   "admin_token_hash=${ADMIN_TOKEN_HASH}" \
   openai_api_key=sk-smoke-openai \
   openrouter_api_key=sk-smoke-openrouter \
+  "reload_token=${RELOAD_TOKEN}" \
   >/dev/null
 echo "--- seeded secrets/data/${SMOKE_NS}/daemon"
 
