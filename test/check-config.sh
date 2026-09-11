@@ -39,7 +39,7 @@ cp -r "${BOOTSTRAP}/." "$CONFIGDIR"
 cd "$CONFIGDIR"
 
 # Substitute placeholders for structural validation
-sed -i 's/<ns>/dummy/g' init.yaml auth.yaml engines.yaml
+sed -i 's/<ns>/dummy/g' init.yaml auth.yaml engines.yaml reload.yaml
 sed -i 's/<user>/alice/g' init.yaml auth.yaml contexts.yaml
 sed -i 's/<user>/alice/g' tests/api_auth_tests.yaml
 

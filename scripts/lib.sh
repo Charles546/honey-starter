@@ -330,6 +330,26 @@ resolve_htpasswd() {
 }
 # --- end platform-compat shims ---
 
+# stat_mtime FILE -> newest mtime (epoch seconds) of FILE. GNU stat: -c %Y ;
+# BSD/macOS stat: -f %m. This is a HOST-side shim used by reload-watch.sh (the
+# automatic config reload watcher); it lives OUTSIDE the KEEP-IN-SYNC
+# platform-compat block above (that block is byte-identical to setup.sh and
+# frozen) because reload-watch.sh is a standalone non-frozen script, not a
+# lifecycle wrapper. Form is probed once and cached.
+STAT_MTIME_ARGS=""
+stat_mtime() {
+  local f="$1"
+  if [ -z "${STAT_MTIME_ARGS}" ]; then
+    if [ "$(stat -c %Y / 2>/dev/null || true)" != "" ] 2>/dev/null; then
+      STAT_MTIME_ARGS="-c %Y"
+    else
+      STAT_MTIME_ARGS="-f %m"
+    fi
+  fi
+  # shellcheck disable=SC2086
+  stat ${STAT_MTIME_ARGS} "${f}" 2>/dev/null || true
+}
+
 
 
 # Hard requirement: exit if the command is missing.

@@ -76,7 +76,8 @@ curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scrip
 | ⏹️ `make stop` | graceful stop; containers stopped, volumes + `.honey-starter/` kept |
 | 🗑️ `make down` | teardown; containers + default networks removed, volumes + `.honey-starter/` kept |
 | 🗑️⚠️ `make down-volumes` | teardown that also deletes the named volumes (wipes Vault + valkey data) |
-| 📊 `make status` | compose ps + daemon `/healthz` + vault seal status + UI reachability |
+| 📊 `make status` | compose ps + daemon `/healthz` + vault seal status + UI reachability + reload-watch state |
+| 👁️ `make reload-watch` | run the host-side automatic config reload watcher in the foreground (Ctrl-C to stop; `bash scripts/reload-watch.sh --stop` to stop a background one) |
 | 📜 `make logs` | follow the daemon logs |
 
 Tail the UI instead: `bash scripts/logs.sh ui --tail=100` (extra args pass through to `docker compose logs`).

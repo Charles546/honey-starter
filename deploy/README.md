@@ -350,6 +350,10 @@ touch `.honey-starter/` except `start.sh`.
 │                                    #   never mounted; used by scripts only)
 ├── unseal_key                       # chmod 600 — unseal key(s), one per line
 ├── provision.env                    # chmod 600 — <ns>/<user> used on first run
+├── reload_token                     # chmod 600 — reload webhook token (host-only,
+│                                    #   never mounted; POSTed by reload-watch)
+├── reload-watch.pid                 # chmod 600 — reload-watch singleton PID file
+│                                    #   (only present while reload-watch runs)
 ├── config/                          # chmod 755 dir; files a+rX — RENDERED
 │   └── ...                          #   bootstrap/ copy with placeholders
 └── identity/                        # chmod 755 dir
@@ -360,9 +364,13 @@ touch `.honey-starter/` except `start.sh`.
 The `identity/` and `config/` files are bind-mounted into the daemon, whose
 container runs as root-without-caps (`cap_drop: [ALL]`) — see *Hardening
 notes* (the `cap_drop`/`CAP_DAC_OVERRIDE rule`) below for why the modes
-matter. The `admin_token`, `root_token`, `unseal_key` and `provision.env`
-files are host only: nothing is mounted from them, and they are created with
-chmod 600.
+matter. The `admin_token`, `root_token`, `unseal_key`, `provision.env`,
+`reload_token` and `reload-watch.pid` files are host only: nothing is
+mounted from them, and they are created with chmod 600. The `reload_token`
+is the reload webhook token that the host-side `reload-watch` process POSTs
+to the daemon (its plaintext also lives in Vault at
+`secrets/data/<ns>/daemon#reload_token`); `reload-watch.pid` exists only
+while the watcher is running.
 
 ## Bring-up sequence
 
@@ -542,6 +550,57 @@ daemon:
 
 With `watchConfig: false`, config/secret changes require
 `docker compose restart daemon` — there is no periodic reload at all.
+
+#### Automatic config reload (host-side reload-watch)
+
+`scripts/reload-watch.sh` (`make reload-watch`) is an optional host-side watcher
+that makes config edits apply **immediately** instead of waiting up to
+`HD_CONFIG_CHECK_INTERVAL` (default 30m). It watches the rendered config dir
+(`${HD_STATE_DIR}/config`) and, after a short debounce, POSTs to the daemon's
+loopback-only `/reload` webhook (published at `127.0.0.1:${HD_WEBHOOK_PORT:-18080}`
+-> container `:8080`), which triggers the `reload` workflow and re-assembles +
+reloads the config. Because it runs on the host (not in a container), it reads
+the reload token from `${HD_STATE_DIR}/reload_token` (chmod 600, persisted by
+start.sh) — never from the environment.
+
+* Watcher selection: inotifywait -> fswatch -> polling fallback (overridable
+  with `HD_RELOAD_WATCHER`); the polling fallback uses the newest-config-mtime
+  signature and needs no extra binaries.
+* It is a singleton (PID file `${HD_STATE_DIR}/reload-watch.pid`, chmod 600;
+  stale pids are reclaimed; `--stop` sends SIGTERM). `make status` reports
+  whether it is running.
+* On an interactive TTY, `make start` starts it in the foreground at the end of
+  bring-up (Ctrl-C to stop). On non-tty runs it prints a `make reload-watch`
+  hint and does not block; if the watcher can't start, start.sh warns and
+  continues — the daemon still reloads on `HD_CONFIG_CHECK_INTERVAL`.
+* A failed reload POST warns and keeps watching (retries on the next change).
+
+**Using it (edit → apply immediately).** The rendered config is a copy of
+`bootstrap/`; `bootstrap/` is the single source of truth, so **edit files under
+`bootstrap/`**, not the rendered copy. `make start` re-renders `bootstrap/` into
+`${HD_STATE_DIR}/config` on every run, and `reload-watch` watches exactly that
+rendered dir — so a change becomes visible to the daemon after the debounce
+(no restart, and no waiting up to `HD_CONFIG_CHECK_INTERVAL`):
+
+```bash
+# terminal 1 — keep the watcher running in the foreground (Ctrl-C to stop)
+make reload-watch
+# …or, after `make start` on a TTY, start.sh already launched it in the
+# foreground; just leave that terminal open.
+
+# terminal 2 — edit bootstrap config, then re-render + apply it live
+# (re-render via start.sh; the watcher picks up the refreshed config/)
+make start            # idempotent; re-renders bootstrap/ -> config/, then exits
+
+# status / stop
+make status            # shows "reload-watch: RUNNING (pid N)" when active
+bash scripts/reload-watch.sh --stop   # stop a background watcher (Ctrl-C if foreground)
+```
+
+The watcher must already be running for an edit to apply immediately. If you
+only ran `make start` on a non-tty (piped/CI) run, start it yourself with
+`make reload-watch` in a terminal — otherwise edits still apply, just on the
+next `HD_CONFIG_CHECK_INTERVAL` tick or after `docker compose restart daemon`.
 
 #### Vault outage behavior
 
@@ -723,6 +782,54 @@ process. If you run the smoke/E2E (or start.sh) as a non-root WSL user, use the
 (`sudo make smoke`) works with `0600`, but a non-root run is the common case
 and is exactly what the smoke's `0644` accommodates.
 
+## Corporate root CA
+
+By default the daemon trusts the system CA bundle of its container image. If
+your deployment must reach an endpoint (a private git config repo, a remote
+driver registry, an AI/Slack/web API, a python `requests`-based integration)
+that is signed by an **internal / corporate root CA**, feed that CA into the
+daemon container with two managed keys — `HD_CA_CERT_FILE` and `HD_CA_BUNDLE`.
+They are written by `scripts/setup.sh` (Phase 6a) and consumed by
+`deploy/docker-compose.yaml` (Phase 6b).
+
+**Host side (`scripts/setup.sh`).** When a valid `SSL_CERT_FILE` is set on the
+host, `setup.sh` offers to use it as the daemon container root CA bundle. On an
+interactive TTY it prompts (`Detected SSL_CERT_FILE=<path>; use it as the daemon
+container root CA bundle? [Y/n]`, default **YES**); on the non-interactive /
+answers-file path it is **off by default**, enable it with `HONEY_STARTER_USE_CA=1`
+in the environment. `SSL_CERT_FILE` must be a single readable host path to one
+bundled PEM CA file; an unreadable/invalid file is skipped (warn, never enable,
+never die). When enabled, `setup.sh` writes **both** keys to `.env` together:
+
+* `HD_CA_CERT_FILE=<host path of SSL_CERT_FILE>` — the compose bind-mount source.
+* `HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt` — the container path fed to the
+  trust env vars below.
+
+When not enabled, **neither** key is written (zero `.env` delta).
+
+**Container wiring (`deploy/docker-compose.yaml`, daemon service).** The daemon
+runs `read_only: true` with `cap_drop: [ALL]` and `no-new-privileges`, so it
+cannot run `update-ca-certificates` at runtime. Env-based trust backed by a
+read-only bind-mount is the only viable mechanism:
+
+```yaml
+volumes:
+  - ${HD_CA_CERT_FILE:-/dev/null}:/etc/honeydipper/ca/ca-bundle.crt:ro
+environment:
+  SSL_CERT_FILE: ${HD_CA_BUNDLE:-}        # Go / daemon / web / AI / slack
+  GIT_SSL_CAINFO: ${HD_CA_BUNDLE:-}       # git
+  CURL_CA_BUNDLE: ${HD_CA_BUNDLE:-}       # curl
+  NODE_EXTRA_CA_CERTS: ${HD_CA_BUNDLE:-}  # node
+  REQUESTS_CA_BUNDLE: ${HD_CA_BUNDLE:-}   # Python requests
+```
+
+**Inert when no CA is configured.** When `HD_CA_CERT_FILE`/`HD_CA_BUNDLE` are
+unset, the mount source falls back to `/dev/null` (always exists, harmless,
+read-only) and all five env vars render empty (present-but-empty is treated as
+unset by every consumer), so `docker compose config` renders valid with no
+bundle. The keys reach compose unchanged via `start.sh` (it sources `lib.sh`,
+which sources `.env` and exports the `HD_*` keys to the compose subprocess).
+
 ## Bootstrap placeholders
 
 `bootstrap/` is a template config containing `<ns>` and `<user>` placeholders:
@@ -804,7 +911,14 @@ host before merge.
 | `HD_AI_BASE_URL` | `https://api.openai.com/v1` | non-secret AI base URL override (template `.env.AI_BASE_URL`) |
 | `HD_AI_MODEL` | `gpt-5.4-mini` | non-secret AI model override (template `.env.AI_MODEL`) |
 | `HD_CONFIG_CHECK_INTERVAL` | `30m` | daemon config watch interval (deliberate tradeoff — see "Config reload behavior") |
+| `HD_WEBHOOK_PORT` | `18080` | loopback host port for the daemon's `/reload` webhook (compose maps `127.0.0.1:<this>` -> container `:8080`); used by reload-watch |
+| `HD_WEBHOOK_URL` | `http://127.0.0.1:18080/reload` | full webhook URL the reload-watch POSTs to (default derived from `HD_WEBHOOK_PORT`) |
+| `HD_RELOAD_DEBOUNCE_SECONDS` | `3` | reload-watch debounce window (coalesce config changes into at most one reload per window) |
+| `HD_RELOAD_POLL_INTERVAL` | `2` | reload-watch polling fallback interval (used only when neither inotifywait nor fswatch is installed) |
+| `HD_RELOAD_WATCHER` | auto | reload-watch watcher: `inotifywait` \| `fswatch` \| `poll` (auto-detect in that order) |
 | `HD_JWT_SIGNING_KEY` | empty | API session-token signing key (optional; prefer `hd-lookup:` Vault form) |
+| `HD_CA_CERT_FILE` | unset | host path to a bundled PEM root-CA file; compose bind-mount source (see \"Corporate root CA\"; empty/unset = inert, falls back to `/dev/null`) |
+| `HD_CA_BUNDLE` | unset | container path fed to the daemon trust env vars `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `CURL_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` (empty/unset = inert) |
 | `HONEYDIPPER_IMAGE` | pinned build | daemon image tag |
 | `VALKEY_IMAGE` | `valkey/valkey:8.1.0` | valkey image tag |
 | `VAULT_IMAGE` | `hashicorp/vault:1.21.1` | vault image tag |

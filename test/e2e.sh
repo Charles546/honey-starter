@@ -67,6 +67,14 @@ e2e_read() {
   return 1
 }
 
+# stat_mode FILE -> octal permission modes, portable across GNU stat -c and
+# BSD/macOS stat -f (the E2E runs on Linux and macOS).
+stat_mode() {
+  local f="$1" out=""
+  out="$(stat -c '%a' "$f" 2>/dev/null)" || out="$(stat -f '%Lp' "$f" 2>/dev/null)"
+  printf '%s' "${out}"
+}
+
 # Unique throwaway compose project + state dir + high host ports (distinct
 # from the smoke's 19000/19080). Everything below is exported so the start.sh
 # subprocess (which sources scripts/lib.sh itself) sees the same hermetic,
@@ -81,6 +89,8 @@ export HD_STATE_DIR="${STATE}"
 export HD_API_HOST_PORT="${HD_API_HOST_PORT:-19500}"
 export HD_UI_HOST_PORT="${HD_UI_HOST_PORT:-19580}"
 export HD_UI_URL="http://localhost:${HD_UI_HOST_PORT}"
+# Loopback-only webhook/reload endpoint host port (distinct from the smoke's).
+export HD_WEBHOOK_PORT="${HD_WEBHOOK_PORT:-19581}"
 # Keep the daemon's config-check interval longer than the whole E2E run (a
 # local-dir init repo reloads unconditionally every tick; 30m bounds the
 # AppRole churn — see deploy/README.md "Config reload behavior").
@@ -287,6 +297,69 @@ if [ "${ui_code}" != "200" ]; then
   exit 1
 fi
 echo "--- UI serving at ${UI_URL}"
+
+# --- 10. Phase 7: reload_token file + webhook config reload -------------------
+# The daemon-side reload endpoint (bootstrap/reload.yaml) + reload_token
+# plumbing (scripts/start.sh) must be live after start.sh: the reload_token
+# file exists chmod 600 in the state dir, and a POST to the loopback-only
+# webhook endpoint with the reload token triggers a non-force config reload
+# (the daemon logs "reload config on broadcast reload message").
+echo "--- Phase 7: reload_token + webhook config reload"
+
+# 10a. reload_token file present, mode 600.
+RELOAD_TOKEN="$(e2e_read "${STATE}/reload_token")"
+if [ -z "${RELOAD_TOKEN}" ]; then
+  echo "FAIL: empty reload_token in ${STATE}" >&2
+  exit 1
+fi
+RELOAD_TOKEN_MODE="$(stat_mode "${STATE}/reload_token")"
+if [ "${RELOAD_TOKEN_MODE}" != "600" ]; then
+  echo "FAIL: ${STATE}/reload_token mode is ${RELOAD_TOKEN_MODE} (expected 600)" >&2
+  exit 1
+fi
+echo "--- reload_token present, mode 600"
+
+# 10b. The reload_token is seeded PLAINTEXT into Vault at secrets/data/<ns>/daemon
+#      (the LOOKUP in bootstrap/reload.yaml resolves against this value).
+RELOAD_TOKEN_SEEDED="$(vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" 2>/dev/null | jq -r '.data.data.reload_token // empty')"
+if [ -z "${RELOAD_TOKEN_SEEDED}" ]; then
+  echo "FAIL: reload_token not seeded into Vault at ${SEED_PATH}" >&2
+  exit 1
+fi
+if [ "${RELOAD_TOKEN_SEEDED}" != "${RELOAD_TOKEN}" ]; then
+  echo "FAIL: seeded reload_token does not match ${STATE}/reload_token (webhook token match would fail)" >&2
+  exit 1
+fi
+echo "--- reload_token seeded plaintext into Vault (matches state file)"
+
+# 10c. POST to the loopback-only webhook endpoint with the reload token.
+#      The webhook driver only listens once reload.yaml is loaded, and the
+#      port is published on 127.0.0.1 only. Expect HTTP 200.
+RELOAD_URL="http://127.0.0.1:${HD_WEBHOOK_PORT}/reload"
+reload_code="$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST --data-urlencode "token=${RELOAD_TOKEN}" "${RELOAD_URL}")"
+if [ "${reload_code}" != "200" ]; then
+  echo "FAIL: POST ${RELOAD_URL} returned ${reload_code} (expected 200)" >&2
+  exit 1
+fi
+echo "--- POST ${RELOAD_URL} returned 200 (webhook matched reloader rule + token)"
+
+# 10d. The daemon performed a non-force config reload: the reload log line
+#      appears in the daemon logs after the POST. Poll briefly for it.
+RELOAD_LOG_SEEN=""
+for ((i = 0; i < 30; i++)); do
+  if "${COMPOSE[@]}" logs --since 2m daemon 2>/dev/null | grep -q "reload config on broadcast reload message"; then
+    RELOAD_LOG_SEEN=1
+    break
+  fi
+  sleep 2
+done
+if [ -z "${RELOAD_LOG_SEEN}" ]; then
+  echo "FAIL: daemon did not log a non-force config reload after the webhook POST" >&2
+  "${COMPOSE[@]}" logs --tail=80 daemon >&2 || true
+  exit 1
+fi
+echo "--- daemon logged non-force config reload on webhook POST (Phase 7 verified)"
 
 echo ""
 echo "=== honey-starter e2e passed ==="

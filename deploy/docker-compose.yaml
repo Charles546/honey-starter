@@ -101,6 +101,11 @@ services:
       - edge
     ports:
       - "${HD_API_HOST_PORT:-9000}:${HD_API_PORT:-9000}"
+      # Loopback-only publish of the webhook endpoint (Phase 7): the daemon's
+      # webhook driver listens on :8080 but only while a rule references it
+      # (reload.yaml). Bind to 127.0.0.1 so the reload endpoint is reachable
+      # only from this host (the reload-watch POSTs here), never the network.
+      - "127.0.0.1:${HD_WEBHOOK_PORT:-18080}:8080"
     environment:
       # config repo (rendered copy of bootstrap/; read-only mount below)
       REPO: /etc/honeydipper/config

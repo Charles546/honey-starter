@@ -73,6 +73,41 @@ is the exact questionnaire contract.
 - Byte-identical vs main — no edits without a documented exception: `scripts/setup.sh`, `bootstrap/*`, `deploy/docker-compose.yaml`, `Makefile`, `test/pty-helper.py`, `.env.example`.
 - Documented `scripts/setup.sh` freeze-exceptions: Phases 1-2 (platform/runtime polish), Phase 5a (`resolve_model_menu_unlisted` hybrid adoption), Phase 5b (the additive TTY-only model-menu hint), and Phase 6a (the corporate-root-CA `SSL_CERT_FILE` detection / TTY prompt / two managed `HD_CA_CERT_FILE`+`HD_CA_BUNDLE` keys).
 - Documented `deploy/docker-compose.yaml` freeze-exception: Phase 6b (the optional corporate-root-CA read-only bind-mount `- ${HD_CA_CERT_FILE:-/dev/null}:/etc/honeydipper/ca/ca-bundle.crt:ro` + the five `${HD_CA_BUNDLE:-}` trust env vars `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `CURL_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE`, plus the explanatory comment). No other edits to the compose file are permitted without a new documented exception.
+- Documented `Makefile` freeze-exception: Phase 7 (host-side automatic config reload) adds the `reload-watch` lifecycle target (`@bash scripts/reload-watch.sh`) and lists it in `.PHONY`. No other edits to the Makefile are permitted without a new documented exception.
+- Documented `.env.example` freeze-exception: Phase 7 (host-side automatic config reload) adds the commented `HD_WEBHOOK_PORT` / `HD_WEBHOOK_URL` / `HD_RELOAD_DEBOUNCE_SECONDS` / `HD_RELOAD_POLL_INTERVAL` / `HD_RELOAD_WATCHER` tunables. No other edits to `.env.example` are permitted without a new documented exception.
+
+## Automatic config reload (host-side reload-watch)
+- **`scripts/reload-watch.sh` is NON-frozen** — unlike the lifecycle scripts it
+  is a standalone host-side watcher (sources lib.sh for the shared msg_*/die/warn
+  helpers + shims), not a docker wrapper. It is invoked directly by the user
+  (`make reload-watch`) and, on an interactive TTY, by `start.sh` at the end of
+  bring-up.
+- **Watcher selection** (overridable `HD_RELOAD_WATCHER=inotifywait|fswatch|poll`):
+  inotifywait -> fswatch -> polling fallback. The polling fallback computes the
+  newest mtime across the config dir (via the shared `stat_mtime` shim) and fires
+  when that signature changes; it establishes a baseline on first check so a start
+  does not spuriously reload.
+- **Debounce**: events are coalesced; a reload fires at most once per
+  `HD_RELOAD_DEBOUNCE_SECONDS` (default 3) after the last change. The event source
+  runs in a NAMED coproc with `exec` (so the coproc PID *is* the watcher, kill()
+  is direct) and the main loop reads its fd with a timeout.
+- **Singleton**: `${HD_STATE_DIR}/reload-watch.pid` (chmod 600) guards against a
+  second instance; a stale (dead) pid is reclaimed. An EXIT trap removes the pid
+  file on normal exit / Ctrl-C / SIGTERM, so `--stop` (and Ctrl-C on the
+  foreground watcher) always cleans up. `--stop` sends SIGTERM.
+- **Token**: read from the `${HD_STATE_DIR}/reload_token` FILE (start.sh persists
+  it, chmod 600) — never from the environment. The POST goes to
+  `HD_WEBHOOK_URL` (default `http://127.0.0.1:${HD_WEBHOOK_PORT:-18080}/reload`)
+  with `--max-time`; a failed POST warns and keeps watching (retries on the next
+  change).
+- **`start.sh` foreground + TTY gate**: on a real terminal (`[ -t 1 ]`) start.sh
+  blocks in the foreground watcher so the operator can Ctrl-C it; on a
+  redirected/non-tty run (CI, e2e, setup-e2e) it prints a `make reload-watch`
+  hint and does NOT block — so the daemon bring-up always completes. If the
+  watcher can't start, start.sh warns and continues (the daemon still reloads on
+  `HD_CONFIG_CHECK_INTERVAL`).
+- **`status.sh`** reports the watcher running state from the pid file
+  (`reload-watch: RUNNING (pid N)` / a stale-pid failure / `not running` hint).
 
 ## status.sh gotchas
 - `stack is not running …` = stdout today (`msg_info`, no `>&2`) — don't "correct" it to stderr.

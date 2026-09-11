@@ -1,0 +1,46 @@
+# Automatic config reload — daemon-side webhook endpoint (Phase 7 freeze-exception).
+#
+# The host-side reload-watch process (Phase 2, scripts/reload-watch.sh) watches
+# the rendered config and POSTs to this endpoint when it changes, so the daemon
+# reloads its config without a restart. This file is loaded from init.yaml and
+# is what causes the webhook driver to actually listen: ReceiverFeatures only
+# starts the :8080 listener when a rule references driver: webhook, so the
+# endpoint comes up only while this file is included (a dynamic feature).
+#
+# The reload token is a secret: it is stored PLAINTEXT in Vault at
+# secrets/data/<ns>/daemon#reload_token (seeded by scripts/start.sh from
+# ${HD_STATE_DIR}/reload_token) and resolved here via LOOKUP at config-load
+# time by the vault driver. The incoming webhook's form `token` field is
+# compared (decrypted) against sysData.token, so the stored value MUST be
+# plaintext — do not hash it (a hash would never match the form value the
+# reload-watch sends).
+#
+# Placeholders:
+#   <ns>   - Vault KV namespace prefix, substituted by render_config just like
+#            every other bootstrap file.
+#
+# The `reload` workflow (non-force) resolves from
+# honeydipper-config-essentials/workflow_helper.yaml; a non-force reload
+# re-reads init.yaml + includes from the bind-mounted read-only config dir.
+---
+systems:
+  reloader:
+    data:
+      path: /reload
+      token: 'LOOKUP[vault,/secrets/data/<ns>/daemon#reload_token]'
+    triggers:
+      hit:
+        driver: webhook
+        if_match:
+          method: POST
+          form:
+            token: $?sysData.token
+          url: '{{ .sysData.path }}'
+        description: Triggered when the host reload-watch POSTs to the reload endpoint with the reload token.
+
+rules:
+  - when:
+      source: { system: reloader, trigger: hit }
+    do:
+      call_workflow: reload
+      description: reload daemon config on webhook from host reload-watch

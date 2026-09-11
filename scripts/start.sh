@@ -14,15 +14,17 @@
 #     persisted to ${HD_STATE_DIR} with chmod 600).
 #   * KV v2 / AppRole / the daemon-read policy / the AppRole role are enabled
 #     or created only when missing (policy + role are idempotent writes).
-#   * the admin token and AI API keys are generated/seeded once and never
-#     clobbered on re-run (admin token is persisted plaintext at
-#     ${HD_STATE_DIR}/admin_token with chmod 600 and printed once; AI keys are
-#     only (re)written when you explicitly set OPENAI_API_KEY /
+#   * the admin token, the reload token and the AI API keys are generated/seeded
+#     once and never clobbered on re-run (admin token is persisted plaintext at
+#     ${HD_STATE_DIR}/admin_token with chmod 600 and printed once; the reload
+#     token is persisted plaintext at ${HD_STATE_DIR}/reload_token with chmod
+#     600; AI keys are only (re)written when you explicitly set OPENAI_API_KEY /
 #     OPENROUTER_API_KEY and re-run).
 #
 # Secret lifecycle (see README.md / deploy/README.md "Vault"):
 #   * ALL operational secrets live in Vault at secrets/data/<ns>/daemon
-#     (admin_token_hash, openai_api_key, openrouter_api_key).
+#     (admin_token_hash, openai_api_key, openrouter_api_key,
+#     reload_token).
 #   * The ONLY secret material outside Vault is:
 #       (a) root token + unseal key(s) in ${HD_STATE_DIR} (chmod 600, host
 #           only, never mounted into any container), and
@@ -140,6 +142,7 @@ STATE_DIR="${HD_STATE_DIR}"
 CONFIG_DIR="${STATE_DIR}/config"
 IDENTITY_DIR="${STATE_DIR}/identity"
 ADMIN_TOKEN_FILE="${STATE_DIR}/admin_token"
+RELOAD_TOKEN_FILE="${STATE_DIR}/reload_token"
 ROOT_TOKEN_FILE="${STATE_DIR}/root_token"
 UNSEAL_KEY_FILE="${STATE_DIR}/unseal_key"
 PROVISION_FILE="${STATE_DIR}/provision.env"
@@ -513,6 +516,26 @@ else
   info "--- admin token generated and persisted (chmod 600)"
 fi
 
+# --- reload token (generate once, persist, print once) -------------------------
+# The reload token is an operational secret whose PLAINTEXT lives in Vault at
+# secrets/data/<ns>/daemon#reload_token (seeded below) AND at
+# ${STATE_DIR}/reload_token (chmod 600, host-only, never mounted). The host-side
+# reload-watch process (Phase 2) POSTs it as a webhook form field; the daemon's
+# reloader rule (bootstrap/reload.yaml) compares the incoming form.token against
+# the decrypted sysData.token, so the Vault value MUST stay PLAINTEXT — do not
+# hash it (a hash would never match the form value the reload-watch sends).
+# It is generated once and never clobbered on re-run (idempotent), mirroring the
+# admin_token lifecycle.
+if [ -s "${RELOAD_TOKEN_FILE}" ]; then
+  RELOAD_TOKEN="$(file_read "${RELOAD_TOKEN_FILE}")" || die "cannot read ${RELOAD_TOKEN_FILE}; re-run start.sh as its owner or with sudo (or remove it to generate a new reload token)"
+  info "--- reload token reused from ${RELOAD_TOKEN_FILE}"
+else
+  RELOAD_TOKEN="$(openssl rand -hex 24)"
+  ( umask 077; printf '%s\n' "${RELOAD_TOKEN}" > "${RELOAD_TOKEN_FILE}" )
+  chmod 600 "${RELOAD_TOKEN_FILE}"
+  info "--- reload token generated and persisted (chmod 600)"
+fi
+
 # --- AI provider keys ---------------------------------------------------------
 # AI API keys are seeded into Vault from the environment when provided. When
 # absent, a clearly-marked placeholder is stored instead so the daemon still
@@ -551,9 +574,11 @@ is_placeholder() {
 #               for ADMIN_TOKEN but is re-salted by htpasswd on every run, so
 #               we only rewrite it when it is missing or the token itself was
 #               regenerated this run (avoids gratuitous writes every start).
-#   MODE=env  : an AI API key. Seed when missing; replace only when an explicit
-#               non-placeholder env value is provided. Never downgrade an
-#               existing value to a placeholder.
+#   MODE=env  : an AI API key, or the reload_token. Seed when missing; replace
+#               only when an explicit non-placeholder env value is provided.
+#               Never downgrade an existing value to a placeholder. reload_token
+#               is stored PLAINTEXT (never hashed) so the webhook form token
+#               matches the decrypted sysData.token.
 seed_one() {
   local key="$1" value="$2" mode="$3"
   local cur
@@ -605,6 +630,10 @@ if vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" >/dev/nul
   fi
   seed_one openai_api_key "${OPENAI_API_KEY}" env
   seed_one openrouter_api_key "${OPENROUTER_API_KEY}" env
+  # reload_token is seeded in env mode too: seeds only when missing, never
+  # clobbers the seeded PLAINTEXT (a fresh value would break the webhook token
+  # match for a host reload-watch still holding the old one).
+  seed_one reload_token "${RELOAD_TOKEN}" env
 else
   # path missing or empty: create it with all three fields at once
   if [ -z "${ADMIN_TOKEN_HASH}" ]; then
@@ -614,6 +643,7 @@ else
     "admin_token_hash=${ADMIN_TOKEN_HASH}" \
     "openai_api_key=${OPENAI_API_KEY}" \
     "openrouter_api_key=${OPENROUTER_API_KEY}" \
+    "reload_token=${RELOAD_TOKEN}" \
     >/dev/null
   info "--- seeded secrets/data/${HONEY_NS}/daemon (created)"
 fi
@@ -687,3 +717,26 @@ msg_info "Root token/unseal key:       ${STATE_DIR} (chmod 600, host-only, never
 info ""
 msg_info "Lifecycle:  make stop | make down | make down-volumes | make status | make logs"
 msg_info "To unseal after a host reboot / 'docker compose restart': re-run make start"
+
+# --- automatic config reload (host-side watcher) ------------------------------
+# The reload-watch script watches ${CONFIG_DIR} and POSTs to the daemon's
+# loopback webhook on change, so editing bootstrap/ + re-rendering takes effect
+# without a restart. It is started IN THE FOREGROUND so the operator can Ctrl-C
+# it (and re-start it later with `make reload-watch`). It is TTY-gated: on a
+# real terminal we block in the watcher; on a redirected/non-tty run (CI, e2e,
+# setup-e2e) we print the hint and do NOT block, so the daemon bring-up still
+# completes. If the watcher cannot start we warn and continue — the daemon is
+# already up and reloads on HD_CONFIG_CHECK_INTERVAL anyway.
+if [ -t 1 ]; then
+  if [ -x "${HONEY_STARTER_DIR}/scripts/reload-watch.sh" ]; then
+    info ""
+    info "--- starting automatic config reload (Ctrl-C to stop; re-start with make reload-watch)"
+    # shellcheck source=scripts/reload-watch.sh
+    bash "${HONEY_STARTER_DIR}/scripts/reload-watch.sh" || warn "reload-watch exited with an error; daemon is up and will still reload on HD_CONFIG_CHECK_INTERVAL"
+  else
+    warn "scripts/reload-watch.sh not found; automatic config reload not started"
+  fi
+else
+  info ""
+  msg_info "Automatic config reload: start it in a terminal with  make reload-watch  (watches ${CONFIG_DIR} and POSTs to the daemon webhook on change)"
+fi

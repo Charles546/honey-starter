@@ -143,7 +143,7 @@
 #
 # Run: bash test/setup-dryrun.sh   (or: make setup-dryrun)
 #
-# 176 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
+# 192 checks total: the 89 pre-Phase-B checks + the 7 Phase B menu checks
 # (B1-B7) + the 6 Phase C masked-key checks (C1-C6) + the 29 Phase D
 # lifecycle rich-output checks (D1-D8 + D8b platform-block sync guard) + the 9
 # Phase 1 E-series Darwin-mock checks (E1-E4 plus E2-ref: preflight_os on
@@ -170,7 +170,25 @@
 # single-quoted string) + the 6 Phase 6b corporate root CA compose wiring checks
 # (I12a-I12f: static KEEP-IN-SYNC-style assertions that deploy/docker-compose.yaml
 # contains the HD_CA_CERT_FILE read-only bind-mount and the five
-# ${HD_CA_BUNDLE:-} trust env vars, under the Phase 6b freeze-exception).
+# ${HD_CA_BUNDLE:-} trust env vars, under the Phase 6b freeze-exception)
+# + the 8 Phase 7 automatic config reload checks (J1-J8: static
+# KEEP-IN-SYNC-style assertions that bootstrap/reload.yaml defines the reloader
+# system + webhook hit trigger + reload rule, that bootstrap/init.yaml includes
+# reload.yaml, that deploy/docker-compose.yaml publishes the loopback-only
+# 127.0.0.1:${HD_WEBHOOK_PORT:-18080}->8080 webhook port, that
+# scripts/start.sh generates/persists ${HD_STATE_DIR}/reload_token (chmod 600)
+# and seeds reload_token plaintext into Vault at secrets/data/<ns>/daemon, and
+# that bootstrap/stubs/compat.yaml no-op stubs workflow_announcement +
+# workflow_status (the essentials _default-context hooks every workflow runs),
+# under the Phase 7 freeze-exception)
+# + the 8 Phase 7 host-side reload-watch checks (K1-K8: static
+# KEEP-IN-SYNC-style assertions that the non-frozen scripts/reload-watch.sh
+# sources lib.sh + guards bash 4+, implements the reload-watch.pid singleton
+# guard (chmod 600, stale reclaim, EXIT trap), the inotifywait->fswatch->poll
+# watcher selection (HD_RELOAD_WATCHER), the debounce loop + curl POST with
+# --max-time (token read from the reload_token FILE), and that start.sh /
+# status.sh / Makefile / .env.example wire the watcher up, under the Phase 2
+# freeze-exceptions for Makefile + .env.example).
 #
 # python3 is OPTIONAL and used only by the pty harnesses (test/pty-helper.py
 # and the Phase C test/pty-mask-helper.py) for the interactive branch-3 prompt
@@ -2913,6 +2931,222 @@ fi
 rm -rf "${TH2}" "${SH2}"
 rm -rf "${TH2}" "${SH2}"
 
+
+# J1-J4. Phase 7 automatic config reload — daemon-side webhook endpoint +
+# reload token plumbing (static KEEP-IN-SYNC-style assertions, mirroring the
+# D-series guards): the new bootstrap/reload.yaml webhook rule, the init.yaml
+# include, the compose daemon loopback-only webhook port publish, the
+# reload_token file/seed in scripts/start.sh, and (J8) the compat.yaml no-op
+# stubs for the essentials _default-context hooks (workflow_announcement +
+# workflow_status) every workflow runs. These are pure file-content greps (no
+# docker, no vault needed).
+COMPOSE_FILE_J="${HERE}/deploy/docker-compose.yaml"
+INIT_FILE_J="${HERE}/bootstrap/init.yaml"
+RELOAD_FILE_J="${HERE}/bootstrap/reload.yaml"
+START_FILE_J="${HERE}/scripts/start.sh"
+if [ -f "${RELOAD_FILE_J}" ]; then
+  # J1. reload.yaml defines the reloader system with the /reload webhook path
+  #     and a Vault-backed LOOKUP token at secrets/data/<ns>/daemon#reload_token.
+  # shellcheck disable=SC2016
+  if grep -q 'LOOKUP\[vault,/secrets/data/<ns>/daemon#reload_token\]' "${RELOAD_FILE_J}"; then
+    ok "J1: bootstrap/reload.yaml defines reloader system with Vault LOOKUP reload_token (Phase 7)"
+  else
+    bad "J1: bootstrap/reload.yaml missing the Vault LOOKUP reload_token (Phase 7)"
+  fi
+  # J2. reload.yaml wires the reloader hit trigger (webhook driver, POST, form
+  #     token from sysData.token, url from sysData.path).
+  # shellcheck disable=SC2016
+  if grep -q '^        driver: webhook$' "${RELOAD_FILE_J}" \
+     && grep -q '^          method: POST$' "${RELOAD_FILE_J}" \
+     && grep -q '^            token: \$?sysData.token$' "${RELOAD_FILE_J}" \
+     && grep -q "^          url: '{{ .sysData.path }}'$" "${RELOAD_FILE_J}"; then
+    ok "J2: reload.yaml webhook hit trigger (driver/POST/form.token/url) (Phase 7)"
+  else
+    bad "J2: reload.yaml missing the webhook hit trigger shape (Phase 7)"
+  fi
+  # J3. reload.yaml defines the reload rule -> call_workflow: reload.
+  if grep -q '^      call_workflow: reload$' "${RELOAD_FILE_J}" \
+     && grep -q '^      description: reload daemon config on webhook from host reload-watch$' "${RELOAD_FILE_J}"; then
+    ok "J3: reload.yaml reload rule calls the reload workflow (Phase 7)"
+  else
+    bad "J3: reload.yaml missing the reload rule -> call_workflow reload (Phase 7)"
+  fi
+else
+  ok "J1: bootstrap/reload.yaml missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${INIT_FILE_J}" ] && grep -q '^  - reload.yaml$' "${INIT_FILE_J}"; then
+  ok "J4: bootstrap/init.yaml includes reload.yaml (Phase 7)"
+else
+  bad "J4: bootstrap/init.yaml missing the reload.yaml include (Phase 7)"
+fi
+if [ -f "${COMPOSE_FILE_J}" ]; then
+  # J5. The daemon publishes the loopback-only webhook endpoint at
+  #     HD_WEBHOOK_PORT (default 18080) -> container :8080.
+  # shellcheck disable=SC2016
+  if grep -q '^      - "127.0.0.1:\${HD_WEBHOOK_PORT:-18080}:8080"$' "${COMPOSE_FILE_J}"; then
+    ok "J5: compose daemon publishes loopback-only 127.0.0.1:${HD_WEBHOOK_PORT:-18080}->8080 (Phase 7)"
+  else
+    bad "J5: compose daemon missing the loopback-only webhook port publish (Phase 7)"
+  fi
+else
+  ok "J5: compose file missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${START_FILE_J}" ]; then
+  # J6. start.sh persists the reload token to ${HD_STATE_DIR}/reload_token with
+  #     chmod 600 (idempotent, never clobbers an existing token).
+  # shellcheck disable=SC2016
+  if grep -q 'RELOAD_TOKEN_FILE="\${STATE_DIR}/reload_token"' "${START_FILE_J}" \
+     && grep -q 'chmod 600 "\${RELOAD_TOKEN_FILE}"' "${START_FILE_J}" \
+     && grep -q 'openssl rand -hex 24' "${START_FILE_J}"; then
+    ok "J6: start.sh generates/persists reload_token (chmod 600, idempotent) (Phase 7)"
+  else
+    bad "J6: start.sh missing reload_token generation/persist (Phase 7)"
+  fi
+  # J7. start.sh seeds reload_token into Vault at secrets/data/<ns>/daemon
+  #     (both the create kv put and the seed_one env path), never hashed.
+  # shellcheck disable=SC2016
+  if grep -q 'seed_one reload_token "\${RELOAD_TOKEN}" env' "${START_FILE_J}" \
+     && grep -q 'reload_token=\${RELOAD_TOKEN}' "${START_FILE_J}" \
+     && grep -q 'MUST stay PLAINTEXT' "${START_FILE_J}"; then
+    ok "J7: start.sh seeds reload_token plaintext into Vault (kv put + seed_one env) (Phase 7)"
+  else
+    bad "J7: start.sh missing reload_token Vault seeding (Phase 7)"
+  fi
+else
+  ok "J6: start.sh missing — SKIPPED (Phase 7)"
+fi
+COMPAT_FILE_J="${HERE}/bootstrap/stubs/compat.yaml"
+if [ -f "${COMPAT_FILE_J}" ]; then
+  # J8. compat.yaml no-op stubs for workflow_announcement + workflow_status.
+  #     essentials contexts.yaml attaches _events hooks (on_first_action:
+  #     workflow_announcement, on_exit: workflow_status) to EVERY workflow under
+  #     the _default context, but those workflows are generated only when Slack
+  #     is enabled. Without these no-ops every workflow session crashes on first
+  #     action ("workflow_announcement not found") before it does any work; the
+  #     Phase 1 reload webhook is the first workflow to execute end-to-end and
+  #     surfaced this latent gap.
+  if grep -q '^  workflow_announcement:$' "${COMPAT_FILE_J}" \
+     && grep -q '^  workflow_status:$' "${COMPAT_FILE_J}" \
+     && grep -q 'on_first_action hook' "${COMPAT_FILE_J}" \
+     && grep -q 'on_exit hook' "${COMPAT_FILE_J}"; then
+    ok "J8: compat.yaml no-op stubs workflow_announcement + workflow_status (Phase 7)"
+  else
+    bad "J8: compat.yaml missing the no-op hook workflow stubs (Phase 7)"
+  fi
+else
+  ok "J8: compat.yaml missing — SKIPPED (Phase 7)"
+fi
+
+# K1-K8. Phase 7 (automatic config reload — host-side reload-watch): static
+# KEEP-IN-SYNC-style assertions (mirroring the D-series guards) that the
+# non-frozen host-side watcher scripts/reload-watch.sh sources lib.sh and
+# implements the singleton PID guard, the inotifywait->fswatch->poll watcher
+# selection, the debounced curl POST (token read from the reload_token FILE),
+# and that start.sh / status.sh / Makefile / .env.example wire the watcher up.
+# Pure file-content greps (no docker, no network, no watcher binaries needed).
+RELOAD_WATCH_K="${HERE}/scripts/reload-watch.sh"
+START_K="${HERE}/scripts/start.sh"
+STATUS_K="${HERE}/scripts/status.sh"
+MAKEFILE_K="${HERE}/Makefile"
+ENVEX_K="${HERE}/.env.example"
+if [ -f "${RELOAD_WATCH_K}" ]; then
+  # K1. reload-watch.sh sources lib.sh (it is a standalone non-frozen script,
+  #     not a docker wrapper) and requires bash 4+.
+  # shellcheck disable=SC2016
+  if grep -q 'source "\$(cd "\$(dirname "\$0")" && pwd)/lib.sh"' "${RELOAD_WATCH_K}" \
+     && grep -q 'BASH_VERSINFO\[0\]' "${RELOAD_WATCH_K}"; then
+    ok "K1: reload-watch.sh sources lib.sh + guards bash 4+ (Phase 7)"
+  else
+    bad "K1: reload-watch.sh missing lib.sh source / bash 4+ guard (Phase 7)"
+  fi
+  # K2. singleton guard: PID file ${HD_STATE_DIR}/reload-watch.pid with chmod
+  #     600, a live-pid check (kill -0), stale-pid reclaim, and an EXIT trap.
+  # shellcheck disable=SC2016
+  if grep -q 'reload-watch.pid' "${RELOAD_WATCH_K}" \
+     && grep -q 'chmod 600 "\${PID_FILE}"' "${RELOAD_WATCH_K}" \
+     && grep -q 'kill -0' "${RELOAD_WATCH_K}" \
+     && grep -q 'trap cleanup EXIT' "${RELOAD_WATCH_K}"; then
+    ok "K2: reload-watch singleton PID guard (reload-watch.pid, chmod 600, stale reclaim, EXIT trap) (Phase 7)"
+  else
+    bad "K2: reload-watch missing the singleton PID guard (Phase 7)"
+  fi
+  # K3. watcher selection inotifywait -> fswatch -> poll, overridable via
+  #     HD_RELOAD_WATCHER.
+  if grep -q 'HD_RELOAD_WATCHER' "${RELOAD_WATCH_K}" \
+     && grep -q 'inotifywait' "${RELOAD_WATCH_K}" \
+     && grep -q 'fswatch' "${RELOAD_WATCH_K}" \
+     && grep -q 'HD_RELOAD_WATCHER=poll' "${RELOAD_WATCH_K}"; then
+    ok "K3: reload-watch watcher selection inotifywait->fswatch->poll (HD_RELOAD_WATCHER) (Phase 7)"
+  else
+    bad "K3: reload-watch missing watcher selection (Phase 7)"
+  fi
+  # K4. debounce loop: HD_RELOAD_DEBOUNCE_SECONDS (default 3) + curl POST to
+  #     HD_WEBHOOK_URL with --max-time.
+  # shellcheck disable=SC2016
+  if grep -q 'HD_RELOAD_DEBOUNCE_SECONDS:=3' "${RELOAD_WATCH_K}" \
+     && grep -q 'curl -fsS --max-time 10 -X POST' "${RELOAD_WATCH_K}" \
+     && grep -q '\${HD_WEBHOOK_URL}' "${RELOAD_WATCH_K}"; then
+    ok "K4: reload-watch debounce loop + curl POST (debounce 3s, --max-time, HD_WEBHOOK_URL) (Phase 7)"
+  else
+    bad "K4: reload-watch missing the debounce/curl POST (Phase 7)"
+  fi
+  # K5. token is read from the reload_token FILE (${HD_STATE_DIR}/reload_token),
+  #     NOT from the environment.
+  # shellcheck disable=SC2016
+  if grep -q 'reload_token' "${RELOAD_WATCH_K}" \
+     && grep -q 'TOKEN_FILE=' "${RELOAD_WATCH_K}" \
+     && grep -q 'data-urlencode "token=' "${RELOAD_WATCH_K}"; then
+    ok "K5: reload-watch reads reload_token from the state-dir FILE (Phase 7)"
+  else
+    bad "K5: reload-watch missing the token-from-file transport (Phase 7)"
+  fi
+else
+  ok "K1: scripts/reload-watch.sh missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${START_K}" ]; then
+  # K6. start.sh invokes reload-watch.sh in the foreground TTY-gated, and
+  #     prints the make reload-watch hint on a non-tty run.
+  if grep -q 'reload-watch.sh' "${START_K}" \
+     && grep -q 'if \[ -t 1 \]' "${START_K}" \
+     && grep -q 'make reload-watch' "${START_K}"; then
+    ok "K6: start.sh invokes reload-watch.sh (TTY-gated foreground + non-tty hint) (Phase 7)"
+  else
+    bad "K6: start.sh missing the reload-watch invocation (Phase 7)"
+  fi
+else
+  ok "K6: scripts/start.sh missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${STATUS_K}" ]; then
+  # K7. status.sh reports the reload-watch running state from the pid file.
+  if grep -q 'reload-watch.pid' "${STATUS_K}" \
+     && grep -q 'reload-watch:' "${STATUS_K}" \
+     && grep -q 'make reload-watch' "${STATUS_K}"; then
+    ok "K7: status.sh reports reload-watch running state from pid file (Phase 7)"
+  else
+    bad "K7: status.sh missing the reload-watch report (Phase 7)"
+  fi
+else
+  ok "K7: scripts/status.sh missing — SKIPPED (Phase 7)"
+fi
+if [ -f "${MAKEFILE_K}" ] && [ -f "${ENVEX_K}" ]; then
+  # K8. Makefile has the reload-watch lifecycle target (+ .PHONY) and
+  #     .env.example documents the HD_WEBHOOK_PORT / HD_WEBHOOK_URL /
+  #     HD_RELOAD_DEBOUNCE_SECONDS / HD_RELOAD_POLL_INTERVAL / HD_RELOAD_WATCHER
+  #     tunables (Phase 7 freeze-exception for Makefile + .env.example).
+  if grep -q '^reload-watch:' "${MAKEFILE_K}" \
+     && grep -q 'reload-watch' "${MAKEFILE_K}" \
+     && grep -q 'HD_WEBHOOK_PORT' "${ENVEX_K}" \
+     && grep -q 'HD_WEBHOOK_URL' "${ENVEX_K}" \
+     && grep -q 'HD_RELOAD_DEBOUNCE_SECONDS' "${ENVEX_K}" \
+     && grep -q 'HD_RELOAD_POLL_INTERVAL' "${ENVEX_K}" \
+     && grep -q 'HD_RELOAD_WATCHER' "${ENVEX_K}"; then
+    ok "K8: Makefile reload-watch target + .env.example webhook/reload-watch tunables (Phase 7)"
+  else
+    bad "K8: Makefile reload-watch target / .env.example tunables missing (Phase 7)"
+  fi
+else
+  ok "K8: Makefile / .env.example missing — SKIPPED (Phase 7)"
+fi
 
 # ============================================================================
 # Phase 6a corporate root CA (I-series): host SSL_CERT_FILE detection, a

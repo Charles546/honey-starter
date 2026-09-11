@@ -29,4 +29,5 @@ includes:
   - engines.yaml
   - agents.yaml
   - contexts.yaml
+  - reload.yaml
   - stubs/compat.yaml
