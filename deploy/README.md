@@ -194,8 +194,11 @@ target's own `start.sh` runs — safe.
   `bootstrap/engines.yaml` (`base_url` fixed to `https://openrouter.ai/api/v1`,
   Vault key field `openrouter_api_key`) but no shipped agent references it —
   the starter agent is hard-bound to `engine: default` (openai). To use
-  OpenRouter, edit the **rendered** copy
-  `.honey-starter/config/agents.yaml` to `engine: openrouter` and re-run
+  OpenRouter, edit the **source of truth** `bootstrap/agents.yaml` to
+  `engine: openrouter`. With the automatic config reload watcher running
+  (`make reload-watch`), that bootstrap edit is auto-rendered into
+  `.honey-starter/config` and applied live — otherwise run `make render-config`
+  (render-only) followed by `docker compose restart daemon`, or simply
   `make start`. `OPENROUTER_API_KEY` is still accepted in the non-interactive
   env contract; `start.sh` seeds it into Vault harmlessly until the rendered
   agent config points at openrouter.
@@ -336,8 +339,13 @@ up out-of-band. These knobs are inert after Vault is initialized.
 (containers + default networks removed, named volumes + state kept),
 `make down-volumes` (also deletes the named volumes — wipes Vault's file
 backend and valkey data), `make status` (compose ps + `/healthz` + vault seal
-status + UI reachability), `make logs` (follow daemon logs). None of them ever
-touch `.honey-starter/` except `start.sh`.
+status + UI reachability), `make logs` (follow daemon logs). The config layer
+adds `make render-config` (render `bootstrap/` → `.honey-starter/config`
+without restarting — the shared render also used by the watcher) and
+`make reload-watch` (run the automatic config reload watcher in the
+foreground). Of these, only `start.sh` brings the stack up; `render-config`
+writes the rendered config dir and `reload-watch` writes the watcher pid file
+(and reads the reload token).
 
 ### .honey-starter/ layout
 
@@ -555,32 +563,63 @@ With `watchConfig: false`, config/secret changes require
 
 `scripts/reload-watch.sh` (`make reload-watch`) is an optional host-side watcher
 that makes config edits apply **immediately** instead of waiting up to
-`HD_CONFIG_CHECK_INTERVAL` (default 30m). It watches the rendered config dir
-(`${HD_STATE_DIR}/config`) and, after a short debounce, POSTs to the daemon's
-loopback-only `/reload` webhook (published at `127.0.0.1:${HD_WEBHOOK_PORT:-18080}`
--> container `:8080`), which triggers the `reload` workflow and re-assembles +
-reloads the config. Because it runs on the host (not in a container), it reads
-the reload token from `${HD_STATE_DIR}/reload_token` (chmod 600, persisted by
-start.sh) — never from the environment.
+`HD_CONFIG_CHECK_INTERVAL` (default 30m). It watches **both** the `bootstrap/`
+source of truth and the rendered config dir (`${HD_STATE_DIR}/config`) and,
+after a short debounce, applies the change live:
 
-* Watcher selection: inotifywait -> fswatch -> polling fallback (overridable
-  with `HD_RELOAD_WATCHER`); the polling fallback uses the newest-config-mtime
-  signature and needs no extra binaries.
-* It is a singleton (PID file `${HD_STATE_DIR}/reload-watch.pid`, chmod 600;
+* **a `bootstrap/` event** → render `bootstrap/` → `${HD_STATE_DIR}/config`
+  (the shared `render_config`, invoked via `scripts/render-config.sh`) **then**
+  POST to the daemon's loopback-only `/reload` webhook (published at
+  `127.0.0.1:${HD_WEBHOOK_PORT:-18080}` → container `:8080`). That triggers the
+  `reload` workflow and re-assembles + reloads the config — so editing
+  `bootstrap/` is **seamless**: the watcher re-renders and applies it live (no
+  manual render step, no restart).
+* **a direct `config/` edit** → POST **only** (no render). Transient hand-edits
+  of the rendered copy still apply live — but see the persistence model below:
+  they are ephemeral and are overwritten by the next bootstrap render or by
+  `make start`.
+
+Because it runs on the host (not in a container), it reads the reload token from
+`${HD_STATE_DIR}/reload_token` (chmod 600, persisted by start.sh) — never from
+the environment.
+
+* **Watcher selection**: inotifywait → fswatch → polling fallback (overridable
+  with `HD_RELOAD_WATCHER`). inotifywait watches both roots with `-r`
+  (recursion covers `bootstrap/stubs` + `bootstrap/tests`); fswatch takes
+  multiple paths and is recursive by default; the polling fallback tracks the
+  newest-mtime signature of each root **separately** and emits which root
+  changed, so it discriminates bootstrap vs config too.
+* **Singleton**: a PID file (`${HD_STATE_DIR}/reload-watch.pid`, chmod 600;
   stale pids are reclaimed; `--stop` sends SIGTERM). `make status` reports
   whether it is running.
+* **No lock**: the render is deterministic/idempotent and uses a `$$`-suffixed
+  staging dir (`.config.staging.$$`, no collision); the PID-file singleton
+  already guards against concurrent watchers; `flock` is not portable on macOS.
 * On an interactive TTY, `make start` starts it in the foreground at the end of
   bring-up (Ctrl-C to stop). On non-tty runs it prints a `make reload-watch`
   hint and does not block; if the watcher can't start, start.sh warns and
   continues — the daemon still reloads on `HD_CONFIG_CHECK_INTERVAL`.
 * A failed reload POST warns and keeps watching (retries on the next change).
+* A failed **render** (non-zero exit, including the placeholder-sanity die)
+  warns and **skips the POST** for that burst while keeping the watcher running —
+  the daemon's last-good config + RollBack + the 30m tick are the safety net;
+  fixing the bootstrap and saving again re-triggers a render. The watcher never
+  POSTs a config it knows didn't render.
 
-**Using it (edit → apply immediately).** The rendered config is a copy of
-`bootstrap/`; `bootstrap/` is the single source of truth, so **edit files under
-`bootstrap/`**, not the rendered copy. `make start` re-renders `bootstrap/` into
-`${HD_STATE_DIR}/config` on every run, and `reload-watch` watches exactly that
-rendered dir — so a change becomes visible to the daemon after the debounce
-(no restart, and no waiting up to `HD_CONFIG_CHECK_INTERVAL`):
+**Persistence model (source of truth vs disposable copy).**
+
+* `bootstrap/` is the **source of truth**. Editing it triggers a render
+  (`bootstrap/` → `${HD_STATE_DIR}/config`) **and** a reload POST at the end of
+  the debounce window — the render always happens **before** the POST, so the
+  daemon never reads a partially-rendered tree.
+* `${HD_STATE_DIR}/config` is a **derived, disposable copy**. Editing it
+  directly triggers a POST only (no render) — useful for a quick live tweak,
+  but **transient**: the next bootstrap render (or `make start`) overwrites it.
+  Treat direct `config/` edits as runtime tweaks, not the canonical source.
+
+**Using it (the seamless flow).** With the watcher running, just edit files
+under `bootstrap/` and they apply live after the debounce — no re-render, no
+restart:
 
 ```bash
 # terminal 1 — keep the watcher running in the foreground (Ctrl-C to stop)
@@ -588,19 +627,36 @@ make reload-watch
 # …or, after `make start` on a TTY, start.sh already launched it in the
 # foreground; just leave that terminal open.
 
-# terminal 2 — edit bootstrap config, then re-render + apply it live
-# (re-render via start.sh; the watcher picks up the refreshed config/)
-make start            # idempotent; re-renders bootstrap/ -> config/, then exits
+# terminal 2 — edit bootstrap config; the watcher auto-renders + applies it live
+#   e.g.  edit bootstrap/agents.yaml   (source of truth)
+#   the watcher renders bootstrap/ -> config/ then POSTs -> daemon reloads
 
 # status / stop
 make status            # shows "reload-watch: RUNNING (pid N)" when active
 bash scripts/reload-watch.sh --stop   # stop a background watcher (Ctrl-C if foreground)
 ```
 
-The watcher must already be running for an edit to apply immediately. If you
-only ran `make start` on a non-tty (piped/CI) run, start it yourself with
-`make reload-watch` in a terminal — otherwise edits still apply, just on the
-next `HD_CONFIG_CHECK_INTERVAL` tick or after `docker compose restart daemon`.
+After a bootstrap render, the watcher's own write to `config/` re-arms a second,
+**benign** reload POST (the bootstrap flag is already cleared, so it does not
+re-render) — expect one render + two idempotent POSTs per bootstrap edit.
+
+**Without the watcher (`make render-config` as the fallback).** `make
+render-config` renders `bootstrap/` → `${HD_STATE_DIR}/config` **without**
+restarting the daemon (it is the same shared render the watcher uses, exposed as
+a thin CLI). It is the non-watcher manual fallback. Note: if no watcher is
+running, `make render-config` alone does **not** apply the change to a running
+daemon — the daemon keeps its stale in-memory config until the next
+`HD_CONFIG_CHECK_INTERVAL` tick. To apply without a watcher, use `make start`
+**instead** (it renders and, if the config changed, restarts the daemon in one
+step) or restart the daemon explicitly with `docker compose restart daemon`.
+Do **not** chain `make render-config` and then `make start` expecting a restart —
+by the time `make start` runs the config is already rendered and unchanged, so it
+is a no-op (no restart happens).
+
+**`.env` vs shell environment.** Configure `HD_STATE_DIR` (and `HONEY_NS` /
+`HONEY_USER`, which are baked into the render) via `.env` at the repo root
+(start.sh and the watcher both load it). The watcher exports `HD_STATE_DIR` to
+the render subprocess so a custom state dir is honored consistently.
 
 #### Vault outage behavior
 

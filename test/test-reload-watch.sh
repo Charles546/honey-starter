@@ -46,13 +46,33 @@ EOF
   chmod +x "$2"
 }
 
+# fake curl that ALSO captures the rendered config file at POST time, so a test
+# can prove the render side-effect completed BEFORE the reload POST fired.
+make_fake_curl_capture() {
+  local log="$1" curlbin="$2" cfg="$3"
+  cat > "$curlbin" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+printf '%s\n' "--- config at POST ---" >> "$log"
+cat "$cfg" >> "$log"
+exit 0
+EOF
+  chmod +x "$curlbin"
+}
+
 # ---- T-R1/T-R2/T-R3/T-R6 (polling branch, real) ------------------------------
 # fresh throwaway state dir with a rendered config dir + token file
 setup_state() {
   local sd="$1"
-  mkdir -p "${sd}/config"
+  mkdir -p "${sd}/config" "${sd}/bootstrap"
   printf 'secret-token\n' > "${sd}/reload_token"
   printf '# base\n' > "${sd}/config/daemon.yaml"
+  # throwaway bootstrap source of truth. BOOTSTRAP_DIR is overridden to point
+  # the watcher + the shared render (scripts/render-config.sh) at THIS temp root
+  # — never the repo's real bootstrap/. (BOOTSTRAP_DIR override lives in lib.sh
+  # outside the KEEP-IN-SYNC regions.)
+  printf 'ns: <ns>\nuser: <user>\n' > "${sd}/bootstrap/daemon.yaml"
+  export BOOTSTRAP_DIR="${sd}/bootstrap"
 }
 
 echo "=== T-R1/T-R2/T-R3/T-R6: polling branch (debounce + group + token) ==="
@@ -297,6 +317,284 @@ fi
 sleep 1
 kill -0 "$WATCH_PID5" 2>/dev/null && { kill -TERM "$WATCH_PID5" 2>/dev/null || true; }
 wait "$WATCH_PID5" 2>/dev/null || true
+
+echo ""
+echo "=== T-R9: bootstrap edit -> render runs BEFORE POST ==="
+SD9="${WORK}/t9-state"
+setup_state "$SD9"
+FAKE_BIN9="${WORK}/t9-bin"
+mkdir -p "$FAKE_BIN9"
+CURL_LOG9="${WORK}/t9-curl.log"
+make_fake_curl_capture "$CURL_LOG9" "${FAKE_BIN9}/curl" "${SD9}/config/daemon.yaml"
+: > "$CURL_LOG9"
+
+export HD_STATE_DIR="$SD9"
+export HD_RELOAD_WATCHER=poll
+export HD_RELOAD_POLL_INTERVAL=1
+export HD_RELOAD_DEBOUNCE_SECONDS=1
+export HD_WEBHOOK_URL=http://127.0.0.1:1/reload
+export HONEY_STARTER_NO_ENV=1
+export PATH="$FAKE_BIN9:$PATH"
+
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+"${RELOAD_WATCH}" > "${WORK}/t9-watch.log" 2>&1 &
+WATCH_PID9=$!
+sleep 2   # let the polling watcher establish its baseline
+
+# edit bootstrap (the source of truth) -> bootstrap event -> render + POST
+printf 'ns: <ns>\nuser: <user>\nengine: changed\n' > "${SD9}/bootstrap/daemon.yaml"
+
+sleep 3   # debounce 1s + poll 1s + margin
+kill -TERM "$WATCH_PID9" 2>/dev/null || true
+wait "$WATCH_PID9" 2>/dev/null || true
+
+RENDERED9="$(cat "${SD9}/config/daemon.yaml" 2>/dev/null || true)"
+if echo "$RENDERED9" | grep -q 'ns: starter' && echo "$RENDERED9" | grep -q 'user: admin'; then
+  ok "T-R9: bootstrap edit rendered substituted <ns>/<user> into config/"
+else
+  bad "T-R9: config/ not rendered with substituted values (got: $(printf '%s' "$RENDERED9" | tr '\n' ' '))"
+fi
+if [ "$(wc -l < "$CURL_LOG9" 2>/dev/null || echo 0)" -ge 1 ] && grep -q 'ns: starter' "$CURL_LOG9" 2>/dev/null; then
+  ok "T-R9: render side-effect (substituted config) preceded the reload POST"
+else
+  bad "T-R9: render did not precede POST (log: $(tr '\n' ' ' < "$CURL_LOG9" 2>/dev/null || echo empty))"
+fi
+
+echo ""
+echo "=== T-R10: config-dir hand-edit -> POST only, NO render ==="
+SD10="${WORK}/t10-state"
+setup_state "$SD10"
+FAKE_BIN10="${WORK}/t10-bin"
+mkdir -p "$FAKE_BIN10"
+CURL_LOG10="${WORK}/t10-curl.log"
+make_fake_curl "$CURL_LOG10" "${FAKE_BIN10}/curl"
+: > "$CURL_LOG10"
+
+export HD_STATE_DIR="$SD10"
+export HD_RELOAD_WATCHER=poll
+export HD_RELOAD_POLL_INTERVAL=1
+export HD_RELOAD_DEBOUNCE_SECONDS=1
+export HD_WEBHOOK_URL=http://127.0.0.1:1/reload
+export HONEY_STARTER_NO_ENV=1
+export PATH="$FAKE_BIN10:$PATH"
+
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+"${RELOAD_WATCH}" > "${WORK}/t10-watch.log" 2>&1 &
+WATCH_PID10=$!
+sleep 2
+
+# hand-edit the rendered config directly (no bootstrap change)
+printf 'HAND_EDIT=1\n' > "${SD10}/config/daemon.yaml"
+
+sleep 3
+kill -TERM "$WATCH_PID10" 2>/dev/null || true
+wait "$WATCH_PID10" 2>/dev/null || true
+
+POSTS10="$(wc -l < "$CURL_LOG10" 2>/dev/null || echo 0)"
+CONFIG10="$(cat "${SD10}/config/daemon.yaml" 2>/dev/null || true)"
+if [ "$POSTS10" -ge 1 ]; then
+  ok "T-R10: config hand-edit fired a reload POST"
+else
+  bad "T-R10: no POST after config hand-edit"
+fi
+if echo "$CONFIG10" | grep -q 'HAND_EDIT=1'; then
+  ok "T-R10: hand-edit survived (no render overwrote it) — source-aware discriminator"
+else
+  bad "T-R10: hand-edit overwritten by a render (got: $(printf '%s' "$CONFIG10" | tr '\n' ' '))"
+fi
+if [ -z "$(ls "${SD10}"/.config.staging.* 2>/dev/null || true)" ]; then
+  ok "T-R10: no staging leftover (render did not run)"
+else
+  bad "T-R10: staging leftover indicates a render ran"
+fi
+
+echo ""
+echo "=== T-R11: render failure -> warn + keep watching + NO POST; fix recovers ==="
+SD11="${WORK}/t11-state"
+setup_state "$SD11"
+# a stray placeholder in a newline-named bootstrap file makes the shared render
+# fail (the substitution's read -r splits the path; sed dies on the bad path).
+BADFILE="${SD11}/bootstrap/bad
+name.yaml"
+printf 'stray <ns> placeholder\n' > "$BADFILE"
+FAKE_BIN11="${WORK}/t11-bin"
+mkdir -p "$FAKE_BIN11"
+CURL_LOG11="${WORK}/t11-curl.log"
+make_fake_curl "$CURL_LOG11" "${FAKE_BIN11}/curl"
+: > "$CURL_LOG11"
+
+export HD_STATE_DIR="$SD11"
+export HD_RELOAD_WATCHER=poll
+export HD_RELOAD_POLL_INTERVAL=1
+export HD_RELOAD_DEBOUNCE_SECONDS=1
+export HD_WEBHOOK_URL=http://127.0.0.1:1/reload
+export HONEY_STARTER_NO_ENV=1
+export PATH="$FAKE_BIN11:$PATH"
+
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+"${RELOAD_WATCH}" > "${WORK}/t11-watch.log" 2>&1 &
+WATCH_PID11=$!
+sleep 2
+
+# trigger a bootstrap change -> render attempt -> fails
+printf 'ns: <ns>\nuser: <user>\nchanged=1\n' > "${SD11}/bootstrap/daemon.yaml"
+sleep 3
+
+if grep -q 'render failed; skipping reload POST' "${WORK}/t11-watch.log" 2>/dev/null; then
+  ok "T-R11: render failure warned + skipped the reload POST"
+else
+  bad "T-R11: no render-failure warning (log: $(tr '\n' ' ' < "${WORK}/t11-watch.log" 2>/dev/null || echo empty))"
+fi
+POSTS11="$(wc -l < "$CURL_LOG11" 2>/dev/null || echo 0)"
+if [ "$POSTS11" -eq 0 ]; then
+  ok "T-R11: no POST fired for the failed render burst"
+else
+  bad "T-R11: POST fired despite render failure ($POSTS11 POST(s))"
+fi
+if kill -0 "$WATCH_PID11" 2>/dev/null; then
+  ok "T-R11: watcher kept running after render failure"
+else
+  bad "T-R11: watcher stopped after render failure"
+fi
+
+# fix: remove the stray placeholder file, trigger another bootstrap change -> recovers
+rm -f "$BADFILE"
+printf 'ns: <ns>\nuser: <user>\nchanged=2\n' > "${SD11}/bootstrap/daemon.yaml"
+sleep 3
+POSTS11B="$(wc -l < "$CURL_LOG11" 2>/dev/null || echo 0)"
+CONFIG11="$(cat "${SD11}/config/daemon.yaml" 2>/dev/null || true)"
+if [ "$POSTS11B" -ge 1 ] && echo "$CONFIG11" | grep -q 'ns: starter'; then
+  ok "T-R11: after fixing bootstrap, next save re-rendered and POSTed (recovered)"
+else
+  bad "T-R11: did not recover after fix (POSTs=$POSTS11B config=$(printf '%s' "$CONFIG11" | tr '\n' ' '))"
+fi
+kill -TERM "$WATCH_PID11" 2>/dev/null || true
+wait "$WATCH_PID11" 2>/dev/null || true
+
+echo ""
+echo "=== T-R12: bootstrap burst coalescing -> exactly ONE render ==="
+SD12="${WORK}/t12-state"
+setup_state "$SD12"
+FAKE_BIN12="${WORK}/t12-bin"
+mkdir -p "$FAKE_BIN12"
+CURL_LOG12="${WORK}/t12-curl.log"
+make_fake_curl "$CURL_LOG12" "${FAKE_BIN12}/curl"
+: > "$CURL_LOG12"
+
+export HD_STATE_DIR="$SD12"
+export HD_RELOAD_WATCHER=poll
+export HD_RELOAD_POLL_INTERVAL=1
+export HD_RELOAD_DEBOUNCE_SECONDS=1
+export HD_WEBHOOK_URL=http://127.0.0.1:1/reload
+export HONEY_STARTER_NO_ENV=1
+export PATH="$FAKE_BIN12:$PATH"
+
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+"${RELOAD_WATCH}" > "${WORK}/t12-watch.log" 2>&1 &
+WATCH_PID12=$!
+sleep 2
+
+# N rapid bootstrap writes within the debounce window
+printf 'ns: <ns>\n' > "${SD12}/bootstrap/f1.yaml"
+printf 'ns: <ns>\n' > "${SD12}/bootstrap/f2.yaml"
+printf 'ns: <ns>\n' > "${SD12}/bootstrap/f3.yaml"
+
+sleep 4   # debounce 1s + poll 1s + margin (incl. the benign follow-up POST window)
+kill -TERM "$WATCH_PID12" 2>/dev/null || true
+wait "$WATCH_PID12" 2>/dev/null || true
+
+RENDERS12="$(grep -c 'rendered config refreshed' "${WORK}/t12-watch.log" 2>/dev/null || true)"
+POSTS12="$(wc -l < "$CURL_LOG12" 2>/dev/null || echo 0)"
+if [ "$RENDERS12" -eq 1 ]; then
+  ok "T-R12: bootstrap burst coalesced into exactly ONE render"
+else
+  bad "T-R12: expected exactly 1 render, got $RENDERS12 (log: $(tr '\n' ' ' < "${WORK}/t12-watch.log" 2>/dev/null || echo empty))"
+fi
+if [ "$POSTS12" -ge 1 ]; then
+  ok "T-R12: burst produced >=1 reload POST ($POSTS12 POST(s))"
+else
+  bad "T-R12: no POST after bootstrap burst"
+fi
+
+echo ""
+echo "=== T-R13: inotifywait -r + both roots; poll branch discriminates roots ==="
+SD13="${WORK}/t13-state"
+setup_state "$SD13"
+FAKE_BIN13="${WORK}/t13-bin"
+mkdir -p "$FAKE_BIN13"
+CURL_LOG13="${WORK}/t13-curl.log"
+make_fake_curl "$CURL_LOG13" "${FAKE_BIN13}/curl"
+: > "$CURL_LOG13"
+INOTIFY_ARGS_LOG="${WORK}/t13-inotify.log"
+cat > "${FAKE_BIN13}/inotifywait" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$INOTIFY_ARGS_LOG"
+sleep 60
+EOF
+chmod +x "${FAKE_BIN13}/inotifywait"
+
+export HD_STATE_DIR="$SD13"
+export HD_RELOAD_WATCHER=inotifywait
+export HD_RELOAD_DEBOUNCE_SECONDS=1
+export HD_WEBHOOK_URL=http://127.0.0.1:1/reload
+export HONEY_STARTER_NO_ENV=1
+export PATH="$FAKE_BIN13:$PATH"
+
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+"${RELOAD_WATCH}" > "${WORK}/t13-watch.log" 2>&1 &
+WATCH_PID13=$!
+sleep 2
+
+INOTIFY_ARGS="$(cat "$INOTIFY_ARGS_LOG" 2>/dev/null || true)"
+if echo "$INOTIFY_ARGS" | grep -q -- '-r'   && echo "$INOTIFY_ARGS" | grep -q "$SD13/bootstrap"   && echo "$INOTIFY_ARGS" | grep -q "$SD13/config"; then
+  ok "T-R13: inotifywait branch uses -r and watches both bootstrap/ + config/"
+else
+  bad "T-R13: inotifywait args missing -r or a root (args: $INOTIFY_ARGS)"
+fi
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+sleep 1
+kill -0 "$WATCH_PID13" 2>/dev/null && { kill -TERM "$WATCH_PID13" 2>/dev/null || true; }
+wait "$WATCH_PID13" 2>/dev/null || true
+
+# poll branch discrimination: a config edit must NOT render, a bootstrap edit MUST
+SD13b="${WORK}/t13b-state"
+setup_state "$SD13b"
+FAKE_BIN13b="${WORK}/t13b-bin"
+mkdir -p "$FAKE_BIN13b"
+CURL_LOG13b="${WORK}/t13b-curl.log"
+make_fake_curl "$CURL_LOG13b" "${FAKE_BIN13b}/curl"
+: > "$CURL_LOG13b"
+export HD_STATE_DIR="$SD13b"
+export HD_RELOAD_WATCHER=poll
+export HD_RELOAD_POLL_INTERVAL=1
+export HD_RELOAD_DEBOUNCE_SECONDS=1
+export HD_WEBHOOK_URL=http://127.0.0.1:1/reload
+export HONEY_STARTER_NO_ENV=1
+export PATH="$FAKE_BIN13b:$PATH"
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+"${RELOAD_WATCH}" > "${WORK}/t13b-watch.log" 2>&1 &
+WATCH_PID13b=$!
+sleep 2
+printf 'HAND_EDIT=1\n' > "${SD13b}/config/daemon.yaml"
+sleep 3
+C13b="$(cat "${SD13b}/config/daemon.yaml" 2>/dev/null || true)"
+if echo "$C13b" | grep -q 'HAND_EDIT=1'; then
+  ok "T-R13: poll branch — config hand-edit did NOT trigger a render (POST only)"
+else
+  bad "T-R13: poll branch rendered over a config hand-edit (got: $(printf '%s' "$C13b" | tr '\n' ' '))"
+fi
+printf 'ns: <ns>\nuser: <user>\n' > "${SD13b}/bootstrap/daemon.yaml"
+sleep 3
+C13c="$(cat "${SD13b}/config/daemon.yaml" 2>/dev/null || true)"
+if echo "$C13c" | grep -q 'ns: starter'; then
+  ok "T-R13: poll branch — bootstrap edit DID trigger a render (source-aware)"
+else
+  bad "T-R13: poll branch did not render on bootstrap edit (got: $(printf '%s' "$C13c" | tr '\n' ' '))"
+fi
+"${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
+sleep 1
+kill -0 "$WATCH_PID13b" 2>/dev/null && { kill -TERM "$WATCH_PID13b" 2>/dev/null || true; }
+wait "$WATCH_PID13b" 2>/dev/null || true
 
 echo ""
 echo "=== reload-watch tests: ${PASS} passed, ${FAIL} failed ==="

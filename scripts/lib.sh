@@ -5,7 +5,7 @@ set -euo pipefail
 
 # Paths
 HONEY_STARTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BOOTSTRAP_DIR="${HONEY_STARTER_DIR}/bootstrap"
+: "${BOOTSTRAP_DIR:=${HONEY_STARTER_DIR}/bootstrap}"
 DEPLOY_DIR="${HONEY_STARTER_DIR}/deploy"
 # Exported: variables are consumed by scripts that source this library
 # (e.g. start.sh and the lifecycle/test helpers).
@@ -351,6 +351,86 @@ stat_mtime() {
 }
 
 
+
+# render_config - render bootstrap/ into ${HD_STATE_DIR}/config. This is the
+# SINGLE SOURCE OF TRUTH for render, shared by start.sh and render-config.sh so
+# they can never drift. It is SELF-CONTAINED (no start.sh context assumed): it
+# derives STATE_DIR/CONFIG_DIR from HD_STATE_DIR with the same default +
+# relative-anchoring rules start.sh uses, defaults + validates HONEY_NS/HONEY_USER
+# the same way, and then stages/substitutes/compares/overwrites exactly as the
+# original start.sh render always did. It is set -euo pipefail-safe. On return
+# CONFIG_CHANGED is 1 if the rendered config changed (0 if unchanged). It dies
+# (placeholder-sanity) if any <ns>/<user> placeholder remains in the rendered
+# output. Like stat_mtime above, it lives OUTSIDE the KEEP-IN-SYNC marker regions
+# (they are byte-identical to setup.sh and frozen).
+render_config() {
+  local staging
+  # Same HD_STATE_DIR default + relative-anchoring rules as start.sh.
+  if [ -z "${HD_STATE_DIR:-}" ]; then
+    HD_STATE_DIR="${HONEY_STARTER_DIR}/.honey-starter"
+  else
+    case "${HD_STATE_DIR}" in
+      /*) ;;
+      *) HD_STATE_DIR="${HONEY_STARTER_DIR}/${HD_STATE_DIR}" ;;
+    esac
+  fi
+  STATE_DIR="${HD_STATE_DIR}"
+  CONFIG_DIR="${STATE_DIR}/config"
+  mkdir -p "${CONFIG_DIR}"
+
+  # Same <ns>/<user> defaults + charset validation as start.sh.
+  : "${HONEY_NS:=starter}"
+  : "${HONEY_USER:=admin}"
+  case "${HONEY_NS}" in
+    ''|*/*|*[!A-Za-z0-9._-]*)
+      die "HONEY_NS must be a single Vault path segment ([A-Za-z0-9._-]+), got: ${HONEY_NS}"
+      ;;
+  esac
+  case "${HONEY_USER}" in
+    ''|*/*|*[!A-Za-z0-9@._-]*)
+      die "HONEY_USER must be a plain subject token ([A-Za-z0-9@._-]+), got: ${HONEY_USER}"
+      ;;
+  esac
+
+  staging="${STATE_DIR}/.config.staging.$$"
+  rm -rf "${staging}"
+  mkdir -p "${staging}"
+  cp -r "${BOOTSTRAP_DIR}/." "${staging}/"
+
+  local f
+  while IFS= read -r f; do
+    sed_inplace "s/<ns>/${HONEY_NS}/g" "${f}"
+  done < <(grep -rl '<ns>' "${staging}" 2>/dev/null || true)
+  while IFS= read -r f; do
+    sed_inplace "s/<user>/${HONEY_USER}/g" "${f}"
+  done < <(grep -rl '<user>' "${staging}" 2>/dev/null || true)
+
+  # normalize perms so the daemon's root-without-caps can read the mount
+  chmod -R a+rX "${staging}"
+
+  # shellcheck disable=SC2034   # CONFIG_CHANGED is a function-output global read
+  #                              # by callers (start.sh, render-config.sh) — not unused.
+  if [ -d "${CONFIG_DIR}" ] && diff -rq "${staging}" "${CONFIG_DIR}" >/dev/null 2>&1; then
+    rm -rf "${staging}"
+    CONFIG_CHANGED=0
+    info "--- rendered config unchanged (ns=${HONEY_NS} user=${HONEY_USER})"
+  else
+    # refresh in place (keep the CONFIG_DIR inode so a running daemon's bind
+    # mount keeps working); a running daemon picks the change up on its next
+    # config check tick or after `docker compose restart daemon`.
+    find "${CONFIG_DIR}" -mindepth 1 -delete 2>/dev/null || true
+    cp -r "${staging}/." "${CONFIG_DIR}/"
+    rm -rf "${staging}"
+    chmod -R a+rX "${CONFIG_DIR}"
+    CONFIG_CHANGED=1
+    info "--- rendered config refreshed (ns=${HONEY_NS} user=${HONEY_USER})"
+  fi
+
+  # sanity: no placeholders may remain in the rendered config
+  if grep -rEq '<ns>|<user>' "${CONFIG_DIR}" 2>/dev/null; then
+    die "rendered config still contains <ns>/<user> placeholders"
+  fi
+}
 
 # Hard requirement: exit if the command is missing.
 require_cmd() {

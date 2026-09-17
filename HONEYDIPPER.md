@@ -73,7 +73,7 @@ is the exact questionnaire contract.
 - Byte-identical vs main — no edits without a documented exception: `scripts/setup.sh`, `bootstrap/*`, `deploy/docker-compose.yaml`, `Makefile`, `test/pty-helper.py`, `.env.example`.
 - Documented `scripts/setup.sh` freeze-exceptions: Phases 1-2 (platform/runtime polish), Phase 5a (`resolve_model_menu_unlisted` hybrid adoption), Phase 5b (the additive TTY-only model-menu hint), and Phase 6a (the corporate-root-CA `SSL_CERT_FILE` detection / TTY prompt / two managed `HD_CA_CERT_FILE`+`HD_CA_BUNDLE` keys).
 - Documented `deploy/docker-compose.yaml` freeze-exception: Phase 6b (the optional corporate-root-CA read-only bind-mount `- ${HD_CA_CERT_FILE:-/dev/null}:/etc/honeydipper/ca/ca-bundle.crt:ro` + the five `${HD_CA_BUNDLE:-}` trust env vars `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `CURL_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE`, plus the explanatory comment). No other edits to the compose file are permitted without a new documented exception.
-- Documented `Makefile` freeze-exception: Phase 7 (host-side automatic config reload) adds the `reload-watch` lifecycle target (`@bash scripts/reload-watch.sh`) and lists it in `.PHONY`. No other edits to the Makefile are permitted without a new documented exception.
+- Documented `Makefile` freeze-exception: Phase 7 + Phase 8 (host-side automatic config reload) add the `reload-watch` lifecycle target (`@bash scripts/reload-watch.sh`) and the `render-config` lifecycle target (`@bash scripts/render-config.sh`), and list both in `.PHONY`. No other edits to the Makefile are permitted without a new documented exception.
 - Documented `.env.example` freeze-exception: Phase 7 (host-side automatic config reload) adds the commented `HD_WEBHOOK_PORT` / `HD_WEBHOOK_URL` / `HD_RELOAD_DEBOUNCE_SECONDS` / `HD_RELOAD_POLL_INTERVAL` / `HD_RELOAD_WATCHER` tunables. No other edits to `.env.example` are permitted without a new documented exception.
 
 ## Automatic config reload (host-side reload-watch)
@@ -83,10 +83,11 @@ is the exact questionnaire contract.
   (`make reload-watch`) and, on an interactive TTY, by `start.sh` at the end of
   bring-up.
 - **Watcher selection** (overridable `HD_RELOAD_WATCHER=inotifywait|fswatch|poll`):
-  inotifywait -> fswatch -> polling fallback. The polling fallback computes the
-  newest mtime across the config dir (via the shared `stat_mtime` shim) and fires
-  when that signature changes; it establishes a baseline on first check so a start
-  does not spuriously reload.
+  inotifywait -> fswatch -> polling fallback. inotifywait uses `-r` and watches
+  BOTH roots (`bootstrap/` + the config dir); fswatch takes multiple paths and is
+  recursive by default. The polling fallback tracks the newest mtime of EACH root
+  separately (via the shared `stat_mtime` shim) and emits WHICH root changed; it
+  establishes a baseline on first check so a start does not spuriously reload.
 - **Debounce**: events are coalesced; a reload fires at most once per
   `HD_RELOAD_DEBOUNCE_SECONDS` (default 3) after the last change. The event source
   runs in a NAMED coproc with `exec` (so the coproc PID *is* the watcher, kill()
@@ -108,6 +109,43 @@ is the exact questionnaire contract.
   `HD_CONFIG_CHECK_INTERVAL`).
 - **`status.sh`** reports the watcher running state from the pid file
   (`reload-watch: RUNNING (pid N)` / a stale-pid failure / `not running` hint).
+
+- **Phase 8 — watch-both source-aware + seamless auto-render.** `reload-watch.sh`
+  now watches BOTH `${BOOTSTRAP_DIR}` (the source of truth) and
+  `${HD_STATE_DIR}/config`, and classifies each event by its path: a
+  `bootstrap/` event sets BOOTSTRAP_DIRTY and triggers a render at the end of the
+  debounce window (via the shared `render_config` in lib.sh, invoked as
+  `scripts/render-config.sh`) followed by a POST; a direct `config/` edit is a
+  POST only (no render). So editing `bootstrap/` is seamless (auto-render +
+  live apply, no restart), while transient hand-edits of the rendered copy still
+  apply live.
+- **Shared render (`render_config` in lib.sh)** is the single source of truth for
+  render, used by both `start.sh` and `scripts/render-config.sh`. It is
+  SELF-CONTAINED (derives STATE_DIR/CONFIG_DIR from HD_STATE_DIR, defaults +
+  validates HONEY_NS/HONEY_USER, stages `bootstrap/` -> `.config.staging.$$`,
+  substitutes `<ns>`/`<user>`, diffs, overwrites config in place, sets
+  CONFIG_CHANGED, ends with the placeholder-sanity die) and lives OUTSIDE the
+  D8/D8b KEEP-IN-SYNC marker regions.
+- **`make render-config`** (`scripts/render-config.sh`) is the thin CLI wrapper:
+  sources lib.sh, calls the shared `render_config`, prints a hint. It does NOT
+  invoke docker/vault/bring-up. It is the non-watcher fallback — but remember it
+  does NOT restart the daemon; to apply without a watcher use `make start`
+  (renders + restarts if changed) or `docker compose restart daemon`.
+- **Render failure** (non-zero render exit, incl. the placeholder-sanity die):
+  reload-watch warns, SKIPS the POST for that burst, and keeps watching — it
+  never POSTs a config that didn't render (the daemon's last-good config +
+  RollBack + 30m tick are the safety net; the user's next save re-triggers).
+- **Benign follow-up POST**: after a bootstrap render, the watcher's own write to
+  `config/` re-arms pending -> one extra idempotent POST (BOOTSTRAP_DIRTY is
+  already cleared, so no re-render). One render + two POSTs per bootstrap edit is
+  expected.
+- **`export HD_STATE_DIR`**: reload-watch exports HD_STATE_DIR so the render
+  subprocess derives STATE_DIR/CONFIG_DIR to the SAME custom state dir — without
+  this, a custom HD_STATE_DIR would silently render to the default.
+  HD_STATE_DIR / HONEY_NS / HONEY_USER are configured via `.env`.
+- **No lock**: render is deterministic/idempotent + `$$`-staging avoids
+  collision; the PID-file singleton already guards; `flock` is non-portable on
+  macOS.
 
 ## status.sh gotchas
 - `stack is not running …` = stdout today (`msg_info`, no `>&2`) — don't "correct" it to stderr.

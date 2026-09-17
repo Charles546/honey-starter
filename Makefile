@@ -1,6 +1,6 @@
 .PHONY: all lint check-bcrypt check-config compose-config smoke e2e validate \
 	setup-dryrun setup-e2e reload-watch-test start stop down down-volumes status \
-	reload-watch logs
+	reload-watch render-config logs
 
 # Default target: the full validation gate.
 #   lint           -> shellcheck over scripts/*.sh and test/*.sh (no docker)
@@ -113,6 +113,15 @@ status:
 # dir). Stop a background watcher with: bash scripts/reload-watch.sh --stop
 reload-watch:
 	@bash scripts/reload-watch.sh
+
+# Render bootstrap/ into ${HD_STATE_DIR}/config WITHOUT restarting the daemon.
+# This is the shared render (single source of truth, used by reload-watch too)
+# as a thin CLI wrapper; it does NOT invoke docker/vault/bring-up. To apply to
+# a running daemon without a watcher, use `make start` (renders + restarts if
+# changed) or `docker compose restart daemon`; with reload-watch running the
+# change applies live.
+render-config:
+	@bash scripts/render-config.sh
 
 # Follow the daemon logs (extra args pass through to `docker compose logs`).
 logs:

@@ -236,45 +236,13 @@ fi
 # Re-render from bootstrap/ on every run so bootstrap/ stays the single source
 # of truth (edit bootstrap/, not the rendered copy). Compare against the
 # existing rendered config; when unchanged we leave the mount untouched.
-render_config() {
-  local staging
-  staging="${STATE_DIR}/.config.staging.$$"
-  rm -rf "${staging}"
-  mkdir -p "${staging}"
-  cp -r "${BOOTSTRAP_DIR}/." "${staging}/"
-
-  local f
-  while IFS= read -r f; do
-    sed_inplace "s/<ns>/${HONEY_NS}/g" "${f}"
-  done < <(grep -rl '<ns>' "${staging}" 2>/dev/null || true)
-  while IFS= read -r f; do
-    sed_inplace "s/<user>/${HONEY_USER}/g" "${f}"
-  done < <(grep -rl '<user>' "${staging}" 2>/dev/null || true)
-
-  # normalize perms so the daemon's root-without-caps can read the mount
-  chmod -R a+rX "${staging}"
-
-  if [ -d "${CONFIG_DIR}" ] && diff -rq "${staging}" "${CONFIG_DIR}" >/dev/null 2>&1; then
-    rm -rf "${staging}"
-    CONFIG_CHANGED=0
-    info "--- rendered config unchanged (ns=${HONEY_NS} user=${HONEY_USER})"
-  else
-    # refresh in place (keep the CONFIG_DIR inode so a running daemon's bind
-    # mount keeps working); a running daemon picks the change up on its next
-    # config check tick or after `docker compose restart daemon`.
-    find "${CONFIG_DIR}" -mindepth 1 -delete 2>/dev/null || true
-    cp -r "${staging}/." "${CONFIG_DIR}/"
-    rm -rf "${staging}"
-    chmod -R a+rX "${CONFIG_DIR}"
-    CONFIG_CHANGED=1
-    info "--- rendered config refreshed (ns=${HONEY_NS} user=${HONEY_USER})"
-  fi
-
-  # sanity: no placeholders may remain in the rendered config
-  if grep -rEq '<ns>|<user>' "${CONFIG_DIR}" 2>/dev/null; then
-    die "rendered config still contains <ns>/<user> placeholders"
-  fi
-}
+# The render logic itself lives in lib.sh (render_config) — the SINGLE SOURCE
+# OF TRUTH shared with scripts/render-config.sh — so start.sh and the watcher
+# can never drift. It derives STATE_DIR/CONFIG_DIR from HD_STATE_DIR (same
+# default + relative-anchoring rules), defaults/validates HONEY_NS/HONEY_USER,
+# stages bootstrap/ -> .config.staging.$$, substitutes <ns>/<user>, diffs, and
+# overwrites CONFIG_DIR in place (inode kept) exactly as before. Behavior is
+# IDENTICAL to the local definition this replaces.
 CONFIG_CHANGED=0
 render_config
 
