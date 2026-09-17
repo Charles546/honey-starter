@@ -230,43 +230,49 @@ start_watcher() {
       # shellcheck disable=SC2016
       coproc EVENTS {
         exec bash -c '
-          # Anchor change detection to the state at watcher start: B_BASE / C_BASE
-          # were captured by the MAIN process just before this coproc spawned, so
-          # even a delayed first poll (slow/loaded host) still catches a change made
-          # right after launch (it differs from the startup baseline).
-          prev_bootstrap="$B_BASE"
-          prev_config="$C_BASE"
+          prev_bootstrap=""
+          prev_config=""
+          first=1
           while :; do
             nb=""
-            while IFS= read -r f; do
+            # find -print0 + read -d "": each path is NUL-terminated, so a file whose
+            # NAME contains a newline (or any other byte) is read whole and stat-ed
+            # correctly - it can never split a line and break detection.
+            while IFS= read -r -d "" f; do
               m="$(stat ${STAT_MTIME_ARGS} "$f" 2>/dev/null || true)"
               if [ -n "$m" ] && { [ -z "$nb" ] || [ "$m" -gt "$nb" ]; }; then
                 nb="$m"
               fi
-            done < <(find "${BOOTSTRAP_DIR}" -type f 2>/dev/null)
+            done < <(find "${BOOTSTRAP_DIR}" -type f -print0 2>/dev/null)
             nc=""
-            while IFS= read -r f; do
+            while IFS= read -r -d "" f; do
               m="$(stat ${STAT_MTIME_ARGS} "$f" 2>/dev/null || true)"
               if [ -n "$m" ] && { [ -z "$nc" ] || [ "$m" -gt "$nc" ]; }; then
                 nc="$m"
               fi
-            done < <(find "${CONFIG_DIR}" -type f 2>/dev/null)
-            # A change requires a valid (non-empty) previous baseline AND a new
-            # value. An empty baseline (e.g. a transient stat/find miss, or a root
-            # that briefly had no files) must NEVER be treated as "changed" - that
-            # would emit a spurious CONFIG event and a reload POST for a config that
-            # never changed. Instead, silently adopt the first non-empty signature as
-            # the new baseline.
-            if [ -n "$prev_bootstrap" ] && [ -n "$nb" ] && [ "$nb" != "$prev_bootstrap" ]; then
+            done < <(find "${CONFIG_DIR}" -type f -print0 2>/dev/null)
+            if [ -z "$first" ]; then
+              # A change requires a valid (non-empty) previous baseline AND a new
+              # value. An empty baseline (e.g. a transient stat/find miss, or a root
+              # that briefly had no files) must NEVER be treated as "changed" - that
+              # would emit a spurious CONFIG event and a reload POST for a config that
+              # never changed. Instead, silently adopt the first non-empty signature as
+              # the new baseline.
+              if [ -n "$prev_bootstrap" ] && [ -n "$nb" ] && [ "$nb" != "$prev_bootstrap" ]; then
+                prev_bootstrap="$nb"
+                printf "%s\n" "${BOOTSTRAP_DIR}"
+              elif [ -n "$nb" ]; then
+                prev_bootstrap="$nb"
+              fi
+              if [ -n "$prev_config" ] && [ -n "$nc" ] && [ "$nc" != "$prev_config" ]; then
+                prev_config="$nc"
+                printf "%s\n" "${CONFIG_DIR}"
+              elif [ -n "$nc" ]; then
+                prev_config="$nc"
+              fi
+            else
+              first=""
               prev_bootstrap="$nb"
-              printf "%s\n" "${BOOTSTRAP_DIR}"
-            elif [ -n "$nb" ]; then
-              prev_bootstrap="$nb"
-            fi
-            if [ -n "$prev_config" ] && [ -n "$nc" ] && [ "$nc" != "$prev_config" ]; then
-              prev_config="$nc"
-              printf "%s\n" "${CONFIG_DIR}"
-            elif [ -n "$nc" ]; then
               prev_config="$nc"
             fi
             sleep "${HD_RELOAD_POLL_INTERVAL}"
@@ -293,27 +299,6 @@ if [ -z "${HD_RELOAD_WATCHER:-}" ]; then
     HD_RELOAD_WATCHER=poll
   fi
 fi
-# --- polling baseline (startup-race guard) -----------------------------------
-# Compute the newest-mtime signature of each root IN THE MAIN PROCESS at launch
-# and hand it to the polling coproc via exported B_BASE / C_BASE. This anchors the
-# coproc's change detection to the state at watcher start, so a delayed first poll
-# (slow/loaded host) can never "bake in" a change made right after launch and miss
-# it forever. Emits nothing.
-B_BASE=""
-while IFS= read -r _f; do
-  _m="$(stat_mtime "$_f")"
-  if [ -n "$_m" ] && { [ -z "$B_BASE" ] || [ "$_m" -gt "$B_BASE" ]; }; then
-    B_BASE="$_m"
-  fi
-done < <(find "${BOOTSTRAP_DIR}" -type f 2>/dev/null)
-C_BASE=""
-while IFS= read -r _f; do
-  _m="$(stat_mtime "$_f")"
-  if [ -n "$_m" ] && { [ -z "$C_BASE" ] || [ "$_m" -gt "$C_BASE" ]; }; then
-    C_BASE="$_m"
-  fi
-done < <(find "${CONFIG_DIR}" -type f 2>/dev/null)
-export B_BASE C_BASE
 
 start_watcher
 msg_ok "watcher: ${WATCHER}"
