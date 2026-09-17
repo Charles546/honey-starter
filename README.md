@@ -77,12 +77,27 @@ curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scrip
 | 🗑️ `make down` | teardown; containers + default networks removed, volumes + `.honey-starter/` kept |
 | 🗑️⚠️ `make down-volumes` | teardown that also deletes the named volumes (wipes Vault + valkey data) |
 | 📊 `make status` | compose ps + daemon `/healthz` + vault seal status + UI reachability + reload-watch state |
-| 👁️ `make reload-watch` | run the host-side automatic config reload watcher in the foreground (Ctrl-C to stop; `bash scripts/reload-watch.sh --stop` to stop a background one) |
+| 🎨 `make render-config` | render `bootstrap/` → `.honey-starter/config` **without** restarting the daemon (the shared render; the non-watcher fallback) |
+| 👁️ `make reload-watch` | run the host-side automatic config reload watcher in the foreground (edit `bootstrap/` → auto-renders + applies live; Ctrl-C to stop; `bash scripts/reload-watch.sh --stop` to stop a background one) |
 | 📜 `make logs` | follow the daemon logs |
 
 Tail the UI instead: `bash scripts/logs.sh ui --tail=100` (extra args pass through to `docker compose logs`).
 
 Full reset of a deployment: `make down-volumes && rm -rf .honey-starter`.
+
+### Config persistence model (source of truth vs disposable copy)
+
+`bootstrap/` is the **single source of truth**; `make start` renders it into
+`.honey-starter/config` on every run. With the automatic config reload watcher
+running (`make reload-watch`), **editing `bootstrap/` is seamless**: the watcher
+watches both `bootstrap/` and `.honey-starter/config`, and a `bootstrap/` edit is
+auto-rendered into the config dir and then applied live (no manual render step,
+no restart). A direct edit of `.honey-starter/config` is applied live too, but
+it is **transient** — a derived, disposable copy that the next bootstrap render
+(or `make start`) overwrites. Without the watcher, use `make render-config` to
+re-render from `bootstrap/` (and `make start` or `docker compose restart daemon`
+to apply to a running daemon). See [`deploy/README.md`](./deploy/README.md) →
+*Automatic config reload*.
 
 ## 🧩 Multiple instances
 
