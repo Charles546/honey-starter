@@ -23,7 +23,7 @@ fi
 
 # Docker image tag for the daemon. This is the published image on Docker Hub.
 # Override with HONEYDIPPER_IMAGE env var if needed.
-HONEYDIPPER_IMAGE="${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:4.0.0-alpha4-53-g897242b}"
+HONEYDIPPER_IMAGE="${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74}"
 
 # Default values
 : "${VALKEY_ADDR:=127.0.0.1:6379}"

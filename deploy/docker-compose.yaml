@@ -88,7 +88,7 @@ services:
       start_period: 10s
 
   daemon:
-    image: ${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:4.0.0-alpha4-53-g897242b}
+    image: ${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74}
     restart: unless-stopped
     depends_on:
       valkey:
@@ -175,7 +175,7 @@ services:
       - no-new-privileges:true
 
   ui:
-    image: ${HD_UI_IMAGE:-honeydipper/hd-ui:0.1.0-alpha2-52-g0ea2fad}
+    image: ${HD_UI_IMAGE:-honeydipper/hd-ui:0.1.0-alpha2-54-g611fe54}
     restart: unless-stopped
     depends_on:
       daemon:

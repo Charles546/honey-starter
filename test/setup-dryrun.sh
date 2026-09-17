@@ -482,10 +482,10 @@ cat > "${T2}/.env" <<'EOF'
 HD_JWT_SIGNING_KEY=hd-lookup:vault:/secrets/data/starter/daemon#hd_jwt_signing_key
 
 # image pins
-HONEYDIPPER_IMAGE=honeydipper/honeydipper:4.0.0-alpha4-53-g897242b
+HONEYDIPPER_IMAGE=honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74
 VALKEY_IMAGE=valkey/valkey:8.1.0
 VAULT_IMAGE=hashicorp/vault:1.21.1
-HD_UI_IMAGE=honeydipper/hd-ui:0.1.0-alpha2-52-g0ea2fad
+HD_UI_IMAGE=honeydipper/hd-ui:0.1.0-alpha2-54-g611fe54
 HD_STATE_DIR=
 HONEY_NS=oldns
 HONEY_USER=olduser
