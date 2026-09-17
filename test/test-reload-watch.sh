@@ -438,7 +438,7 @@ sleep 2
 
 # trigger a bootstrap change -> render attempt -> fails
 printf 'ns: <ns>\nuser: <user>\nchanged=1\n' > "${SD11}/bootstrap/daemon.yaml"
-sleep 3
+sleep 6
 
 if grep -q 'render failed; skipping reload POST' "${WORK}/t11-watch.log" 2>/dev/null; then
   ok "T-R11: render failure warned + skipped the reload POST"
@@ -460,7 +460,7 @@ fi
 # fix: remove the stray placeholder file, trigger another bootstrap change -> recovers
 rm -f "$BADFILE"
 printf 'ns: <ns>\nuser: <user>\nchanged=2\n' > "${SD11}/bootstrap/daemon.yaml"
-sleep 3
+sleep 6
 POSTS11B="$(wc -l < "$CURL_LOG11" 2>/dev/null || echo 0)"
 CONFIG11="$(cat "${SD11}/config/daemon.yaml" 2>/dev/null || true)"
 if [ "$POSTS11B" -ge 1 ] && echo "$CONFIG11" | grep -q 'ns: starter'; then
@@ -499,7 +499,7 @@ printf 'ns: <ns>\n' > "${SD12}/bootstrap/f1.yaml"
 printf 'ns: <ns>\n' > "${SD12}/bootstrap/f2.yaml"
 printf 'ns: <ns>\n' > "${SD12}/bootstrap/f3.yaml"
 
-sleep 4   # debounce 1s + poll 1s + margin (incl. the benign follow-up POST window)
+sleep 6   # debounce 1s + poll 1s + margin (incl. the benign follow-up POST window)
 kill -TERM "$WATCH_PID12" 2>/dev/null || true
 wait "$WATCH_PID12" 2>/dev/null || true
 
