@@ -8,8 +8,8 @@ deployment. The compose file provisions four services on a Linux or macOS docker
 |------------|-------------------------------------------------|--------------------------------------------------|
 | `valkey`   | `valkey/valkey:8.1.0`                           | Redis-compatible event bus, locks, cache, scheduler |
 | `vault`    | `hashicorp/vault:1.21.1`                        | Secrets store (file backend, non-dev)            |
-| `daemon`   | `honeydipper/honeydipper:4.0.0-alpha4-53-g897242b` | Honeydipper engine/receiver/operator/api/agent   |
-| `ui`       | `honeydipper/hd-ui:0.1.0-alpha2-52-g0ea2fad`    | Web UI (nginx)                                   |
+| `daemon`   | `honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74` | Honeydipper engine/receiver/operator/api/agent   |
+| `ui`       | `honeydipper/hd-ui:0.1.0-alpha2-54-g611fe54`    | Web UI (nginx)                                   |
 
 ## Topology and network model
 

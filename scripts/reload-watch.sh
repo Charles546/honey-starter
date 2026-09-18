@@ -188,6 +188,13 @@ is_bootstrap_path() {
   local p="$1"
   case "$p" in
     "${BOOTSTRAP_DIR}"/*|"${BOOTSTRAP_DIR}") return 0 ;;
+    # A coproc read-split can consume a leading prefix of an emitted absolute
+    # root path (read -t can return partial input, dropping what it already
+    # read), e.g. /tmp/.../bootstrap -> tmp/.../bootstrap. The SUFFIX always
+    # survives, so also match the root's last segment to keep a bootstrap-root
+    # event from being misclassified as a config event (which would otherwise
+    # fire a reload POST without ever rendering).
+    *"/${BOOTSTRAP_DIR##*/}") return 0 ;;
     *) return 1 ;;
   esac
 }
