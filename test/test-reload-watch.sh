@@ -31,6 +31,20 @@ FAIL=0
 ok() { PASS=$((PASS + 1)); printf 'ok   - %s\n' "$*"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL - %s\n' "$*"; }
 
+# wait_for <timeout_seconds> <command-string> : poll the (eval'd) command until it
+# succeeds or the timeout elapses. The reload-watch watcher is async (baseline +
+# debounce + render + POST all take variable time), so a fixed sleep is fragile
+# under CI load / slow runners; waiting on the condition is the robust approach.
+wait_for() {
+  local _deadline="$(( $(date +%s) + $1 ))"
+  local _cond="$2"
+  while ! eval "$_cond"; do
+    [ "$(date +%s)" -ge "$_deadline" ] && return 1
+    sleep 0.2
+  done
+  return 0
+}
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
@@ -339,12 +353,19 @@ export PATH="$FAKE_BIN9:$PATH"
 "${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
 "${RELOAD_WATCH}" > "${WORK}/t9-watch.log" 2>&1 &
 WATCH_PID9=$!
-sleep 2   # let the polling watcher establish its baseline
+# Wait for the watcher to come up and the poll to establish its baseline. The old
+# fixed `sleep 2` is fragile under CI load: if the baseline is taken AFTER the
+# edit, the change is missed entirely (no render, no POST).
+wait_for 15 "grep -q 'watching' '${WORK}/t9-watch.log'" || true
+sleep 1   # let the poll's first baseline cycle complete
 
 # edit bootstrap (the source of truth) -> bootstrap event -> render + POST
 printf 'ns: <ns>\nuser: <user>\nengine: changed\n' > "${SD9}/bootstrap/daemon.yaml"
 
-sleep 3   # debounce 1s + poll 1s + margin
+# Wait (bounded) for the render to land AND a POST that captured the rendered
+# config (proving the render completed BEFORE the reload POST). Replaces the
+# fixed `sleep 3`, which is too tight for a slow/loaded runner.
+wait_for 20 "grep -q 'ns: starter' '${SD9}/config/daemon.yaml' && grep -q 'ns: starter' '${CURL_LOG9}'" || true
 kill -TERM "$WATCH_PID9" 2>/dev/null || true
 wait "$WATCH_PID9" 2>/dev/null || true
 
@@ -434,11 +455,12 @@ export PATH="$FAKE_BIN11:$PATH"
 "${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
 "${RELOAD_WATCH}" > "${WORK}/t11-watch.log" 2>&1 &
 WATCH_PID11=$!
-sleep 2
+wait_for 15 "grep -q 'watching' '${WORK}/t11-watch.log'" || true
+sleep 1
 
 # trigger a bootstrap change -> render attempt -> fails
 printf 'ns: <ns>\nuser: <user>\nchanged=1\n' > "${SD11}/bootstrap/daemon.yaml"
-sleep 6
+wait_for 20 "grep -q 'render failed; skipping reload POST' '${WORK}/t11-watch.log'" || true
 
 if grep -q 'render failed; skipping reload POST' "${WORK}/t11-watch.log" 2>/dev/null; then
   ok "T-R11: render failure warned + skipped the reload POST"
@@ -460,7 +482,7 @@ fi
 # fix: remove the stray placeholder file, trigger another bootstrap change -> recovers
 rm -f "$BADFILE"
 printf 'ns: <ns>\nuser: <user>\nchanged=2\n' > "${SD11}/bootstrap/daemon.yaml"
-sleep 6
+wait_for 20 "test -s '${CURL_LOG11}' && grep -q 'ns: starter' '${SD11}/config/daemon.yaml'" || true
 POSTS11B="$(wc -l < "$CURL_LOG11" 2>/dev/null || echo 0)"
 CONFIG11="$(cat "${SD11}/config/daemon.yaml" 2>/dev/null || true)"
 if [ "$POSTS11B" -ge 1 ] && echo "$CONFIG11" | grep -q 'ns: starter'; then
@@ -492,14 +514,17 @@ export PATH="$FAKE_BIN12:$PATH"
 "${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
 "${RELOAD_WATCH}" > "${WORK}/t12-watch.log" 2>&1 &
 WATCH_PID12=$!
-sleep 2
+wait_for 15 "grep -q 'watching' '${WORK}/t12-watch.log'" || true
+sleep 1
 
 # N rapid bootstrap writes within the debounce window
 printf 'ns: <ns>\n' > "${SD12}/bootstrap/f1.yaml"
 printf 'ns: <ns>\n' > "${SD12}/bootstrap/f2.yaml"
 printf 'ns: <ns>\n' > "${SD12}/bootstrap/f3.yaml"
 
-sleep 6   # debounce 1s + poll 1s + margin (incl. the benign follow-up POST window)
+# Wait (bounded) for the coalesced render + its POST. The burst is debounced so
+# at most one render should fire; the wait just ensures it happened.
+wait_for 20 "grep -q 'rendered config refreshed' '${WORK}/t12-watch.log' && test -s '${CURL_LOG12}'" || true
 kill -TERM "$WATCH_PID12" 2>/dev/null || true
 wait "$WATCH_PID12" 2>/dev/null || true
 
@@ -543,7 +568,7 @@ export PATH="$FAKE_BIN13:$PATH"
 "${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
 "${RELOAD_WATCH}" > "${WORK}/t13-watch.log" 2>&1 &
 WATCH_PID13=$!
-sleep 2
+wait_for 15 "test -s '${INOTIFY_ARGS_LOG}'" || true
 
 INOTIFY_ARGS="$(cat "$INOTIFY_ARGS_LOG" 2>/dev/null || true)"
 if echo "$INOTIFY_ARGS" | grep -q -- '-r'   && echo "$INOTIFY_ARGS" | grep -q "$SD13/bootstrap"   && echo "$INOTIFY_ARGS" | grep -q "$SD13/config"; then
@@ -574,9 +599,10 @@ export PATH="$FAKE_BIN13b:$PATH"
 "${RELOAD_WATCH}" --stop >/dev/null 2>&1 || true
 "${RELOAD_WATCH}" > "${WORK}/t13b-watch.log" 2>&1 &
 WATCH_PID13b=$!
-sleep 2
+wait_for 15 "grep -q 'watching' '${WORK}/t13b-watch.log'" || true
+sleep 1
 printf 'HAND_EDIT=1\n' > "${SD13b}/config/daemon.yaml"
-sleep 3
+wait_for 20 "test -s '${CURL_LOG13b}'" || true
 C13b="$(cat "${SD13b}/config/daemon.yaml" 2>/dev/null || true)"
 if echo "$C13b" | grep -q 'HAND_EDIT=1'; then
   ok "T-R13: poll branch — config hand-edit did NOT trigger a render (POST only)"
@@ -584,7 +610,7 @@ else
   bad "T-R13: poll branch rendered over a config hand-edit (got: $(printf '%s' "$C13b" | tr '\n' ' '))"
 fi
 printf 'ns: <ns>\nuser: <user>\n' > "${SD13b}/bootstrap/daemon.yaml"
-sleep 3
+wait_for 20 "grep -q 'ns: starter' '${SD13b}/config/daemon.yaml'" || true
 C13c="$(cat "${SD13b}/config/daemon.yaml" 2>/dev/null || true)"
 if echo "$C13c" | grep -q 'ns: starter'; then
   ok "T-R13: poll branch — bootstrap edit DID trigger a render (source-aware)"
