@@ -350,7 +350,66 @@ stat_mtime() {
   stat ${STAT_MTIME_ARGS} "${f}" 2>/dev/null || true
 }
 
+# identity_file_mode [CAN_ROOT] -> prints "600" or "644": the permission mode
+# the AppRole identity files (role_id/secret_id) must have on THIS host so the
+# daemon's root-without-caps process (cap_drop: [ALL] in deploy/docker-compose
+# -> no CAP_DAC_OVERRIDE) can read them through the bind mount.
+#
+#   darwin            -> 644 ALWAYS. Docker Desktop / Rancher Desktop file
+#                        sharing (VirtioFS / gRPC-FUSE) does NOT present the
+#                        host's chown 0:0 as uid 0 inside the container: a 0600
+#                        root-owned host file is owned by the desktop user's
+#                        uid inside the container, so root-without-caps sees a
+#                        non-root-owned 0600 file and gets Permission denied.
+#                        0644 (world-readable) is the only form that works.
+#   linux + CAN_ROOT=1 -> 600 (0600 + chown 0:0 keeps the pair host-private
+#                        while bind mounts preserve host uid 0 for the daemon).
+#   linux + CAN_ROOT=0 -> 644 (host-user-owned 0600 is unreadable by
+#                        root-without-caps; relax to world-readable).
+#
+# Pass the caller's CAN_ROOT (start.sh's richer detection, which also allows an
+# interactive sudo password prompt) or omit it to probe id -u + sudo -n here
+# (the hermetic test path, where platform_os / id / sudo are mocked).
+identity_file_mode() {
+  local can_root="${1:-}"
+  if [ -z "${can_root}" ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+      can_root=1
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+      can_root=1
+    else
+      can_root=0
+    fi
+  fi
+  if [ "$(platform_os)" = "darwin" ]; then
+    printf '644'
+  elif [ "${can_root}" -eq 1 ]; then
+    printf '600'
+  else
+    printf '644'
+  fi
+}
 
+# ensure_identity_daemon_readable FILE... -> darwin-only self-heal: chmod each
+# existing identity file to 0644 so a previously-failed install (0600
+# root-owned, which the macOS file-sharing layer presents as non-root-owned in
+# the container) is repaired on re-run WITHOUT a state reset. Uses sudo when
+# the file is root-owned and we are not root. No-op on every non-darwin host
+# (Linux/WSL2 keeps 0600 + root ownership).
+ensure_identity_daemon_readable() {
+  [ "$(platform_os)" = "darwin" ] || return 0
+  local f
+  for f in "$@"; do
+    [ -e "${f}" ] || continue
+    if chmod 644 "${f}" 2>/dev/null; then
+      :
+    elif [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+      sudo -n chmod 644 "${f}" 2>/dev/null || sudo chmod 644 "${f}" 2>/dev/null || true
+    else
+      warn "cannot make ${f} readable by the daemon (chmod 644 failed)"
+    fi
+  done
+}
 
 # render_config - render bootstrap/ into ${HD_STATE_DIR}/config. This is the
 # SINGLE SOURCE OF TRUTH for render, shared by start.sh and render-config.sh so

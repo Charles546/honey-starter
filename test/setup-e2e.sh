@@ -79,6 +79,14 @@ e2e_read() {
   return 1
 }
 
+# stat_mode FILE -> octal permission modes, portable across GNU stat -c and
+# BSD/macOS stat -f (the E2E runs on Linux and macOS).
+stat_mode() {
+  local f="$1" out=""
+  out="$(stat -c '%a' "$f" 2>/dev/null)" || out="$(stat -f '%Lp' "$f" 2>/dev/null)"
+  printf '%s' "${out}"
+}
+
 # Unique throwaway compose project + state dir + tree copy + high host ports
 # (distinct from smoke's 19000/19080 and e2e's 19500/19580). Everything below
 # is exported so the setup.sh subprocess (which delegates to scripts/start.sh,
@@ -262,6 +270,19 @@ if [ ! -s "${STATE}/identity/role_id" ] || [ ! -s "${STATE}/identity/secret_id" 
   exit 1
 fi
 echo "--- AppRole identity files present and non-empty"
+# macOS: the Docker Desktop / Rancher Desktop file-sharing layer does NOT
+# preserve host chown 0:0 inside the container, so on darwin start.sh MUST
+# write the identity files 0644 (never 0600+root) or the daemon's
+# root-without-caps cannot read them. Assert the mode here on darwin only.
+if [ "$(platform_os)" = "darwin" ]; then
+  if [ "$(stat_mode "${STATE}/identity/role_id")" != "644" ] \
+    || [ "$(stat_mode "${STATE}/identity/secret_id")" != "644" ]; then
+    echo "FAIL: macOS identity files must be 0644 (file-sharing layer does not preserve chown 0:0); got $(stat_mode "${STATE}/identity/role_id")/$(stat_mode "${STATE}/identity/secret_id")" >&2
+    ls -la "${STATE}/identity" >&2 || true
+    exit 1
+  fi
+  echo "--- macOS: identity files 0644 (readable by daemon root-without-caps)"
+fi
 
 # --- 5. daemon /healthz 200 (setup.sh/start.sh waited for it; re-verify) -------
 API_URL="http://localhost:${HD_API_HOST_PORT}"
