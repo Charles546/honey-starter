@@ -1,11 +1,13 @@
 .PHONY: all lint check-bcrypt check-config compose-config smoke e2e validate \
-	setup-dryrun setup-e2e reload-watch-test start stop down down-volumes status \
-	reload-watch render-config logs
+	setup-dryrun setup-e2e reload-watch-test identity-perms start stop down \
+	down-volumes status reload-watch render-config logs
 
 # Default target: the full validation gate.
 #   lint           -> shellcheck over scripts/*.sh and test/*.sh (no docker)
 #   check-bcrypt   -> htpasswd bcrypt contract (no docker)
 #   setup-dryrun   -> scripts/setup.sh guided-installer dry-run/unit tests
+#                     (hermetic; no docker)
+#   identity-perms -> platform-aware AppRole identity-file permission matrix
 #                     (hermetic; no docker)
 #   check-config   -> honeydipper configcheck via docker image (docker + network;
 #                     skips gracefully when docker is unavailable)
@@ -20,7 +22,7 @@
 #                     docker + network; skips when docker is unavailable)
 #   reload-watch-test -> hermetic unit tests for scripts/reload-watch.sh
 #                     (no docker)
-all: lint check-bcrypt setup-dryrun check-config compose-config smoke e2e setup-e2e reload-watch-test
+all: lint check-bcrypt setup-dryrun identity-perms check-config compose-config smoke e2e setup-e2e reload-watch-test
 
 # Shellcheck lint gate over all project bash scripts. No docker required.
 lint:
@@ -44,6 +46,13 @@ setup-dryrun:
 # watcher-death self-heal. No docker required.
 reload-watch-test:
 	@bash test/test-reload-watch.sh
+
+# Identity-perms: hermetic no-docker permission-matrix tests for the
+# platform-aware AppRole identity-file helpers in scripts/lib.sh
+# (identity_file_mode / ensure_identity_daemon_readable): darwin always 0644,
+# linux+root/sudo 0600, linux+no-root 0644, plus the darwin-only self-heal.
+identity-perms:
+	@bash test/identity-perms.sh
 
 # B2: validate the assembled bootstrap config via honeydipper configcheck
 # running inside the published docker image (REPO + CHECK_REMOTE=1).
@@ -73,7 +82,7 @@ setup-e2e:
 	@bash test/setup-e2e.sh
 
 # Full validation gate.
-validate: lint check-bcrypt setup-dryrun check-config compose-config smoke e2e setup-e2e reload-watch-test
+validate: lint check-bcrypt setup-dryrun identity-perms check-config compose-config smoke e2e setup-e2e reload-watch-test
 
 # --- Lifecycle ----------------------------------------------------------------
 # The lifecycle targets require a running docker daemon and a rendered state

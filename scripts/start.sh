@@ -191,13 +191,24 @@ file_read() {
   return 1
 }
 
-# Write an AppRole identity file. Prefer 0600 + root-owned (readable by the
-# daemon's root-without-caps and by nobody else); fall back to 0644 when we
-# cannot act as root (see deploy/README.md "Identity-file hygiene").
+# Write an AppRole identity file. The mode is platform-aware (shared
+# identity_file_mode helper in lib.sh — see deploy/README.md "Identity-file
+# hygiene"):
+#   * darwin -> ALWAYS 0644, no chown. The Docker Desktop / Rancher Desktop
+#     file-sharing layer (VirtioFS / gRPC-FUSE) does NOT present host chown 0:0
+#     as uid 0 inside the container, so a 0600 root-owned host file is owned by
+#     a non-root uid in the container and the daemon's root-without-caps
+#     (cap_drop: [ALL]) cannot read it (Permission denied).
+#   * linux + root/sudo -> 0600 + chown 0:0 (readable by the daemon's
+#     root-without-caps and by nobody else; bind mounts preserve host uid 0).
+#   * linux + no-root   -> 0644 (host-user-owned 0600 is unreadable by
+#     root-without-caps).
 write_identity_file() {
   local file="$1"
   local value="$2"
-  if [ "$CAN_ROOT" -eq 1 ]; then
+  local mode
+  mode="$(identity_file_mode "${CAN_ROOT}")"
+  if [ "${mode}" = "600" ]; then
     if [ "$(id -u)" -eq 0 ]; then
       printf '%s' "${value}" > "${file}"
       chown 0:0 "${file}" 2>/dev/null || true
@@ -210,7 +221,11 @@ write_identity_file() {
   else
     printf '%s' "${value}" > "${file}"
     chmod 644 "${file}"
-    note "cannot act as root (no root/sudo); ${file} is 0644. The AppRole pair is scoped to read one Vault path only (never the root token)."
+    if [ "$(platform_os)" = "darwin" ]; then
+      note "macOS: the Docker Desktop / Rancher Desktop file-sharing layer does not preserve host chown 0:0 inside the container, so ${file} is 0644 so the daemon's root-without-caps can read it. The AppRole pair is scoped to read one Vault path only (never the root token)."
+    else
+      note "cannot act as root (no root/sudo); ${file} is 0644. The AppRole pair is scoped to read one Vault path only (never the root token)."
+    fi
   fi
 }
 
@@ -466,6 +481,18 @@ else
   write_identity_file "${IDENTITY_DIR}/role_id" "${VAULT_ROLE_ID}"
   write_identity_file "${IDENTITY_DIR}/secret_id" "${VAULT_SECRET_ID}"
   info "--- AppRole identity files written (no trailing newline; readable by daemon root-without-caps)"
+fi
+
+# macOS self-heal: a previously-failed install (pre-fix, or a host that kept a
+# 0600 root-owned pair) leaves identity files the file-sharing layer presents
+# as non-root-owned inside the container — the daemon's root-without-caps gets
+# Permission denied reading them. Normalize to 0644 on every darwin run so a
+# broken install is repaired on re-run WITHOUT a state reset (see
+# deploy/README.md "Identity-file hygiene"). This runs before `compose up -d
+# daemon ui`, so the daemon only ever sees a readable pair.
+if [ "$(platform_os)" = "darwin" ]; then
+  ensure_identity_daemon_readable "${IDENTITY_DIR}/role_id" "${IDENTITY_DIR}/secret_id"
+  info "--- macOS: AppRole identity files normalized to 0644 (daemon root-without-caps readable)"
 fi
 
 # --- admin token (generate once, persist, print once) -------------------------

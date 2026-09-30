@@ -822,6 +822,37 @@ chmod 600 .honey-starter/identity/role_id .honey-starter/identity/secret_id
 # the root token).
 ```
 
+**macOS (Apple Silicon, Docker Desktop / Rancher Desktop)** — on macOS the
+file-sharing layer (VirtioFS / gRPC-FUSE) does **not** preserve the host's
+`chown 0:0` as uid 0 inside the container: a file that is root-owned on the
+host is presented to the container as owned by the desktop user's uid. The
+daemon still runs as root-without-caps (`cap_drop: [ALL]`, no
+`CAP_DAC_OVERRIDE`), so a `0600` + `chown 0:0` file is unreadable by it —
+`Permission denied` on `cat /var/hd-secrets/identity/secret_id`, the entrypoint
+exits, AppRole creds stay empty, Vault LOOKUPs fail and `/healthz` never
+becomes 200 (setup hangs at "waiting for successful health check API call").
+On macOS `scripts/start.sh` therefore **always** writes the identity files
+`0644` (no `chown`), regardless of root/sudo — the shared `identity_file_mode`
+helper in `scripts/lib.sh` makes the decision, and on every darwin run
+`ensure_identity_daemon_readable` normalizes an already-broken `0600`
+root-owned pair back to `0644` so a failed install self-heals on re-run
+without a state reset:
+
+```bash
+# macOS ONLY: file-sharing layer does not preserve host chown 0:0 in the
+# container, so 0644 is the only form the daemon's root-without-caps can read.
+# start.sh does this automatically; this is the by-hand equivalent:
+printf '%s' "${ROLE_ID}"   > .honey-starter/identity/role_id
+printf '%s' "${SECRET_ID}" > .honey-starter/identity/secret_id
+chmod 644 .honey-starter/identity/role_id .honey-starter/identity/secret_id
+# (no chown: on macOS the file-sharing layer ignores host ownership anyway)
+```
+
+On Linux / WSL2 the `0600` + `chown 0:0` form above remains valid — bind
+mounts preserve host uid 0, so the daemon's root-without-caps can read a
+root-owned `0600` file. The 0644 relaxation stays a **Linux/WSL2 no-root
+fallback** and the **macOS default**, never the Linux root-owned choice.
+
 Use `printf '%s'` (no trailing newline — the entrypoint's `eval export`
 command substitution strips trailing newlines anyway, but a file with a stray
 newline is fragile against non-entrypoint consumers). Do **not** `echo`
