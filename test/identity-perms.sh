@@ -15,7 +15,8 @@
 # as root, and `0644` on linux when we cannot.
 #
 # This suite asserts that exact permission matrix hermetically by mocking
-# platform_os / id -u / sudo (no docker, no real root, no real sudo required).
+# platform_os / id -u / sudo / chmod (no docker, no real root, no real sudo
+# required).
 #
 # Run: bash test/identity-perms.sh   (or: make validate / make all)
 set -euo pipefail
@@ -38,14 +39,39 @@ source "${HERE}/scripts/lib.sh"
 MOCK_PLATFORM=linux
 MOCK_UID=1000
 MOCK_SUDO=0
+MOCK_CHMOD_FAIL=0
+REAL_CHMOD="$(command -v chmod)"
 
 platform_os() { printf '%s' "${MOCK_PLATFORM}"; }
 id() { printf '%s' "${MOCK_UID}"; }
-sudo() {
-  if [ "${MOCK_SUDO}" -eq 1 ]; then
-    return 0
+# SC2032: this mock intentionally shadows the external `chmod` so the
+# sudo-fallback branch of ensure_identity_daemon_readable can be exercised
+# hermetically (we cannot chown to root in a no-root test environment). When
+# MOCK_CHMOD_FAIL=1 the direct chmod fails (simulating a root-owned file a
+# non-root user cannot chmod); otherwise it delegates to the real chmod.
+# shellcheck disable=SC2032
+chmod() {
+  if [ "${MOCK_CHMOD_FAIL}" -eq 1 ]; then
+    return 1
   fi
-  return 1
+  command "${REAL_CHMOD}" "$@"
+}
+sudo() {
+  if [ "${MOCK_SUDO}" -eq 0 ]; then
+    return 1
+  fi
+  # `sudo -n true` (the CAN_ROOT probe) and `sudo chmod ...` / `sudo -n chmod
+  # ...` (the self-heal fallback): run the real command for chmod so the file
+  # actually converges to 0644.
+  if [ "${1:-}" = "-n" ]; then
+    shift
+  fi
+  if [ "${1:-}" = "chmod" ]; then
+    shift
+    command "${REAL_CHMOD}" "$@"
+    return $?
+  fi
+  return 0
 }
 
 # stat_mode FILE -> octal permission modes, portable across GNU stat -c and
@@ -112,6 +138,7 @@ trap 'rm -rf "${TMPDIR2}"' EXIT
 MOCK_PLATFORM=darwin
 MOCK_UID=1000
 MOCK_SUDO=0
+MOCK_CHMOD_FAIL=0
 printf 'role' > "${TMPDIR2}/role_id"
 chmod 600 "${TMPDIR2}/role_id"
 ensure_identity_daemon_readable "${TMPDIR2}/role_id"
@@ -122,50 +149,21 @@ else
 fi
 
 # darwin: the root-owned-sudo-fallback branch is exercised when a direct chmod
-# would fail. Simulate a root-owned file by making chmod fail directly and
-# letting sudo succeed (we cannot chown to root hermetically). We mock chmod
-# and sudo: direct chmod fails, sudo -n chmod succeeds. The mocks are restored
-# immediately after this block so the later linux no-op test uses the real
-# chmod again.
+# would fail. MOCK_CHMOD_FAIL=1 makes the direct chmod fail (simulating a
+# root-owned file); MOCK_SUDO=1 lets the sudo -n chmod fallback run the real
+# chmod so the file converges to 0644.
 printf 'secret' > "${TMPDIR2}/secret_id"
+MOCK_CHMOD_FAIL=0
 chmod 600 "${TMPDIR2}/secret_id"
+MOCK_CHMOD_FAIL=1
 MOCK_SUDO=1
-real_chmod="$(command -v chmod)"
-# SC2032: this mock intentionally shadows the external `chmod` so we can
-# exercise the sudo-fallback branch of ensure_identity_daemon_readable.
-# shellcheck disable=SC2032
-chmod() {
-  # direct chmod fails (simulating a root-owned file a non-root user cannot
-  # chmod); the sudo fallback below runs the real chmod.
-  return 1
-}
-sudo() {
-  # MOCK_SUDO=1 -> `sudo -n true` succeeds; `sudo -n chmod ...` runs the real
-  # chmod so the file actually becomes 0644.
-  if [ "${1:-}" = "-n" ]; then
-    shift
-  fi
-  if [ "${1:-}" = "chmod" ]; then
-    shift
-    command "${real_chmod}" "$@"
-    return $?
-  fi
-  return 0
-}
 ensure_identity_daemon_readable "${TMPDIR2}/secret_id"
 if [ "$(stat_mode "${TMPDIR2}/secret_id")" = "644" ]; then
   PASS=$((PASS+1)); printf 'ok - darwin self-heal uses sudo fallback for root-owned identity file -> 0644\n'
 else
   FAIL=$((FAIL+1)); printf 'FAIL - darwin sudo-fallback left mode %s (want 644)\n' "$(stat_mode "${TMPDIR2}/secret_id")" >&2
 fi
-# Restore the real chmod / the standard sudo mock for the rest of the suite.
-unset -f chmod
-sudo() {
-  if [ "${MOCK_SUDO}" -eq 1 ]; then
-    return 0
-  fi
-  return 1
-}
+MOCK_CHMOD_FAIL=0
 
 # linux: ensure_identity_daemon_readable is a no-op (0600 root-owned stays).
 MOCK_PLATFORM=linux
