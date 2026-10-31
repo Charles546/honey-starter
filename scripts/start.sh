@@ -18,12 +18,12 @@
 #     once and never clobbered on re-run (admin token is persisted plaintext at
 #     ${HD_STATE_DIR}/admin_token with chmod 600 and printed once; the reload
 #     token is persisted plaintext at ${HD_STATE_DIR}/reload_token with chmod
-#     600; AI keys are only (re)written when you explicitly set OPENAI_API_KEY /
-#     OPENROUTER_API_KEY and re-run).
+#     600; AI keys are only (re)written when you explicitly set OPENAI_API_KEY and
+#     re-run).
 #
 # Secret lifecycle (see README.md / deploy/README.md "Vault"):
 #   * ALL operational secrets live in Vault at secrets/data/<ns>/daemon
-#     (admin_token_hash, openai_api_key, openrouter_api_key,
+#     (admin_token_hash, openai_api_key,
 #     reload_token).
 #   * The ONLY secret material outside Vault is:
 #       (a) root token + unseal key(s) in ${HD_STATE_DIR} (chmod 600, host
@@ -162,18 +162,13 @@ info "--- state dir: ${STATE_DIR}"
 # --- root/sudo capability for identity-file hygiene --------------------------
 # Identity files must be readable by the daemon's root-without-caps process:
 #   0600 + chown 0:0 when we can act as root (root, or sudo), else 0644.
+# sudo is used only when the user opted in (HONEY_USE_SUDO=1, recorded in .env
+# by scripts/setup.sh). It is never probed or prompted for here.
 CAN_ROOT=0
 if [ "$(id -u)" -eq 0 ]; then
   CAN_ROOT=1
-elif command -v sudo >/dev/null 2>&1; then
-  if sudo -n true >/dev/null 2>&1; then
-    CAN_ROOT=1
-  elif [ -t 1 ]; then
-    # interactive terminal: allow a password prompt for sudo
-    if sudo true >/dev/null 2>&1; then
-      CAN_ROOT=1
-    fi
-  fi
+elif [ "${HONEY_USE_SUDO:-0}" = "1" ] && command -v sudo >/dev/null 2>&1; then
+  CAN_ROOT=1
 fi
 
 # Read a state file, falling back to sudo when the file is root-owned and we
@@ -224,7 +219,7 @@ write_identity_file() {
     if [ "$(platform_os)" = "darwin" ]; then
       note "macOS: the Docker Desktop / Rancher Desktop file-sharing layer does not preserve host chown 0:0 inside the container, so ${file} is 0644 so the daemon's root-without-caps can read it. The AppRole pair is scoped to read one Vault path only (never the root token)."
     else
-      note "cannot act as root (no root/sudo); ${file} is 0644. The AppRole pair is scoped to read one Vault path only (never the root token)."
+      note "cannot act as root (root and sudo not enabled); ${file} is 0644. The AppRole pair is scoped to read one Vault path only (never the root token)."
     fi
   fi
 }
@@ -536,13 +531,11 @@ fi
 # absent, a clearly-marked placeholder is stored instead so the daemon still
 # boots (a placeholder resolves like any string; model calls simply fail until
 # a real key is set). Existing non-placeholder values are NEVER clobbered on a
-# plain re-run; export OPENAI_API_KEY / OPENROUTER_API_KEY and re-run start.sh
-# to replace them.
+# plain re-run; export OPENAI_API_KEY and re-run start.sh
+# to replace it.
 : "${OPENAI_API_KEY:=sk-placeholder-set-your-openai-key}"
-: "${OPENROUTER_API_KEY:=sk-placeholder-set-your-openrouter-key}"
 # an explicitly exported empty string is treated the same as unset
 [ -n "${OPENAI_API_KEY}" ] || OPENAI_API_KEY=sk-placeholder-set-your-openai-key
-[ -n "${OPENROUTER_API_KEY}" ] || OPENROUTER_API_KEY=sk-placeholder-set-your-openrouter-key
 
 SEED_PATH="secrets/${HONEY_NS}/daemon"
 
@@ -624,20 +617,18 @@ if vault_exec_token "${ROOT_TOKEN}" kv get -format=json "${SEED_PATH}" >/dev/nul
     seed_one admin_token_hash "" hash
   fi
   seed_one openai_api_key "${OPENAI_API_KEY}" env
-  seed_one openrouter_api_key "${OPENROUTER_API_KEY}" env
   # reload_token is seeded in env mode too: seeds only when missing, never
   # clobbers the seeded PLAINTEXT (a fresh value would break the webhook token
   # match for a host reload-watch still holding the old one).
   seed_one reload_token "${RELOAD_TOKEN}" env
 else
-  # path missing or empty: create it with all three fields at once
+  # path missing or empty: create it with all fields at once
   if [ -z "${ADMIN_TOKEN_HASH}" ]; then
     ADMIN_TOKEN_HASH="$(htpasswd -bnBC 12 "" "${ADMIN_TOKEN}" | cut -d: -f2 | tr -d '\n')"
   fi
   vault_exec_token "${ROOT_TOKEN}" kv put "${SEED_PATH}" \
     "admin_token_hash=${ADMIN_TOKEN_HASH}" \
     "openai_api_key=${OPENAI_API_KEY}" \
-    "openrouter_api_key=${OPENROUTER_API_KEY}" \
     "reload_token=${RELOAD_TOKEN}" \
     >/dev/null
   info "--- seeded secrets/data/${HONEY_NS}/daemon (created)"

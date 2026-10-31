@@ -111,7 +111,6 @@ Use **separate directories** with distinct ports (`HD_API_HOST_PORT` / `HD_UI_HO
 
 ```bash
 export HONEY_STARTER_NONINTERACTIVE=1
-export HONEY_AI_PROVIDER=openai        # openai | custom | skip
 export HD_AI_MODEL=gpt-5.4-mini
 export OPENAI_API_KEY=sk-...
 bash scripts/setup.sh

@@ -33,12 +33,12 @@ source "${HERE}/scripts/lib.sh"
 
 # --- mocks -------------------------------------------------------------------
 # MOCK_PLATFORM feeds platform_os(); MOCK_UID feeds id -u (0 = root);
-# MOCK_SUDO=1 makes `sudo -n true` succeed (passwordless sudo available),
-# MOCK_SUDO=0 makes it fail (no usable sudo) — mirrors start.sh's CAN_ROOT
-# probe (minus the interactive password-prompt branch).
+# MOCK_SUDO=1 makes sudo succeed, MOCK_SUDO=0 makes it fail. The code under
+# test only consults sudo when HONEY_USE_SUDO=1 (set by assert_mode).
 MOCK_PLATFORM=linux
 MOCK_UID=1000
 MOCK_SUDO=0
+SUDO_CALLS=0
 MOCK_CHMOD_FAIL=0
 REAL_CHMOD="$(command -v chmod)"
 
@@ -57,6 +57,7 @@ chmod() {
   command "${REAL_CHMOD}" "$@"
 }
 sudo() {
+  SUDO_CALLS=$((SUDO_CALLS+1))
   if [ "${MOCK_SUDO}" -eq 0 ]; then
     return 1
   fi
@@ -89,6 +90,7 @@ assert_mode() {
   MOCK_PLATFORM="${plat}"
   MOCK_UID="${uid}"
   MOCK_SUDO="${sudo_ok}"
+  HONEY_USE_SUDO="${sudo_ok}"
   got="$(identity_file_mode)"
   if [ "${got}" = "${expected}" ]; then
     PASS=$((PASS+1))
@@ -157,6 +159,7 @@ MOCK_CHMOD_FAIL=0
 chmod 600 "${TMPDIR2}/secret_id"
 MOCK_CHMOD_FAIL=1
 MOCK_SUDO=1
+HONEY_USE_SUDO=1
 ensure_identity_daemon_readable "${TMPDIR2}/secret_id"
 if [ "$(stat_mode "${TMPDIR2}/secret_id")" = "644" ]; then
   PASS=$((PASS+1)); printf 'ok - darwin self-heal uses sudo fallback for root-owned identity file -> 0644\n'
@@ -164,6 +167,27 @@ else
   FAIL=$((FAIL+1)); printf 'FAIL - darwin sudo-fallback left mode %s (want 644)\n' "$(stat_mode "${TMPDIR2}/secret_id")" >&2
 fi
 MOCK_CHMOD_FAIL=0
+
+# sudo available but NOT opted in (HONEY_USE_SUDO unset/0): never invoked, even
+# to probe; the root-owned file is left alone and the mode stays 644.
+printf 'secret' > "${TMPDIR2}/secret_id2"
+MOCK_CHMOD_FAIL=0
+chmod 600 "${TMPDIR2}/secret_id2"
+MOCK_CHMOD_FAIL=1
+MOCK_SUDO=1
+unset HONEY_USE_SUDO
+SUDO_CALLS=0
+MOCK_PLATFORM=linux
+MOCK_UID=1000
+got_mode="$(identity_file_mode)"
+MOCK_PLATFORM=darwin
+ensure_identity_daemon_readable "${TMPDIR2}/secret_id2" 2>/dev/null
+MOCK_CHMOD_FAIL=0
+if [ "${SUDO_CALLS}" -eq 0 ] && [ "${got_mode}" = "644" ]; then
+  PASS=$((PASS+1)); printf 'ok - sudo is never invoked without HONEY_USE_SUDO=1 (mode 644)\n'
+else
+  FAIL=$((FAIL+1)); printf 'FAIL - sudo invoked %s time(s) without opt-in (mode %s)\n' "${SUDO_CALLS}" "${got_mode}" >&2
+fi
 
 # linux: ensure_identity_daemon_readable is a no-op (0600 root-owned stays).
 MOCK_PLATFORM=linux

@@ -227,7 +227,6 @@ echo "--- AppRole identity files written (chmod 644, readable by daemon root-wit
 vault_exec_token "${ROOT_TOKEN}" kv put "secrets/${SMOKE_NS}/daemon" \
   "admin_token_hash=${ADMIN_TOKEN_HASH}" \
   openai_api_key=sk-smoke-openai \
-  openrouter_api_key=sk-smoke-openrouter \
   "reload_token=${RELOAD_TOKEN}" \
   >/dev/null
 echo "--- seeded secrets/data/${SMOKE_NS}/daemon"

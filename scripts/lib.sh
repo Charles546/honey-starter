@@ -367,15 +367,14 @@ stat_mtime() {
 #   linux + CAN_ROOT=0 -> 644 (host-user-owned 0600 is unreadable by
 #                        root-without-caps; relax to world-readable).
 #
-# Pass the caller's CAN_ROOT (start.sh's richer detection, which also allows an
-# interactive sudo password prompt) or omit it to probe id -u + sudo -n here
-# (the hermetic test path, where platform_os / id / sudo are mocked).
+# Pass the caller's CAN_ROOT or omit it to derive it here: root, or sudo only
+# when the user opted in via HONEY_USE_SUDO=1 (sudo is never probed otherwise).
 identity_file_mode() {
   local can_root="${1:-}"
   if [ -z "${can_root}" ]; then
     if [ "$(id -u)" -eq 0 ]; then
       can_root=1
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    elif [ "${HONEY_USE_SUDO:-0}" = "1" ] && command -v sudo >/dev/null 2>&1; then
       can_root=1
     else
       can_root=0
@@ -394,7 +393,7 @@ identity_file_mode() {
 # existing identity file to 0644 so a previously-failed install (0600
 # root-owned, which the macOS file-sharing layer presents as non-root-owned in
 # the container) is repaired on re-run WITHOUT a state reset. Uses sudo when
-# the file is root-owned and we are not root. No-op on every non-darwin host
+# the file is root-owned, we are not root, and HONEY_USE_SUDO=1. No-op on every non-darwin host
 # (Linux/WSL2 keeps 0600 + root ownership).
 ensure_identity_daemon_readable() {
   [ "$(platform_os)" = "darwin" ] || return 0
@@ -403,7 +402,7 @@ ensure_identity_daemon_readable() {
     [ -e "${f}" ] || continue
     if chmod 644 "${f}" 2>/dev/null; then
       :
-    elif [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+    elif [ "$(id -u)" -ne 0 ] && [ "${HONEY_USE_SUDO:-0}" = "1" ] && command -v sudo >/dev/null 2>&1; then
       sudo -n chmod 644 "${f}" 2>/dev/null || sudo chmod 644 "${f}" 2>/dev/null || true
     else
       warn "cannot make ${f} readable by the daemon (chmod 644 failed)"

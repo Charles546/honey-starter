@@ -66,8 +66,8 @@
 #   bash <repo>/scripts/setup.sh --update   # re-extract the release over <dir>
 #   bash <repo>/scripts/setup.sh --help
 #
-# See the --help text (print_help) for the full questionnaire, the AI provider
-# matrix, the three-way HD_AI_MODEL semantics, the non-interactive contract
+# See the --help text (print_help) for the full questionnaire, the OpenAI-compatible
+# AI settings, the three-way HD_AI_MODEL semantics, the non-interactive contract
 # and the .env writer contract.
 set -euo pipefail
 
@@ -103,11 +103,17 @@ INSTALLED_TREE_FILES=(
 #     the last written ONLY when explicitly supplied (env or an existing .env
 #     line), otherwise absent so the compose default of 30m applies by
 #     construction (never 1m).
+#   * HONEYDIPPER_IMAGE, HD_UI_IMAGE, VAULT_IMAGE, VALKEY_IMAGE, HD_STATE_DIR --
+#     captured from the environment of the setup run when set (so a later
+#     `make start` resolves to the same values); an existing line is kept
+#     verbatim when the env is unset.
 #   * HD_CA_CERT_FILE + HD_CA_BUNDLE (Phase 6a corporate root CA) -- written
 #     TOGETHER ONLY when a validated host SSL_CERT_FILE is enabled (an
 #     interactive TTY default-yes prompt, or the HONEY_STARTER_USE_CA=1 opt-in
-#     on the NI/answers path); HD_CA_CERT_FILE holds the single host path (the
-#     Phase 6b compose bind-mount source) and HD_CA_BUNDLE the fixed container
+#     on the NI/answers path); HD_CA_CERT_FILE holds the path of the COPY made
+#     at <state dir>/ca/ca-bundle.crt (the Phase 6b compose bind-mount source;
+#     the host SSL_CERT_FILE itself is never mounted, because VM-backed Docker
+#     runtimes do not share arbitrary host dirs) and HD_CA_BUNDLE the fixed container
 #     path /etc/honeydipper/ca/ca-bundle.crt fed to the trust env vars. When
 #     not enabled, NEITHER key is written (a stale line is removed so a disable
 #     never leaves a partial key).
@@ -115,9 +121,16 @@ INSTALLED_TREE_FILES=(
 # Secret .env keys (replaced ONLY on an explicit value; with no
 # explicit value an existing line is left untouched; with no explicit value and
 # no existing line the key is omitted (start.sh seeds its own placeholder).
-SECRET_KEYS=(OPENAI_API_KEY OPENROUTER_API_KEY)
+SECRET_KEYS=(OPENAI_API_KEY)
 
-# The AI model default setup.sh pins on fresh openai/custom installs. It is a
+# Overridable runtime settings that setup.sh captures into .env when they are
+# supplied in the environment of a setup run (image pins, state dir). Later
+# `make start` runs only see .env (lib.sh sources it), so an override that was
+# not persisted would silently revert to the compose/lib.sh default. With no
+# env value an existing .env line is kept verbatim (absent stays absent).
+PERSISTED_ENV_KEYS=(HONEYDIPPER_IMAGE HD_UI_IMAGE VAULT_IMAGE VALKEY_IMAGE HD_STATE_DIR)
+
+# The AI model default setup.sh pins on fresh installs. It is a
 # DELIBERATE copy of the gpt-5.4-mini fallback that MUST stay in sync with the
 # compose default (deploy/docker-compose.yaml HD_AI_MODEL=...) and the
 # bootstrap config fallback (bootstrap/engines.yaml `default "gpt-5.4-mini"
@@ -127,8 +140,7 @@ MODEL_DEFAULT="gpt-5.4-mini"
 
 # Phase B interactive select-from-list menus (setup.sh UX). The menus are a
 # TTY-only convenience layered on the SAME raw answer values the answers-file /
-# non-interactive paths have always consumed: AI_PROVIDER_MENU holds the exact
-# HONEY_AI_PROVIDER values (openai|custom|skip) and AI_MODEL_MENU is a curated
+# non-interactive paths have always consumed: AI_MODEL_MENU is a curated
 # "common models" list offered interactively. The documented pin default is
 # always shown in the model prompt (Enter accepts it even when it is not
 # listed) and a trailing "type your own" option covers any other model.
@@ -137,7 +149,6 @@ MODEL_DEFAULT="gpt-5.4-mini"
 # matches the menu item and routes to prompt_type_own_model, which validates
 # and returns the user's own free-string model (the sentinel itself is
 # consumed by that routing and never written to .env).
-AI_PROVIDER_MENU=(openai custom skip)
 AI_MODEL_MENU=(gpt-5.4 gpt-5.4-mini gpt-4o gpt-4o-mini o3 o4-mini)
 MENU_TYPE_OWN="__type_your_own__"
 MENU_TYPE_OWN_LABEL="type your own"
@@ -570,27 +581,24 @@ runs NEVER ask it:
                       the life of a deployment (start.sh refuses changes).
   2. HONEY_USER       admin subject; default admin; plain token
                       ([A-Za-z0-9@._-]+); constant after first run.
-  3. HONEY_AI_PROVIDER  openai (default) | custom (OpenAI-compatible endpoint)
-                      | skip. openrouter is NEVER offered interactively.
-  4. HD_AI_MODEL      AI model (default gpt-5.4-mini; the pin). Asked ONLY
-                      for openai/custom - see HD_AI_MODEL semantics below.
-  5. HD_AI_BASE_URL   ONLY when provider=custom; required http(s):// endpoint;
-                      never silently defaulted.
-  6. API key          hidden input (masked '*' feedback + re-type confirm
-                      on a real tty; read -s no-echo fallback). For openai/
-                      custom. Empty = keep
+  3. HD_AI_MODEL      AI model (default gpt-5.4-mini; the pin) - see HD_AI_MODEL
+                      semantics below.
+  4. API key          hidden input (masked '*' feedback + re-type confirm
+                      on a real tty; read -s no-echo fallback). Empty = keep
                       the current key (existing install) or add later
                       (placeholder flow: start.sh seeds a placeholder and you
                       add the real key to .env and re-run).
-  7. ports            HD_API_HOST_PORT (default 9000) and HD_UI_HOST_PORT
+  5. ports            HD_API_HOST_PORT (default 9000) and HD_UI_HOST_PORT
                       (default 8090), integers 1-65535, confirmed together.
 
+  The AI endpoint is never prompted: it defaults to the OpenAI API
+  (https://api.openai.com/v1). To use another OpenAI-compatible endpoint, set
+  HD_AI_BASE_URL (env or .env).
   HONEY_STARTER_ANSWERS_FILE (when set) supplies the answers first,
   newline-delimited, in exactly the order above: the leading
   COMPOSE_PROJECT_NAME line (lowercase; empty = accept the derived default;
   a manage-in-place run consumes and DISCARDS this slot - never prompts for
-  it), then HONEY_NS, HONEY_USER, provider, model (only for openai/custom),
-  base URL (5, only for custom), API key (only for openai/custom), ports, and
+  it), then HONEY_NS, HONEY_USER, model, API key, ports, and
   the final Y/n for a full non-dry run. There is NO install-dir line - the
   answers file's physical location is indication enough; target a
   non-default directory with a positional argument (setup.sh <dir>). An
@@ -601,16 +609,14 @@ runs NEVER ask it:
 
 HD_AI_MODEL semantics (three-way; the model is a non-secret pin):
   * HD_AI_MODEL=<value> (non-empty) -> override, written to .env, wins over
-    everything (all providers, passthrough preserved).
+    everything (passthrough preserved).
   * HD_AI_MODEL= (explicitly empty) -> a definitive NO-PIN run: the existing
     override is NOT kept, the line is removed, and the question is skipped
     (its answer cannot silently re-pin). Non-interactive: same.
-  * HD_AI_MODEL unset + provider openai/custom -> the question is asked;
+  * HD_AI_MODEL unset -> the question is asked;
     interactive Enter or an empty answers-file line accepts the default,
     WRITING HD_AI_MODEL=gpt-5.4-mini (the pin). Non-interactive unset -> the
     same pin.
-  * provider skip -> no question; an existing override line is kept when env
-    is unset, removed when env is explicitly empty, replaced when non-empty.
   Under the pin default, "engine default / no pin" is reached by one run with
   HD_AI_MODEL= (removes the line) or deleting the line by hand. No-pin is not
   sticky: a later run with HD_AI_MODEL unset re-pins (runtime-identical, since
@@ -620,36 +626,36 @@ HD_AI_MODEL semantics (three-way; the model is a non-secret pin):
   answer at the prompt (a later line is never adopted as the model, and the
   pin is never written over an invalid answer).
 
-AI provider matrix (what setup.sh writes to .env):
-  openai   -> writes OPENAI_API_KEY=<key> when provided + the HD_AI_MODEL pin;
-              HD_AI_BASE_URL stays unset unless supplied (the engine falls
-              back to https://api.openai.com/v1). NOTE: on a re-run, a
-              previously-set HD_AI_BASE_URL from an earlier custom install is
-              KEPT (managed, only removed when unset) - remove it from .env
-              to fully revert to the default.
-  custom   -> writes HD_AI_BASE_URL=<required validated http(s):// endpoint>
-              + OPENAI_API_KEY=<key> when provided + the HD_AI_MODEL pin;
-              never silently defaults the base URL (the default gpt-5.4-mini
-              may not exist on your endpoint - type your own model).
-  skip     -> no key/base/model lines are ADDED; an existing HD_AI_MODEL
-              override is kept/removed/replaced per the env state above.
-  openrouter is never prompted, but HONEY_STARTER_NONINTERACTIVE runs still
-  accept OPENROUTER_API_KEY (start.sh seeds openrouter_api_key into Vault
-  harmlessly until the bootstrap config is edited). The openrouter ENGINE
-  exists in bootstrap/engines.yaml but no shipped agent references it (the
-  starter agent is hard-bound to openai/default). Quirk (doc only):
-  .env.AI_MODEL is SHARED by the openai default engine and the openrouter
-  engine (qwen/qwen3.5-9b default); in compose HD_AI_MODEL is always set so
-  openrouter's own default is already dead. To use OpenRouter, edit the
-  RENDERED copy .honey-starter/config/agents.yaml to `engine: openrouter` and
-  re-run `make start`; its base_url is fixed in engines.yaml and its Vault key
-  field is openrouter_api_key.
+AI settings (what setup.sh writes to .env):
+  OPENAI_API_KEY=<key> when provided, plus the HD_AI_MODEL pin. HD_AI_BASE_URL
+  stays unset unless supplied via env or an existing .env line (the engine
+  falls back to https://api.openai.com/v1); any OpenAI-compatible endpoint
+  works, but the default gpt-5.4-mini may not exist there - set HD_AI_MODEL.
+  Remove HD_AI_BASE_URL from .env to revert to the default.
+
+Persisted overrides:
+  HONEYDIPPER_IMAGE, HD_UI_IMAGE, VAULT_IMAGE, VALKEY_IMAGE and HD_STATE_DIR
+  are written to .env when set in the environment during setup, so a later
+  `make start` uses the same values. With no env value an existing line is
+  kept.
+
+sudo:
+  sudo is never run unless you opt in. On Linux, as a non-root user with sudo
+  installed, setup.sh asks once (default No) and records HONEY_USE_SUDO=1|0 in
+  .env; scripts/start.sh only honors that value. Without sudo, identity files
+  are written 0644 as your user and tools must be installed by hand.
+  Non-interactive runs never ask: set HONEY_USE_SUDO=1 to opt in.
+
+Corporate CA:
+  When a corporate root CA bundle is detected (SSL_CERT_FILE), it is COPIED to
+  <state dir>/ca/ca-bundle.crt and HD_CA_CERT_FILE points at the copy, so it
+  works with VMs (Rancher/Docker Desktop) that only share your home directory.
 
 Non-interactive mode:
   HONEY_STARTER_NONINTERACTIVE=1 (or every decision variable supplied via env
   so nothing would be prompted) requires no tty. Defaults apply for anything
   with a documented default (HD_AI_MODEL included); a missing value with NO
-  default (HD_AI_BASE_URL for provider=custom) exits 1 listing the missing
+  default (none today) exits 1 listing the missing
   variables. A full (non-dry) non-interactive run also requires
   HONEY_STARTER_ASSUME_YES=1 to skip the write-and-start confirmation.
 
@@ -662,7 +668,7 @@ Non-interactive mode:
     existing .env line, and only derived as http://localhost:<UI port> when
     nothing is set. HD_CONFIG_CHECK_INTERVAL is written only when explicitly
     supplied (default stays 30m by omission).
-  * Secret keys (OPENAI_API_KEY, OPENROUTER_API_KEY) are replaced only on an
+  * Secret keys (OPENAI_API_KEY) are replaced only on an
     explicit value; an existing line is never downgraded to a placeholder.
   * Values are shell-quoted (single quotes when needed, embedded single quotes
     escaped); key charset [A-Za-z_][A-Za-z0-9_]*; new keys append before the
@@ -721,20 +727,17 @@ Environment variables (all optional):
                                for pipes/logs/non-tty and TERM=dumb
   HONEY_NS                     Vault KV namespace prefix (default starter)
   HONEY_USER                   admin subject (default admin)
-  HONEY_AI_PROVIDER            openai | custom | skip (default openai)
+  HONEY_USE_SUDO               1 = use sudo (asked once on Linux, default No)
   HD_AI_MODEL                  model override | explicitly-empty = no-pin run
                                (unset = question/pin; see HD_AI_MODEL above)
-  HD_AI_BASE_URL               OpenAI-compatible base URL (required for custom)
+  HD_AI_BASE_URL               OpenAI-compatible base URL (default OpenAI)
   HD_API_HOST_PORT             published daemon API port (default 9000)
   HD_UI_HOST_PORT              published UI port (default 8090)
   HD_UI_URL                    public UI base URL (OAuth/SAML redirects);
                                preserved when set, else derived from
                                HD_UI_HOST_PORT
   HD_CONFIG_CHECK_INTERVAL     explicit override only (default stays 30m)
-  OPENAI_API_KEY               AI key provisioning input (openai/custom)
-  OPENROUTER_API_KEY           accepted for the openrouter engine (never
-                               prompted; seeded by start.sh harmlessly until
-                               the rendered agent config points at openrouter)
+  OPENAI_API_KEY               AI key provisioning input
   HD_STATE_DIR                 runtime state dir (default <repo>/.honey-starter)
 
 Partial-state / reset path:
@@ -819,7 +822,7 @@ shell_quote() {
 
 is_sensitive_key() {
   case "$1" in
-    OPENAI_API_KEY|OPENROUTER_API_KEY|*TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*_KEY|*_KEY_*)
+    OPENAI_API_KEY|*TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*_KEY|*_KEY_*)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -973,9 +976,6 @@ re_export_secrets_for_exec() {
   if [ -n "${EXPLICIT_OPENAI_KEY}" ]; then
     export OPENAI_API_KEY="${EXPLICIT_OPENAI_KEY}"
   fi
-  if [ -n "${EXPLICIT_OPENROUTER_KEY}" ]; then
-    export OPENROUTER_API_KEY="${EXPLICIT_OPENROUTER_KEY}"
-  fi
 }
 
 # reload_on_disk_without_update_flags: re-exec the on-disk copy after an update
@@ -992,31 +992,53 @@ reload_on_disk_without_update_flags() {
   exec bash "${INSTALL_DIR}/scripts/setup.sh" "${newargs[@]}"
 }
 
-# --- preflight ----------------------------------------------------------------
-# Deliberately duplicated from start.sh (CAN_ROOT semantics) — setup.sh is
-# self-contained and must not depend on the tree it may not have downloaded yet.
+# --- sudo consent ---------------------------------------------------------------
+# sudo is NEVER invoked (not even to probe for it) unless the user opted in:
+# HONEY_USE_SUDO=1|0 from the env or an existing .env line, else a TTY-only
+# [y/N] prompt (Linux only; default No). The answer is persisted as
+# HONEY_USE_SUDO in .env so scripts/start.sh -- which only ever honors it and
+# never prompts -- behaves the same on every later `make start`. Declined /
+# unanswered (non-interactive, macOS) means: forget about sudo, identity files
+# are written 0644 by the host user. Root needs no sudo and is never asked.
 CAN_ROOT=0
-detect_can_root() {
+SUDO_DECIDED=0
+SUDO_CHOICE=""   # "1" / "0" once the user (or env/.env) decided; "" = undecided
+decide_sudo() {
+  [ "${SUDO_DECIDED}" -eq 0 ] || return 0
+  SUDO_DECIDED=1
   CAN_ROOT=0
   if [ "$(id -u)" -eq 0 ]; then
     CAN_ROOT=1
-  elif command -v sudo >/dev/null 2>&1; then
-    if sudo -n true >/dev/null 2>&1; then
+    return 0
+  fi
+  command -v sudo >/dev/null 2>&1 || return 0
+  local raw ans
+  raw="$(first_nonempty "${HONEY_USE_SUDO:-}" "$(cur_value HONEY_USE_SUDO)")"
+  case "${raw}" in
+    1|y|Y|yes|YES|true|TRUE) SUDO_CHOICE=1 ;;
+    0|n|N|no|NO|false|FALSE) SUDO_CHOICE=0 ;;
+    *) SUDO_CHOICE="" ;;
+  esac
+  if [ -z "${SUDO_CHOICE}" ] && [ "$(platform_os)" = "linux" ] \
+    && [ "${NONINTERACTIVE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
+    ans=""
+    msg_input "Use sudo to make the AppRole identity files root-owned (0600) and for package installs? Declining writes them 0644 as your user. [y/N] " >&2
+    IFS= read -r -u "${TTY_FD}" ans || ans=n
+    case "${ans}" in
+      y|Y|yes|YES) SUDO_CHOICE=1 ;;
+      *) SUDO_CHOICE=0 ;;
+    esac
+  fi
+  if [ "${SUDO_CHOICE}" = "1" ] && [ "${DRY_RUN}" -eq 0 ]; then
+    if sudo -n true >/dev/null 2>&1 || sudo -v >/dev/null 2>&1; then
       CAN_ROOT=1
-    # Match start.sh exactly: probe stdout ([ -t 1 ]), NOT stdin. Under the
-    # canonical `curl ... | bash` one-liner stdin is the exhausted script pipe,
-    # so [ -t 0 ] is false even in a real terminal and interactive sudo would
-    # never be attempted there (while the delegated start.sh probes stdout and
-    # DOES prompt) — the preflight note and the apt gate must agree with
-    # start.sh's actual behavior.
-    elif [ -t 1 ]; then
-      if sudo true >/dev/null 2>&1; then
-        CAN_ROOT=1
-      fi
+    else
+      warn "sudo was requested but is not usable; continuing without it"
     fi
   fi
 }
 
+# --- preflight ----------------------------------------------------------------
 preflight_os() {
   local os
   os="$(platform_os)"
@@ -1090,10 +1112,6 @@ preflight_docker() {
     msg_ok "  [ok] docker + compose v2"
     if docker info >/dev/null 2>&1; then
       msg_ok "  [ok] docker daemon reachable (docker info)"
-      detect_can_root
-      if [ "${CAN_ROOT}" -eq 0 ]; then
-        note "no root/sudo capability detected; scripts/start.sh will write identity files 0644"
-      fi
       return 0
     fi
     # Linux: a reachable-but-permission-denied socket is a docker-group problem
@@ -1240,6 +1258,7 @@ preflight_optional_tools() {
       pkglist="jq openssl apache2-utils"
       if [ "${HONEY_STARTER_AUTO_INSTALL:-0}" = "1" ]; then
         info "--- installing ${pkglist} via apt (HONEY_STARTER_AUTO_INSTALL=1)"
+        decide_sudo
         if [ "${CAN_ROOT}" -eq 1 ]; then
           if [ "$(id -u)" -eq 0 ]; then
             apt-get update && apt-get install -y jq openssl apache2-utils
@@ -1247,7 +1266,7 @@ preflight_optional_tools() {
             sudo apt-get update && sudo apt-get install -y jq openssl apache2-utils
           fi
         else
-          die "cannot install ${pkglist}: no root/sudo capability. Install manually and re-run."
+          die "cannot install ${pkglist}: sudo is not enabled (set HONEY_USE_SUDO=1) and you are not root. Install manually and re-run."
         fi
       elif [ "${HAVE_TTY}" -eq 1 ] && [ "${NONINTERACTIVE}" -eq 0 ]; then
         local ans
@@ -1255,6 +1274,7 @@ preflight_optional_tools() {
         IFS= read -r -u "${TTY_FD}" ans || ans=n
         case "${ans}" in
           y|Y|yes|YES)
+            decide_sudo
             if [ "${CAN_ROOT}" -eq 1 ]; then
               if [ "$(id -u)" -eq 0 ]; then
                 apt-get update && apt-get install -y jq openssl apache2-utils
@@ -1262,7 +1282,7 @@ preflight_optional_tools() {
                 sudo apt-get update && sudo apt-get install -y jq openssl apache2-utils
               fi
             else
-              die "cannot install ${pkglist}: no root/sudo capability. Install manually and re-run."
+              die "cannot install ${pkglist}: sudo was declined or is unavailable and you are not root. Install manually and re-run."
             fi
             ;;
           *)
@@ -1627,18 +1647,12 @@ close_input_sources() {
 # all_answers_supplied: every decision variable that the questionnaire would
 # prompt for (when unset) is already set in the environment, so no input source
 # is needed. OPENAI_API_KEY is not included: empty = add-later is a valid
-# documented default. HD_AI_BASE_URL is required only for provider=custom.
+# documented default.
 all_answers_supplied() {
-  local p
-  p="${HONEY_AI_PROVIDER:-}"
   [ -n "${HONEY_NS:-}" ] || return 1
   [ -n "${HONEY_USER:-}" ] || return 1
-  [ -n "${p}" ] || return 1
   [ -n "${HD_API_HOST_PORT:-}" ] || return 1
   [ -n "${HD_UI_HOST_PORT:-}" ] || return 1
-  if [ "${p}" = "custom" ] && [ -z "${HD_AI_BASE_URL:-}" ]; then
-    return 1
-  fi
   return 0
 }
 
@@ -1991,12 +2005,6 @@ valid_port() {
   esac
   [ "${v}" -ge 1 ] 2>/dev/null && [ "${v}" -le 65535 ] 2>/dev/null
 }
-valid_provider() {
-  case "$1" in
-    openai|custom|skip) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 valid_base_url() {
   case "$1" in
     http://*|https://*) return 0 ;;
@@ -2032,22 +2040,16 @@ valid_yesno() {
 # no child / process listing inherits them; start.sh re-reads them from the
 # 600-mode .env it sources itself.
 EXPLICIT_OPENAI_KEY=""
-EXPLICIT_OPENROUTER_KEY=""
 capture_secrets_env() {
   EXPLICIT_OPENAI_KEY=""
-  EXPLICIT_OPENROUTER_KEY=""
-  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
     EXPLICIT_OPENAI_KEY="${OPENAI_API_KEY}"
   fi
-  if [ -n "${OPENROUTER_API_KEY:-}" ]; then
-    EXPLICIT_OPENROUTER_KEY="${OPENROUTER_API_KEY}"
-  fi
-  unset OPENAI_API_KEY OPENROUTER_API_KEY 2>/dev/null || true
+  unset OPENAI_API_KEY 2>/dev/null || true
 }
 
 EFFECTIVE_NS=""
 EFFECTIVE_USER=""
-EFFECTIVE_PROVIDER=""
 EFFECTIVE_BASE_URL=""
 EFFECTIVE_MODEL=""
 EFFECTIVE_API_PORT=""
@@ -2081,26 +2083,6 @@ GUARD_RENAMING=0
 # must never silently adopt a retry line or re-derive.
 INVALID_SEEN=0
 INVALID_VALUE=""
-
-# infer_provider_default: provider determinable without prompting (env value,
-# or inferred from supplied base/key; documented default openai).
-infer_provider_default() {
-  local p b k
-  p="${HONEY_AI_PROVIDER:-}"
-  if [ -n "${p}" ]; then
-    printf '%s' "${p}"
-    return 0
-  fi
-  b="$(first_nonempty "${HD_AI_BASE_URL:-}" "$(cur_value HD_AI_BASE_URL)")"
-  k="$(first_nonempty "${EXPLICIT_OPENAI_KEY}" "$(cur_value OPENAI_API_KEY)")"
-  if [ -n "${b}" ]; then
-    printf 'custom'
-  elif [ -n "${k}" ]; then
-    printf 'openai'
-  else
-    printf 'openai'
-  fi
-}
 
 # --- per-instance COMPOSE_PROJECT_NAME derivation (Phase 6) -----------------
 # sanitize_project_basename BASENAME -> prints the sanitized, truncated
@@ -2250,7 +2232,7 @@ resolve_existing_project() {
 }
 
 run_questionnaire() {
-  local p base_default key_default msg model_default project_default ca_ans
+  local p key_default msg model_default project_default ca_ans
 
   # --- COMPOSE_PROJECT_NAME (FIRST item; FRESH-only) --------------------------
   # A never-provisioned instance gets the per-instance name persisted in .env:
@@ -2336,59 +2318,18 @@ run_questionnaire() {
     EFFECTIVE_USER="${HONEY_USER}"
   fi
 
-  # --- AI provider (openai|custom|skip) ---
-  if [ -z "${HONEY_AI_PROVIDER:-}" ]; then
-    p="$(infer_provider_default)"
-    # only ask when we actually have a prompt source; else the inferred default
-    # applies (NI / auto-NI never prompt)
-    if [ "${NONINTERACTIVE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
-      # TTY-only select-from-list menu (Phase B): a real terminal with NO
-      # answers file. Select by number (1-3), by typing the exact value
-      # (openai|custom|skip), or Enter for the inferred default. Answers-file /
-      # NI runs never reach this path — they keep the flat raw-value prompt.
-      if prompt_menu HONEY_AI_PROVIDER \
-        "AI provider (openai | custom (OpenAI-compatible endpoint) | skip)" \
-        "${p}" - "${AI_PROVIDER_MENU[@]}"; then
-        EFFECTIVE_PROVIDER="${REPLY}"
-      else
-        MISSING_VARS+=(HONEY_AI_PROVIDER)
-      fi
-    elif [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
-      # answers-file / flat interactive path (unchanged pre-Phase-B behavior):
-      # the raw provider value is consumed exactly as today through the plain
-      # prompt — the select-from-list menu is TTY-only and never rendered here.
-      if prompt_setting HONEY_AI_PROVIDER \
-        "AI provider (openai | custom (OpenAI-compatible endpoint) | skip)" \
-        "${p}" 0 valid_provider; then
-        EFFECTIVE_PROVIDER="${REPLY}"
-      else
-        MISSING_VARS+=(HONEY_AI_PROVIDER)
-      fi
-    else
-      EFFECTIVE_PROVIDER="${p}"
-    fi
-  else
-    EFFECTIVE_PROVIDER="${HONEY_AI_PROVIDER}"
-  fi
-  case "${EFFECTIVE_PROVIDER}" in
-    openai|custom|skip) ;;
-    *) die "HONEY_AI_PROVIDER must be one of openai|custom|skip (got: ${EFFECTIVE_PROVIDER})" ;;
-  esac
-
-  # --- AI model (openai/custom; pin default; NOT asked for skip) -------------
+  # --- AI model (pin default) ------------------------------------------------
   # Three-way env semantics (exact):
   #   * HD_AI_MODEL non-empty        -> override written, wins (passthrough)
   #   * HD_AI_MODEL explicitly empty -> definitive no-pin run: existing
   #                                     override NOT kept, line removed, the
   #                                     question is SKIPPED entirely
-  #   * HD_AI_MODEL unset + openai/custom -> question asked; Enter / an empty
+  #   * HD_AI_MODEL unset            -> question asked; Enter / an empty
   #                                     answers-file line = accept the default,
   #                                     WRITING the pin (gpt-5.4-mini); NI unset
   #                                     uses the same default
-  #   * provider skip                -> no question; line kept/removed/replaced
-  #                                     per the env state above
   if [ -n "${HD_AI_MODEL:-}" ]; then
-    # non-empty env override wins over everything (all providers)
+    # non-empty env override wins over everything
     EFFECTIVE_MODEL="${HD_AI_MODEL}"
   elif [ -n "${HD_AI_MODEL+x}" ]; then
     # explicitly empty: definitive no-pin — bypass cur_value (the existing
@@ -2396,89 +2337,83 @@ run_questionnaire() {
     # question (its answer cannot silently re-pin)
     EFFECTIVE_MODEL=""
   else
-    if [ "${EFFECTIVE_PROVIDER}" = "openai" ] || [ "${EFFECTIVE_PROVIDER}" = "custom" ]; then
-      model_default="$(first_nonempty "$(cur_value HD_AI_MODEL)" "${MODEL_DEFAULT}")"
-      if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
-        # Reset the invalid-input flags before THIS question: INVALID_SEEN /
-        # INVALID_VALUE are GLOBAL (set by prompt_setting's retry loop on an
-        # invalid answer to ANY earlier prompt, e.g. HONEY_NS / HONEY_USER) and
-        # must never leak across prompts. Without the reset, a stale flag from
-        # an earlier invalid answer would make a perfectly VALID model die with
-        # a misleading '(invalid HD_AI_MODEL: ...)' value from a different
-        # prompt. The documented contract is: an INVALID model dies (any input
-        # source); a VALID model never dies.
-        INVALID_SEEN=0
-        INVALID_VALUE=""
-        if [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
-          # TTY-only curated select-from-list menu (Phase B + Phase 5a hybrid):
-          # an in-range integer = menu index; an exact listed-value match =
-          # that value; an integer OUT of menu range (e.g. 99) is warned +
-          # retried and NEVER written as a model (valid_model would otherwise
-          # accept '99' — the exact trap the plan avoids); Enter accepts the
-          # pin default. A charset-valid model string typed at the menu is
-          # adopted directly (hybrid); "type your own" / the sentinel route to
-          # the explicit free-string sub-prompt; any other free text keeps the
-          # standard invalid-HD_AI_MODEL die (byte-identical message).
-          #
-          # Phase 5b (UX polish): a TTY-only hint so the user learns they can
-          # type any model directly at the numbered menu (Phase 5a hybrid
-          # adoption) rather than only choosing a number. Rendered ONLY when
-          # the model menu is shown to a real terminal — the answers-file /
-          # non-interactive / dryrun paths never emit it (the dryrun suite and
-          # CI assert exact outputs). Strictly additive; the 17h/17k
-          # invalid-HD_AI_MODEL contract string is untouched.
-          msg_note "Tip: you can also type any model directly instead of choosing a number" >&2
-          if prompt_menu HD_AI_MODEL "AI model (HD_AI_MODEL)" \
-            "${model_default}" resolve_model_menu_unlisted \
-            "${AI_MODEL_MENU[@]}" "${MENU_TYPE_OWN}"; then
-            if [ "${REPLY}" = "${MENU_TYPE_OWN}" ]; then
-              if prompt_type_own_model HD_AI_MODEL "${model_default}"; then
-                EFFECTIVE_MODEL="${REPLY}"
-              else
-                EFFECTIVE_MODEL="${model_default}"
-              fi
-            else
+    model_default="$(first_nonempty "$(cur_value HD_AI_MODEL)" "${MODEL_DEFAULT}")"
+    if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
+      # Reset the invalid-input flags before THIS question: INVALID_SEEN /
+      # INVALID_VALUE are GLOBAL (set by prompt_setting's retry loop on an
+      # invalid answer to ANY earlier prompt, e.g. HONEY_NS / HONEY_USER) and
+      # must never leak across prompts. Without the reset, a stale flag from
+      # an earlier invalid answer would make a perfectly VALID model die with
+      # a misleading '(invalid HD_AI_MODEL: ...)' value from a different
+      # prompt. The documented contract is: an INVALID model dies (any input
+      # source); a VALID model never dies.
+      INVALID_SEEN=0
+      INVALID_VALUE=""
+      if [ "${HAVE_TTY}" -eq 1 ] && [ "${HAVE_ANSWERS}" -eq 0 ]; then
+        # TTY-only curated select-from-list menu (Phase B + Phase 5a hybrid):
+        # an in-range integer = menu index; an exact listed-value match =
+        # that value; an integer OUT of menu range (e.g. 99) is warned +
+        # retried and NEVER written as a model (valid_model would otherwise
+        # accept '99' — the exact trap the plan avoids); Enter accepts the
+        # pin default. A charset-valid model string typed at the menu is
+        # adopted directly (hybrid); "type your own" / the sentinel route to
+        # the explicit free-string sub-prompt; any other free text keeps the
+        # standard invalid-HD_AI_MODEL die (byte-identical message).
+        #
+        # Phase 5b (UX polish): a TTY-only hint so the user learns they can
+        # type any model directly at the numbered menu (Phase 5a hybrid
+        # adoption) rather than only choosing a number. Rendered ONLY when
+        # the model menu is shown to a real terminal — the answers-file /
+        # non-interactive / dryrun paths never emit it (the dryrun suite and
+        # CI assert exact outputs). Strictly additive; the 17h/17k
+        # invalid-HD_AI_MODEL contract string is untouched.
+        msg_note "Tip: you can also type any model directly instead of choosing a number" >&2
+        if prompt_menu HD_AI_MODEL "AI model (HD_AI_MODEL)" \
+          "${model_default}" resolve_model_menu_unlisted \
+          "${AI_MODEL_MENU[@]}" "${MENU_TYPE_OWN}"; then
+          if [ "${REPLY}" = "${MENU_TYPE_OWN}" ]; then
+            if prompt_type_own_model HD_AI_MODEL "${model_default}"; then
               EFFECTIVE_MODEL="${REPLY}"
+            else
+              EFFECTIVE_MODEL="${model_default}"
             fi
           else
-            # HD_AI_MODEL has a documented default (the pin) and is
-            # intentionally NOT part of all_answers_supplied / MISSING_VARS: a
-            # prompt failure falls back to the default rather than a
-            # missing-required-value error.
-            EFFECTIVE_MODEL="${model_default}"
+            EFFECTIVE_MODEL="${REPLY}"
           fi
         else
-          # answers-file / flat interactive path (unchanged pre-Phase-B
-          # behavior): the raw model value is consumed exactly as today — an
-          # invalid value still dies below via INVALID_SEEN.
-          if prompt_setting HD_AI_MODEL "AI model (HD_AI_MODEL)" \
-            "${model_default}" 0 valid_model; then
-            EFFECTIVE_MODEL="${REPLY}"
-          else
-            # HD_AI_MODEL has a documented default (the pin) and is
-            # intentionally NOT part of all_answers_supplied / MISSING_VARS: a
-            # prompt failure falls back to the default rather than a
-            # missing-required-value error.
-            EFFECTIVE_MODEL="${model_default}"
-          fi
-        fi
-        # Documented contract: an INVALID MODEL DIES regardless of the input
-        # source -- env (validated earlier), answers file, or typed. Without
-        # this, a typo'd model in an answers file / at the prompt would either
-        # be adopted by the retry loop (a later line that happens to validate,
-        # e.g. a port) or fall back to the pin -- silently. prompt_setting
-        # surfaces "invalid input was seen" via INVALID_SEEN.
-        if [ "${INVALID_SEEN}" -eq 1 ]; then
-          die "invalid HD_AI_MODEL: '${INVALID_VALUE}' (no whitespace/control; charset [A-Za-z0-9._:/@+-]). Fix the model and re-run."
+          # HD_AI_MODEL has a documented default (the pin) and is
+          # intentionally NOT part of all_answers_supplied / MISSING_VARS: a
+          # prompt failure falls back to the default rather than a
+          # missing-required-value error.
+          EFFECTIVE_MODEL="${model_default}"
         fi
       else
-        # NI / auto-NI: the documented default applies (pin)
-        EFFECTIVE_MODEL="${model_default}"
+        # answers-file / flat interactive path (unchanged pre-Phase-B
+        # behavior): the raw model value is consumed exactly as today — an
+        # invalid value still dies below via INVALID_SEEN.
+        if prompt_setting HD_AI_MODEL "AI model (HD_AI_MODEL)" \
+          "${model_default}" 0 valid_model; then
+          EFFECTIVE_MODEL="${REPLY}"
+        else
+          # HD_AI_MODEL has a documented default (the pin) and is
+          # intentionally NOT part of all_answers_supplied / MISSING_VARS: a
+          # prompt failure falls back to the default rather than a
+          # missing-required-value error.
+          EFFECTIVE_MODEL="${model_default}"
+        fi
+      fi
+      # Documented contract: an INVALID MODEL DIES regardless of the input
+      # source -- env (validated earlier), answers file, or typed. Without
+      # this, a typo'd model in an answers file / at the prompt would either
+      # be adopted by the retry loop (a later line that happens to validate,
+      # e.g. a port) or fall back to the pin -- silently. prompt_setting
+      # surfaces "invalid input was seen" via INVALID_SEEN.
+      if [ "${INVALID_SEEN}" -eq 1 ]; then
+        die "invalid HD_AI_MODEL: '${INVALID_VALUE}' (no whitespace/control; charset [A-Za-z0-9._:/@+-]). Fix the model and re-run."
       fi
     else
-      # skip provider: keep an existing .env override (managed; only removed
-      # when env is explicitly empty — handled above)
-      EFFECTIVE_MODEL="$(cur_value HD_AI_MODEL)"
+      # NI / auto-NI: the documented default applies (pin)
+      EFFECTIVE_MODEL="${model_default}"
     fi
   fi
   if [ -n "${EFFECTIVE_MODEL}" ]; then
@@ -2486,59 +2421,24 @@ run_questionnaire() {
       || die "HD_AI_MODEL must be non-empty with no whitespace/control and only [A-Za-z0-9._:/@+-] (got: ${EFFECTIVE_MODEL})"
   fi
 
-  # --- custom base URL (required, http(s)://, never silently defaulted) ------
-  base_default="$(first_nonempty "${HD_AI_BASE_URL:-}" "$(cur_value HD_AI_BASE_URL)")"
-  if [ "${EFFECTIVE_PROVIDER}" = "custom" ]; then
-    if [ -z "${HD_AI_BASE_URL:-}" ]; then
-      if [ -n "${base_default}" ]; then
-        # existing value: interactive prompt prefilled; NI keeps it
-        if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
-          if prompt_setting HD_AI_BASE_URL \
-            "OpenAI-compatible base URL (HD_AI_BASE_URL, http(s)://...)" \
-            "${base_default}" 0 valid_base_url; then
-            EFFECTIVE_BASE_URL="${REPLY}"
-          else
-            MISSING_VARS+=(HD_AI_BASE_URL)
-          fi
-        else
-          EFFECTIVE_BASE_URL="${base_default}"
-        fi
-      else
-        # no existing value: required. Interactive asks (empty is invalid and
-        # re-asks); NI records a missing variable.
-        if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
-          if prompt_setting HD_AI_BASE_URL \
-            "OpenAI-compatible base URL (HD_AI_BASE_URL, required http(s)://...)" \
-            "" 0 valid_base_url; then
-            EFFECTIVE_BASE_URL="${REPLY}"
-          else
-            MISSING_VARS+=(HD_AI_BASE_URL)
-          fi
-        else
-          MISSING_VARS+=(HD_AI_BASE_URL)
-        fi
-      fi
-    else
-      EFFECTIVE_BASE_URL="${HD_AI_BASE_URL}"
-    fi
-  else
-    # openai / skip: keep an env-supplied or existing base URL (managed, and
-    # validated) — it is never silently defaulted, only removed when unset.
-    EFFECTIVE_BASE_URL="${base_default}"
-  fi
+  # --- base URL: never prompted. The engine defaults to the OpenAI API URL
+  # (bootstrap/engines.yaml); an env-supplied or existing HD_AI_BASE_URL (any
+  # OpenAI-compatible endpoint) is kept and validated, otherwise the line is
+  # simply absent.
+  EFFECTIVE_BASE_URL="$(first_nonempty "${HD_AI_BASE_URL:-}" "$(cur_value HD_AI_BASE_URL)")"
   if [ -n "${EFFECTIVE_BASE_URL}" ]; then
     valid_base_url "${EFFECTIVE_BASE_URL}" \
       || die "HD_AI_BASE_URL must be an http(s):// URL (got: ${EFFECTIVE_BASE_URL})"
   fi
 
-  # --- AI key (openai/custom; hidden; empty = keep/add-later) ----------------
-  if [ "${EFFECTIVE_PROVIDER}" = "openai" ] || [ "${EFFECTIVE_PROVIDER}" = "custom" ]; then
+  # --- AI key (hidden; empty = keep/add-later) ----------------
+  if :; then
     if [ -z "${EXPLICIT_OPENAI_KEY}" ]; then
       key_default="$(cur_value OPENAI_API_KEY)"
       if [ -n "${key_default}" ]; then
-        msg="API key for ${EFFECTIVE_PROVIDER} (a key is currently set; Enter keeps it, paste to replace)"
+        msg="OpenAI-compatible API key (a key is currently set; Enter keeps it, paste to replace)"
       else
-        msg="API key for ${EFFECTIVE_PROVIDER} (hidden; Enter to skip and add to .env later)"
+        msg="OpenAI-compatible API key (hidden; Enter to skip and add to .env later)"
       fi
       if [ "${NONINTERACTIVE}" -eq 0 ] && { [ "${HAVE_TTY}" -eq 1 ] || [ "${HAVE_ANSWERS}" -eq 1 ]; }; then
         # reads through the same helper; read -s on a real tty
@@ -2552,8 +2452,6 @@ run_questionnaire() {
       # flow). An existing real key is never downgraded.
     fi
   fi
-  # OPENROUTER_API_KEY is accepted via env only (never prompted); an existing
-  # .env line is preserved when no explicit value is given.
 
   # --- ports (prompt when env unset; default = current .env or 9000/8090) ----
   if [ -z "${HD_API_HOST_PORT:-}" ]; then
@@ -2727,11 +2625,25 @@ build_env_content() {
   else
     set_action HD_CONFIG_CHECK_INTERVAL remove ""
   fi
+  # env-supplied overrides (image pins, state dir): persist so `make start`
+  # (which only sees .env) resolves to the same values; keep when env is unset.
+  if [ -n "${SUDO_CHOICE}" ]; then
+    set_action HONEY_USE_SUDO set "${SUDO_CHOICE}"
+  else
+    set_action HONEY_USE_SUDO keep ""
+  fi
+  for key in "${PERSISTED_ENV_KEYS[@]}"; do
+    if [ -n "${!key:-}" ]; then
+      set_action "${key}" set "${!key}"
+    else
+      set_action "${key}" keep ""
+    fi
+  done
   # corporate root CA (Phase 6a): both keys written TOGETHER only when enabled;
   # absent otherwise (a stale line is removed so a disable never leaves a
   # partial/broken key; nothing was generated, so nothing else to clean up).
   if [ "${EFFECTIVE_CA_ENABLED:-0}" -eq 1 ]; then
-    set_action HD_CA_CERT_FILE set "${EFFECTIVE_CA_CERT_FILE}"
+    set_action HD_CA_CERT_FILE set "$(ca_bundle_copy_path)"
     set_action HD_CA_BUNDLE set "/etc/honeydipper/ca/ca-bundle.crt"
   else
     set_action HD_CA_CERT_FILE remove ""
@@ -2742,11 +2654,6 @@ build_env_content() {
     set_action OPENAI_API_KEY set "${EXPLICIT_OPENAI_KEY}"
   else
     set_action OPENAI_API_KEY keep ""
-  fi
-  if [ -n "${EXPLICIT_OPENROUTER_KEY}" ]; then
-    set_action OPENROUTER_API_KEY set "${EXPLICIT_OPENROUTER_KEY}"
-  else
-    set_action OPENROUTER_API_KEY keep ""
   fi
 
   local first_creation=0
@@ -2838,7 +2745,6 @@ show_effective() {
   else
     msg_highlight "compose project: (default: honey-starter)"
   fi
-  info "AI provider:   ${EFFECTIVE_PROVIDER}"
   if [ -n "${EXPLICIT_OPENAI_KEY}" ] || [ -n "$(cur_value OPENAI_API_KEY)" ]; then
     info "API key:       set (never echoed)"
   else
@@ -2999,6 +2905,39 @@ guard_after_questionnaire() {
 # HONEY_STARTER_NO_ENV is scrubbed too: the test harness sets it so lib.sh in
 # *this* process chain never sources a host .env, but the delegated start.sh
 # MUST source the .env setup.sh just wrote (that is how it receives the keys).
+# The corporate CA bundle is COPIED into the state dir (not bind-mounted from
+# its host location): VM-backed Docker runtimes (Rancher Desktop / Colima /
+# Lima) only share a few host directories, and a bind-mount source outside them
+# silently becomes an empty directory in the container. The state dir is always
+# shared because the rendered config is mounted from it.
+ca_bundle_copy_path() {
+  printf '%s' "${STATE_DIR}/ca/ca-bundle.crt"
+}
+
+# install_ca_bundle: (re)copy the validated host bundle into the state dir on
+# every real run so a rotated corporate CA is picked up. No-op unless enabled.
+install_ca_bundle() {
+  [ "${EFFECTIVE_CA_ENABLED:-0}" -eq 1 ] || return 0
+  local dst dir tmp
+  dst="$(ca_bundle_copy_path)"
+  dir="$(dirname "${dst}")"
+  if [ -e "${dst}" ] && [ "${EFFECTIVE_CA_CERT_FILE}" -ef "${dst}" ]; then
+    return 0  # SSL_CERT_FILE already points at the managed copy
+  fi
+  mkdir -p "${dir}" || die "cannot create ${dir}"
+  # the daemon runs root-without-caps (cap_drop: ALL): the dir and file must be
+  # world-readable. A CA bundle holds public certificates only.
+  chmod 755 "${dir}" 2>/dev/null || true
+  tmp="$(mktemp "${dir}/.ca-bundle.XXXXXX")" || die "cannot create a temp file in ${dir}"
+  if ! cp "${EFFECTIVE_CA_CERT_FILE}" "${tmp}"; then
+    rm -f "${tmp}"
+    die "cannot copy ${EFFECTIVE_CA_CERT_FILE} to ${dst}"
+  fi
+  chmod 644 "${tmp}"
+  mv -f "${tmp}" "${dst}"
+  info "--- copied corporate CA bundle to ${dst}"
+}
+
 delegate_to_start() {
   local key
   # Scrub env at the delegation boundary: start.sh sources the 600-mode .env
@@ -3122,6 +3061,7 @@ on_disk_main() {
 
   # questionnaire (env values / chosen-tree .env prefill / documented
   # defaults; prompts only when a source exists and the env var is unset)
+  decide_sudo
   run_questionnaire
   report_missing_if_any
 
@@ -3165,6 +3105,7 @@ on_disk_main() {
 
   write_env_file
   info "--- .env written to ${ENV_FILE} (chmod 600)"
+  install_ca_bundle
   delegate_to_start
 }
 # --- bootstrap main flow -------------------------------------------------------

@@ -99,7 +99,6 @@ export HONEY_NS="${SETUPE2E_NS}"
 export HONEY_USER="${SETUPE2E_USER}"
 export HONEY_STARTER_NONINTERACTIVE=1
 export HONEY_STARTER_ASSUME_YES=1
-export HONEY_AI_PROVIDER=openai
 STATE="$(mktemp -d)"
 export HD_STATE_DIR="${STATE}"
 export HD_API_HOST_PORT="${HD_API_HOST_PORT:-19600}"
@@ -112,7 +111,6 @@ export HD_CONFIG_CHECK_INTERVAL="${HD_CONFIG_CHECK_INTERVAL:-30m}"
 # Real-looking AI keys so the daemon's LOOKUPs resolve to non-empty strings
 # (the engine api_key fields are Vault LOOKUPs; any non-empty value resolves).
 export OPENAI_API_KEY="sk-setup-e2e-openai"
-export OPENROUTER_API_KEY="sk-setup-e2e-openrouter"
 
 # Throwaway copy of the tree under test. setup.sh is executed from THIS copy
 # (never the dev checkout), so the .env it writes cannot touch the repo.
