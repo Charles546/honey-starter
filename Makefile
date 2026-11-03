@@ -1,6 +1,6 @@
 .PHONY: all lint check-bcrypt check-config compose-config smoke e2e validate \
 	setup-dryrun setup-e2e reload-watch-test identity-perms start stop down \
-	down-volumes status reload-watch render-config logs
+	down-volumes status reload-watch render-config logs proxy-test proxy-on proxy-off proxy-status
 
 # Default target: the full validation gate.
 #   lint           -> shellcheck over scripts/*.sh and test/*.sh (no docker)
@@ -22,7 +22,7 @@
 #                     docker + network; skips when docker is unavailable)
 #   reload-watch-test -> hermetic unit tests for scripts/reload-watch.sh
 #                     (no docker)
-all: lint check-bcrypt setup-dryrun identity-perms check-config compose-config smoke e2e setup-e2e reload-watch-test
+all: lint check-bcrypt setup-dryrun identity-perms check-config compose-config smoke e2e setup-e2e reload-watch-test proxy-test
 
 # Shellcheck lint gate over all project bash scripts. No docker required.
 lint:
@@ -135,3 +135,18 @@ render-config:
 # Follow the daemon logs (extra args pass through to `docker compose logs`).
 logs:
 	@bash scripts/logs.sh
+
+# P5: hermetic tests for scripts/proxy.sh (mock docker).
+proxy-test:
+	@bash test/proxy.sh
+
+# Debug: route the daemon through a host intercepting proxy (ZAP/Charles/
+# mitmproxy). Options: make proxy-on ARGS="--port 8081 --cert ~/ca.pem"
+proxy-on:
+	@bash scripts/proxy.sh on $(ARGS)
+
+proxy-off:
+	@bash scripts/proxy.sh off
+
+proxy-status:
+	@bash scripts/proxy.sh status
