@@ -583,18 +583,18 @@ runs NEVER ask it:
                       ([A-Za-z0-9@._-]+); constant after first run.
   3. HD_AI_MODEL      AI model (default gpt-5.4-mini; the pin) - see HD_AI_MODEL
                       semantics below.
-  4. API key          hidden input (masked '*' feedback + re-type confirm
+  4. AI endpoint      ONE question: HD_AI_BASE_URL, Enter keeps the current
+                      URL or the OpenAI default (https://api.openai.com/v1);
+                      any other OpenAI-compatible URL is persisted. Skipped
+                      when HD_AI_BASE_URL is set in the environment.
+  5. API key          hidden input (masked '*' feedback + re-type confirm
                       on a real tty; read -s no-echo fallback). Empty = keep
                       the current key (existing install) or add later
                       (placeholder flow: start.sh seeds a placeholder and you
                       add the real key to .env and re-run).
-  5. ports            HD_API_HOST_PORT (default 9000), HD_UI_HOST_PORT
+  6. ports            HD_API_HOST_PORT (default 9000), HD_UI_HOST_PORT
                       (default 8090) and HD_WEBHOOK_PORT (default 18080),
                       integers 1-65535. Use distinct values per instance.
-  6. AI endpoint      ONE question: HD_AI_BASE_URL, Enter keeps the current
-                      URL or the OpenAI default (https://api.openai.com/v1);
-                      any other OpenAI-compatible URL is persisted. Skipped
-                      when HD_AI_BASE_URL is set in the environment.
   HONEY_STARTER_ANSWERS_FILE (when set) supplies the answers first,
   newline-delimited, in exactly the order above: the leading
   COMPOSE_PROJECT_NAME line (lowercase; empty = accept the derived default;
@@ -2453,6 +2453,23 @@ run_questionnaire() {
       || die "HD_AI_MODEL must be non-empty with no whitespace/control and only [A-Za-z0-9._:/@+-] (got: ${EFFECTIVE_MODEL})"
   fi
 
+  # --- AI endpoint: ONE question; Enter keeps the current URL or the OpenAI
+  # default. Answering the OpenAI default stores nothing (the engine falls back
+  # to it); any other OpenAI-compatible URL is persisted as HD_AI_BASE_URL.
+  if [ -n "${HD_AI_BASE_URL:-}" ]; then
+    EFFECTIVE_BASE_URL="${HD_AI_BASE_URL}"
+  else
+    prompt_optional HD_AI_BASE_URL "OpenAI-compatible API base URL (HD_AI_BASE_URL; Enter for the default)" \
+      "$(first_nonempty "$(cur_value HD_AI_BASE_URL)" "${OPENAI_DEFAULT_BASE_URL}")" valid_base_url
+    EFFECTIVE_BASE_URL="${REPLY}"
+  fi
+  if [ "${EFFECTIVE_BASE_URL}" = "${OPENAI_DEFAULT_BASE_URL}" ]; then
+    EFFECTIVE_BASE_URL=""
+  fi
+  if [ -n "${EFFECTIVE_BASE_URL}" ]; then
+    valid_base_url "${EFFECTIVE_BASE_URL}" \
+      || die "HD_AI_BASE_URL must be an http(s):// URL (got: ${EFFECTIVE_BASE_URL})"
+  fi
   # --- AI key (hidden; empty = keep/add-later) ----------------
   if :; then
     if [ -z "${EXPLICIT_OPENAI_KEY}" ]; then
@@ -2512,23 +2529,6 @@ run_questionnaire() {
     EFFECTIVE_WEBHOOK_PORT="${REPLY}"
   else
     EFFECTIVE_WEBHOOK_PORT="${HD_WEBHOOK_PORT}"
-  fi
-  # --- AI endpoint: ONE question; Enter keeps the current URL or the OpenAI
-  # default. Answering the OpenAI default stores nothing (the engine falls back
-  # to it); any other OpenAI-compatible URL is persisted as HD_AI_BASE_URL.
-  if [ -n "${HD_AI_BASE_URL:-}" ]; then
-    EFFECTIVE_BASE_URL="${HD_AI_BASE_URL}"
-  else
-    prompt_optional HD_AI_BASE_URL "OpenAI-compatible API base URL (HD_AI_BASE_URL; Enter for the default)" \
-      "$(first_nonempty "$(cur_value HD_AI_BASE_URL)" "${OPENAI_DEFAULT_BASE_URL}")" valid_base_url
-    EFFECTIVE_BASE_URL="${REPLY}"
-  fi
-  if [ "${EFFECTIVE_BASE_URL}" = "${OPENAI_DEFAULT_BASE_URL}" ]; then
-    EFFECTIVE_BASE_URL=""
-  fi
-  if [ -n "${EFFECTIVE_BASE_URL}" ]; then
-    valid_base_url "${EFFECTIVE_BASE_URL}" \
-      || die "HD_AI_BASE_URL must be an http(s):// URL (got: ${EFFECTIVE_BASE_URL})"
   fi
   # HD_UI_URL is the documented public UI base URL (OAuth/SAML redirect
   # building; compose defaults ${HD_UI_URL:-http://localhost:8090}). Derive
