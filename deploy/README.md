@@ -854,6 +854,42 @@ process. If you run the smoke/E2E (or start.sh) as a non-root WSL user, use the
 (`sudo make smoke`) works with `0600`, but a non-root run is the common case
 and is exactly what the smoke's `0644` accommodates.
 
+## Capturing daemon traffic with an intercepting proxy
+
+For debugging (e.g. inspecting AI gateway or registry calls) the daemon can be
+routed through a proxy running on your host — ZAP, Charles, mitmproxy, ... —
+with `make proxy-on` (`scripts/proxy.sh`). The stack must already be running.
+
+```bash
+# ZAP defaults to port 8080; pass whatever port your proxy listens on.
+make proxy-on ARGS="--port 8081 --cert ~/zap_root_ca.cer"
+make proxy-status
+make proxy-off            # or `make start`: both restore the normal config
+```
+
+What it does: builds `${HD_STATE_DIR}/ca/proxy-bundle.crt` (your current CA
+bundle — `HD_CA_CERT_FILE`, else the daemon image's system roots — plus the
+proxy's root CA), then recreates **only the daemon** with
+`deploy/proxy.override.yaml`, which sets `HTTP(S)_PROXY=http://<host>:<port>`
+(`NO_PROXY` keeps valkey/vault/ui direct), replaces the CA mount with the new
+bundle and points all trust env vars at it.
+
+* `--cert FILE` is the proxy's root CA (PEM or DER). Omit it for ZAP and the
+  script fetches it from ZAP's API on `localhost:<port>` (`--api-key` /
+  `ZAP_API_KEY` if your ZAP requires a key). Charles: Help > SSL Proxying >
+  Save Charles Root Certificate (enable SSL proxying for the hosts you want
+  decrypted).
+* `--host` (default `host.docker.internal`) is how the container reaches your
+  machine; Rancher Desktop and Docker Desktop both resolve it.
+* The proxy must listen on `0.0.0.0` (not only `127.0.0.1`) so the container VM
+  can reach it. That exposes it to your network while it runs; stop it when done.
+* ZAP issues certificates with negative serial numbers, which Go >= 1.23
+  rejects. The script sets `GODEBUG=x509negativeserial=1` for the daemon unless
+  you pass `--strict-certs`.
+* This is a debug overlay and is **not** written to `.env`: `make start`
+  (or `proxy-off`) returns the daemon to the normal configuration, and
+  `setup.sh` never sees the proxy bundle.
+
 ## Corporate root CA
 
 By default the daemon trusts the system CA bundle of its container image. If

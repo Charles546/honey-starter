@@ -1,0 +1,26 @@
+# Debug overlay: route the daemon's outbound HTTP(S) through an intercepting
+# proxy running on the host (ZAP, Charles, mitmproxy, ...) so its traffic can be
+# captured. NOT part of the normal stack: apply it with `make proxy-on`
+# (scripts/proxy.sh), which builds the CA bundle and sets these variables.
+#   docker compose -f deploy/docker-compose.yaml -f deploy/proxy.override.yaml ...
+# Compose merges `volumes` by container path, so the mount below REPLACES the
+# base ca-bundle.crt mount with a bundle that also trusts the proxy's root CA.
+services:
+  daemon:
+    environment:
+      HTTP_PROXY: ${HD_PROXY_URL:?run via scripts/proxy.sh}
+      HTTPS_PROXY: ${HD_PROXY_URL}
+      http_proxy: ${HD_PROXY_URL}
+      https_proxy: ${HD_PROXY_URL}
+      NO_PROXY: valkey,vault,ui,localhost,127.0.0.1
+      no_proxy: valkey,vault,ui,localhost,127.0.0.1
+      # Some proxies (ZAP) emit certs with negative serial numbers that Go >=1.23
+      # rejects by default; scripts/proxy.sh sets this unless --strict-certs.
+      GODEBUG: ${HD_PROXY_GODEBUG:-}
+      SSL_CERT_FILE: /etc/honeydipper/ca/ca-bundle.crt
+      GIT_SSL_CAINFO: /etc/honeydipper/ca/ca-bundle.crt
+      CURL_CA_BUNDLE: /etc/honeydipper/ca/ca-bundle.crt
+      NODE_EXTRA_CA_CERTS: /etc/honeydipper/ca/ca-bundle.crt
+      REQUESTS_CA_BUNDLE: /etc/honeydipper/ca/ca-bundle.crt
+    volumes:
+      - ${HD_PROXY_CA_FILE:?run via scripts/proxy.sh}:/etc/honeydipper/ca/ca-bundle.crt:ro

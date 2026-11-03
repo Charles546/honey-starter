@@ -80,6 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/Charles546/honey-starter/main/scrip
 | 🎨 `make render-config` | render `bootstrap/` → `.honey-starter/config` **without** restarting the daemon (the shared render; the non-watcher fallback) |
 | 👁️ `make reload-watch` | run the host-side automatic config reload watcher in the foreground (edit `bootstrap/` → auto-renders + applies live; Ctrl-C to stop; `bash scripts/reload-watch.sh --stop` to stop a background one) |
 | 📜 `make logs` | follow the daemon logs |
+| 🔍 `make proxy-on` / `proxy-off` / `proxy-status` | debug: route the daemon's outbound HTTP(S) through an intercepting proxy on your host (ZAP, Charles, mitmproxy) to capture its traffic; `make proxy-on ARGS="--port 8081 --cert ~/root-ca.pem"` (see deploy/README.md "Capturing daemon traffic") |
 
 Tail the UI instead: `bash scripts/logs.sh ui --tail=100` (extra args pass through to `docker compose logs`).
 
