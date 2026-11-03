@@ -186,6 +186,8 @@ def run(script_path, first_prompt, pre_lines, stages, bash_args,
         os.dup2(slave, 2)
         os.close(master)
         os.close(slave)
+        # Linux non-root hosts get a sudo [y/N] prompt that would eat scripted answers.
+        os.environ.setdefault('HONEY_USE_SUDO', '0')
         os.execvp('bash', ['bash', script_path] + bash_args)
     os.close(slave)
 
