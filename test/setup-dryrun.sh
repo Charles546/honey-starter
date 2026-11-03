@@ -776,10 +776,10 @@ rm -rf "${T8}" "${S8}"
 T9="$(fresh_tree)"
 S9="$(mktemp -d)"
 # Answers-file schema: COMPOSE_PROJECT_NAME (empty = accept the derived
-# default), HONEY_NS, HONEY_USER, MODEL, API key, ports (API, UI, webhook), AI
-# base URL, then the final Y/n when asked. Trailing slots may be omitted
+# default), HONEY_NS, HONEY_USER, MODEL, AI base URL, API key, ports (API, UI,
+# webhook), then the final Y/n when asked. Trailing slots may be omitted
 # (defaults). NO provider slot, NO install-dir line.
-printf 'ansproj9\nansns\nansuser\nans-custom-model\nsk-answers-key\n9300\n9390\n' \
+printf 'ansproj9\nansns\nansuser\nans-custom-model\n\nsk-answers-key\n9300\n9390\n' \
   > /tmp/setup-dryrun.answers
 set +e
 (
@@ -814,9 +814,9 @@ rm -rf "${T9}" "${S9}"
 for variant in default custom; do
   TU="$(fresh_tree)"; SU="$(mktemp -d)"
   if [ "${variant}" = default ]; then
-    printf 'urlproj\nansns\nansuser\ngpt-4o\nsk-u\n9300\n9390\n19090\n\n' > /tmp/setup-dryrun.url.answers
+    printf 'urlproj\nansns\nansuser\ngpt-4o\n\nsk-u\n9300\n9390\n19090\n' > /tmp/setup-dryrun.url.answers
   else
-    printf 'urlproj\nansns\nansuser\ngpt-4o\nsk-u\n9300\n9390\n\nhttps://gw.example.com/llm\n' > /tmp/setup-dryrun.url.answers
+    printf 'urlproj\nansns\nansuser\ngpt-4o\nhttps://gw.example.com/llm\nsk-u\n9300\n9390\n\n' > /tmp/setup-dryrun.url.answers
   fi
   set +e
   (
@@ -1117,7 +1117,7 @@ rm -rf "${TSRC16B}" "${TPRE16B}" "${S16B}"
 # ---------------------------------------------------------------------------
 # 17a. answers-file writes the model answer (no provider slot)
 T17A="$(fresh_tree)"; S17A="$(mktemp -d)"
-printf 'proj17a\nansns\nansuser\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
+printf 'proj17a\nansns\nansuser\nft:gpt-4o:org:custom\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
 set +e
 (
   cd "${T17A}"
@@ -1137,7 +1137,7 @@ rm -rf "${T17A}" "${S17A}"
 
 # 17b. answers-file EMPTY model line = accept default -> pin written
 T17B="$(fresh_tree)"; S17B="$(mktemp -d)"
-printf 'proj17b\nansns\nansuser\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17b
+printf 'proj17b\nansns\nansuser\n\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17b
 set +e
 (
   cd "${T17B}"
@@ -1158,7 +1158,7 @@ rm -rf "${T17B}" "${S17B}"
 # 17c. answers-file: a blank API-key line (no key given) is accepted without
 # writing any key, and the model question still applies its pin default
 T17C="$(fresh_tree)"; S17C="$(mktemp -d)"
-printf 'proj17c\nansns\nansuser\n\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17c
+printf 'proj17c\nansns\nansuser\n\n\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17c
 set +e
 (
   cd "${T17C}"
@@ -1180,7 +1180,7 @@ rm -rf "${T17C}" "${S17C}"
 # 17d. non-empty HD_AI_MODEL env -> override written (passthrough wins)
 T17D="$(fresh_tree)"; S17D="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-override\n' > "${T17D}/.env"
-printf 'proj17d\nansns\nansuser\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17d
+printf 'proj17d\nansns\nansuser\n\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17d
 set +e
 (
   cd "${T17D}"
@@ -1201,7 +1201,7 @@ rm -rf "${T17D}" "${S17D}"
 # 17e. HD_AI_MODEL= (explicit empty) + existing override -> line REMOVED
 T17E="$(fresh_tree)"; S17E="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-override\n' > "${T17E}/.env"
-printf 'proj17e\nansns\nansuser\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17e
+printf 'proj17e\nansns\nansuser\n\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17e
 set +e
 (
   cd "${T17E}"
@@ -1223,7 +1223,7 @@ rm -rf "${T17E}" "${S17E}"
 #      is SKIPPED and the existing override is NOT kept (line removed)
 T17F="$(fresh_tree)"; S17F="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-pin\n' > "${T17F}/.env"
-printf 'proj17f\nansns\nansuser\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17f
+printf 'proj17f\nansns\nansuser\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17f
 set +e
 (
   cd "${T17F}"
@@ -1255,7 +1255,7 @@ rm -rf "${T17G}" "${S17G}"
 # line (e.g. the port 9300, which would otherwise validate as a model string)
 # nor re-pin. The run exits 1 ON THE MODEL, before any .env write.
 T17H="$(fresh_tree)"; S17H="$(mktemp -d)"
-printf 'proj17h\nansns\nansuser\nbad model\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
+printf 'proj17h\nansns\nansuser\nbad model\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
 set +e
 (
   cd "${T17H}" && env -i HOME="${HOME}" PATH="${PATH}" \
@@ -1326,7 +1326,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${T17K}" && HD_STATE_DIR="${S17K}" TERM=dumb \
     python3 "${HERE}/test/pty-helper.py" --on-disk \
       "${T17K}/scripts/setup.sh" "Compose project name" \
-      projname ansns ansuser "bad model" 9300 9390 "" "" -- --dry-run
+      projname ansns ansuser "bad model" 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.17k.out 2>&1
   RC17K=$?
   set -e
@@ -1353,7 +1353,7 @@ fi
 # provider openai + the VALID model gpt-valid. Without the reset this rc was 1
 # dying on the model; with it the run completes and writes HD_AI_MODEL=gpt-valid.
 T17L="$(fresh_tree)"; S17L="$(mktemp -d)"
-printf 'proj17l\nbad ns one\nbad ns two\nbad ns three\nbad user one\nbad user two\nbad user three\ngpt-valid\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17l
+printf 'proj17l\nbad ns one\nbad ns two\nbad ns three\nbad user one\nbad user two\nbad user three\ngpt-valid\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17l
 set +e
 (
   cd "${T17L}"
@@ -1419,7 +1419,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${PH19A}" TERM=dumb HD_STATE_DIR="${S19A}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "" projname19a ansns ansuser gpt-4o sk-key-pty sk-key-pty 9300 9390 "" "" -- --dry-run \
+        "" projname19a ansns ansuser gpt-4o "" sk-key-pty sk-key-pty 9300 9390 "" -- --dry-run \
   ) >/tmp/setup-dryrun.19a.out 2>&1
   RC19A=$?
   set -e
@@ -1449,7 +1449,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${TH19B}" TERM=dumb HD_STATE_DIR="${S19B}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "~" projname19b ansns ansuser gpt-4o sk-key-pty2 sk-key-pty2 9301 9391 "" "" -- --dry-run \
+        "~" projname19b ansns ansuser gpt-4o "" sk-key-pty2 sk-key-pty2 9301 9391 "" -- --dry-run \
   ) >/tmp/setup-dryrun.19b.out 2>&1
   RC19B=$?
   set -e
@@ -1798,7 +1798,7 @@ rm -rf "${TP2}" "${SP2}"
 # P3. fresh answers-file leading line ansproj -> written (post-guard re-probe
 #     proves the answered name was probed).
 TP3="$(fresh_tree)"; SP3="$(mktemp -d)"
-printf 'ansproj\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p3.answers
+printf 'ansproj\nansns\nansuser\ngpt-4o\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p3.answers
 : > /tmp/setup-dryrun.p3.log; printf '' > /tmp/setup-dryrun.p3.state
 set +e
 (
@@ -1823,7 +1823,7 @@ rm -rf "${TP3}" "${SP3}"
 
 # P4. fresh answers-file EMPTY leading line -> the derived default is written.
 TP4="$(fresh_tree)"; SP4="$(mktemp -d)"
-printf '\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p4.answers
+printf '\nansns\nansuser\ngpt-4o\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p4.answers
 : > /tmp/setup-dryrun.p4.log; printf '' > /tmp/setup-dryrun.p4.state
 DERIVED4="$(derived_proj "${TP4}")"
 set +e
@@ -1872,7 +1872,7 @@ rm -rf "${TP5}" "${SP5}"
 # P6. fresh answers-file INVALID leading line -> dies on the project (the
 #     charset message), no .env.
 TP6="$(fresh_tree)"; SP6="$(mktemp -d)"
-printf 'BadProj!\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p6.answers
+printf 'BadProj!\nansns\nansuser\ngpt-4o\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p6.answers
 set +e
 (
   cd "${TP6}"
@@ -2079,7 +2079,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP12}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP12}/scripts/setup.sh" "Continue with the change?" \
-        n ansns ansuser gpt-4o sk-pty-key sk-pty-key 9300 9390 "" "" -- --dry-run
+        n ansns ansuser gpt-4o "" sk-pty-key sk-pty-key 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.p12.out 2>&1
   RC12=$?
   set -e
@@ -2119,7 +2119,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP13}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP13}/scripts/setup.sh" "Continue with the change?" \
-        y ansns ansuser gpt-4o sk-pty-key sk-pty-key 9300 9390 "" "" -- --dry-run
+        y ansns ansuser gpt-4o "" sk-pty-key sk-pty-key 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.p13.out 2>&1
   RC13=$?
   set -e
@@ -2206,7 +2206,7 @@ rm -rf "${TP15}" "${SP15}"
 #      proceeds and writes it (-p typedname in the log), and when typedname is
 #      RUNNING it dies pre-write, no .env.
 TP16="$(fresh_tree)"; SP16="$(mktemp -d)"
-printf 'typedname\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16.answers
+printf 'typedname\nansns\nansuser\ngpt-4o\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16.answers
 DERIVED16="$(derived_proj "${TP16}")"
 # Scenario 1: nothing running -> rc 0, .env typedname, log has -p typedname
 : > /tmp/setup-dryrun.p16a.log; printf '' > /tmp/setup-dryrun.p16a.state
@@ -2225,7 +2225,7 @@ cp "${TP16}/.env" /tmp/setup-dryrun.p16a.env 2>/dev/null || true
 set -e
 # Scenario 2: typedname RUNNING -> die pre-write, no .env
 TP16B="$(fresh_tree)"; SP16B="$(mktemp -d)"
-printf 'typedname\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16b.answers
+printf 'typedname\nansns\nansuser\ngpt-4o\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16b.answers
 : > /tmp/setup-dryrun.p16b.log; printf 'RUNNING typedname\n' > /tmp/setup-dryrun.p16b.state
 set +e
 (
@@ -2311,7 +2311,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA2}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 "" "" -- --dry-run
+        projname ansns ansuser gpt-4o "" sk-key-test sk-key-test 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.a2.out 2>&1
   RC_A2=$?
   set -e
@@ -2343,7 +2343,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA3}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA3}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 "" "" -- --dry-run
+        projname ansns ansuser gpt-4o "" sk-key-test sk-key-test 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.a3.out 2>&1
   RC_A3=$?
   set -e
@@ -2376,7 +2376,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR=1 HOME="${HOME}" HD_STATE_DIR="${SA4A}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4A}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 "" "" -- --dry-run
+        projname ansns ansuser gpt-4o "" sk-key-test sk-key-test 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.a4a.out 2>&1
   RC_A4A=$?
   set -e
@@ -2398,7 +2398,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR= HOME="${HOME}" HD_STATE_DIR="${SA4B}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4B}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 "" "" -- --dry-run
+        projname ansns ansuser gpt-4o "" sk-key-test sk-key-test 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.a4b.out 2>&1
   RC_A4B=$?
   set -e
@@ -2444,7 +2444,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB1}/scripts/setup.sh" "Compose project name" \
-        projb1 ansns ansuser 3 sk-b1 sk-b1 9300 9390 "" "" -- --dry-run
+        projb1 ansns ansuser 3 "" sk-b1 sk-b1 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.b1.out 2>&1
   RC_B1=$?
   set -e
@@ -2470,7 +2470,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB2}/scripts/setup.sh" "Compose project name" \
-        projb2 ansns ansuser "" sk-b2 sk-b2 9300 9390 "" "" -- --dry-run
+        projb2 ansns ansuser "" "" sk-b2 sk-b2 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.b2.out 2>&1
   RC_B2=$?
   set -e
@@ -2494,7 +2494,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB3}/scripts/setup.sh" "Compose project name" \
-        projb3 ansns ansuser gpt-4o sk-b3 sk-b3 9300 9390 "" "" -- --dry-run
+        projb3 ansns ansuser gpt-4o "" sk-b3 sk-b3 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.b3.out 2>&1
   RC_B3=$?
   set -e
@@ -2519,7 +2519,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB4}/scripts/setup.sh" "Compose project name" \
-        projb4 ansns ansuser 9 2 sk-b4 sk-b4 9300 9390 "" "" -- --dry-run
+        projb4 ansns ansuser 9 2 "" sk-b4 sk-b4 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.b4.out 2>&1
   RC_B4=$?
   set -e
@@ -2545,7 +2545,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB5}/scripts/setup.sh" "Compose project name" \
-        projb5 ansns ansuser 99 3 sk-b5 sk-b5 9300 9390 "" "" -- --dry-run
+        projb5 ansns ansuser 99 3 "" sk-b5 sk-b5 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.b5.out 2>&1
   RC_B5=$?
   set -e
@@ -2574,7 +2574,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB7}/scripts/setup.sh" "Compose project name" \
-        projb7 ansns ansuser 7 "bad model" my-custom-model sk-b7 sk-b7 9300 9390 "" "" -- --dry-run
+        projb7 ansns ansuser 7 "bad model" my-custom-model "" sk-b7 sk-b7 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.b7.out 2>&1
   RC_B7=$?
   set -e
@@ -2599,7 +2599,7 @@ fi
 #     unlisted-but-valid model stays as typed; interactively it would need the
 #     "type your own" option). No ESC bytes (rich disabled by redirection).
 TB6="$(fresh_tree)"; SB6="$(mktemp -d)"
-printf 'projb6\nansns\nansuser\ngpt-raw6\nsk-b6\n9300\n9390\n' > /tmp/setup-dryrun.ansB6
+printf 'projb6\nansns\nansuser\ngpt-raw6\n\nsk-b6\n9300\n9390\n' > /tmp/setup-dryrun.ansB6
 set +e
 (
   cd "${TB6}"
@@ -2663,7 +2663,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG1}/scripts/setup.sh" "Compose project name" \
-        projg1 ansns ansuser claude-opus-4-8 sk-f1 sk-f1 9300 9390 "" "" -- --dry-run
+        projg1 ansns ansuser claude-opus-4-8 "" sk-f1 sk-f1 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g1.out 2>&1
   RC_G1=$?
   set -e
@@ -2687,7 +2687,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG2}/scripts/setup.sh" "Compose project name" \
-        projg2 ansns ansuser my-custom-model-2 sk-f2 sk-f2 9300 9390 "" "" -- --dry-run
+        projg2 ansns ansuser my-custom-model-2 "" sk-f2 sk-f2 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g2.out 2>&1
   RC_G2=$?
   set -e
@@ -2712,7 +2712,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG3}/scripts/setup.sh" "Compose project name" \
-        projg3 ansns ansuser "bad model" 9300 9390 "" "" -- --dry-run
+        projg3 ansns ansuser "bad model" 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g3.out 2>&1
   RC_G3=$?
   set -e
@@ -2738,7 +2738,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG4}/scripts/setup.sh" "Compose project name" \
-        projg4 ansns ansuser 99 3 sk-f4 sk-f4 9300 9390 "" "" -- --dry-run
+        projg4 ansns ansuser 99 3 "" sk-f4 sk-f4 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g4.out 2>&1
   RC_G4=$?
   set -e
@@ -2765,7 +2765,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG5}/scripts/setup.sh" "Compose project name" \
-        projg5 ansns ansuser gpt-4o sk-f5 sk-f5 9300 9390 "" "" -- --dry-run
+        projg5 ansns ansuser gpt-4o "" sk-f5 sk-f5 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g5.out 2>&1
   RC_G5=$?
   set -e
@@ -2791,7 +2791,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG6}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG6}/scripts/setup.sh" "Compose project name" \
-        projg6 ansns ansuser "type your own" my-custom-f6 sk-f6 sk-f6 9300 9390 "" "" -- --dry-run
+        projg6 ansns ansuser "type your own" my-custom-f6 "" sk-f6 sk-f6 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g6.out 2>&1
   RC_G6=$?
   set -e
@@ -2817,7 +2817,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG7}/scripts/setup.sh" "Compose project name" \
-        projg7 ansns ansuser gpt-5.4 sk-f7 sk-f7 9300 9390 "" "" -- --dry-run
+        projg7 ansns ansuser gpt-5.4 "" sk-f7 sk-f7 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g7.out 2>&1
   RC_G7=$?
   set -e
@@ -2846,7 +2846,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG10}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG10}/scripts/setup.sh" "Compose project name" \
-        projg10 ansns ansuser __type_your_own__ my-custom-g10 sk-g10 sk-g10 9300 9390 "" "" -- --dry-run
+        projg10 ansns ansuser __type_your_own__ my-custom-g10 "" sk-g10 sk-g10 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.g10.out 2>&1
   RC_G10=$?
   set -e
@@ -2867,7 +2867,7 @@ fi
 #     .env as pre-change: the raw-value answers-file path is untouched
 #     (byte-identity guard) - no menu is rendered.
 TG8="$(fresh_tree)"; SG8="$(mktemp -d)"
-printf 'projg8\nansns\nansuser\nmy-custom-model-f8\nsk-f8\n9300\n9390\n' > /tmp/setup-dryrun.ansG8
+printf 'projg8\nansns\nansuser\nmy-custom-model-f8\n\nsk-f8\n9300\n9390\n' > /tmp/setup-dryrun.ansG8
 set +e
 (
   cd "${TG8}"
@@ -2891,7 +2891,7 @@ rm -rf "${TG8}" "${SG8}"
 # G9. (NI) HD_AI_MODEL env passthrough (G9a, 17d guard) + invalid-env die
 #     (G9b, 17g guard) - both still rc-0/rc-1 as pre-change.
 TG9A="$(fresh_tree)"; SG9A="$(mktemp -d)"
-printf 'projg9a\nansns\nansuser\n\n9300\n9390\n' > /tmp/setup-dryrun.ansG9A
+printf 'projg9a\nansns\nansuser\n\n\n9300\n9390\n' > /tmp/setup-dryrun.ansG9A
 set +e
 (
   cd "${TG9A}"
@@ -2937,7 +2937,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SH1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TH1}/scripts/setup.sh" "Compose project name" \
-        projh1 ansns ansuser 3 sk-h1 sk-h1 9300 9390 "" "" -- --dry-run
+        projh1 ansns ansuser 3 "" sk-h1 sk-h1 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.h1.out 2>&1
   RC_H1=$?
   set -e
@@ -2958,7 +2958,7 @@ fi
 #     answers-file / non-interactive path — no menu, no hint, raw values pass
 #     through unchanged (dryrun byte-identical guard).
 TH2="$(fresh_tree)"; SH2="$(mktemp -d)"
-printf 'projh2\nansns\nansuser\ngpt-hint2\nsk-h2\n9300\n9390\n' > /tmp/setup-dryrun.ansH2
+printf 'projh2\nansns\nansuser\ngpt-hint2\n\nsk-h2\n9300\n9390\n' > /tmp/setup-dryrun.ansH2
 set +e
 (
   cd "${TH2}"
@@ -3242,7 +3242,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI1}/scripts/setup.sh" "Compose project name" \
-        proji1 ansns ansuser gpt-4o sk-i1 sk-i1 9300 9390 "" "" y -- --dry-run
+        proji1 ansns ansuser gpt-4o "" sk-i1 sk-i1 9300 9390 "" y -- --dry-run
   ) >/tmp/setup-dryrun.i1.out 2>&1
   RC_I1=$?
   set -e
@@ -3269,7 +3269,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI2}/scripts/setup.sh" "Compose project name" \
-        proji2 ansns ansuser gpt-4o sk-i2 sk-i2 9300 9390 "" "" n -- --dry-run
+        proji2 ansns ansuser gpt-4o "" sk-i2 sk-i2 9300 9390 "" n -- --dry-run
   ) >/tmp/setup-dryrun.i2.out 2>&1
   RC_I2=$?
   set -e
@@ -3295,7 +3295,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI3}/scripts/setup.sh" "Compose project name" \
-        proji3 ansns ansuser gpt-4o sk-i3 sk-i3 9300 9390 "" "" "" -- --dry-run
+        proji3 ansns ansuser gpt-4o "" sk-i3 sk-i3 9300 9390 "" "" -- --dry-run
   ) >/tmp/setup-dryrun.i3.out 2>&1
   RC_I3=$?
   set -e
@@ -3323,7 +3323,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI6A}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI6A}/scripts/setup.sh" "Compose project name" \
-        proji6a ansns ansuser gpt-4o sk-i6a sk-i6a 9300 9390 "" "" -- --dry-run
+        proji6a ansns ansuser gpt-4o "" sk-i6a sk-i6a 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.i6a.out 2>&1
   RC_I6A=$?
   set -e
@@ -3345,7 +3345,7 @@ fi
 # I4. (NI opt-in) SSL_CERT_FILE set + HONEY_STARTER_USE_CA=1 -> enabled: BOTH
 #     HD_CA keys written (prompt never fires on the answers-file path).
 TI4="$(fresh_tree)"; SI4="$(mktemp -d)"
-printf 'proji4\nansns\nansuser\ngpt-4o\nsk-i4\n9300\n9390\n' > /tmp/setup-dryrun.ansI4
+printf 'proji4\nansns\nansuser\ngpt-4o\n\nsk-i4\n9300\n9390\n' > /tmp/setup-dryrun.ansI4
 set +e
 (
   cd "${TI4}"
@@ -3371,7 +3371,7 @@ rm -rf "${TI4}" "${SI4}"
 # I5. (NI) SSL_CERT_FILE set + NO opt-in -> NEITHER key; .env byte-identical to
 #     a run without SSL_CERT_FILE (zero delta) - the dryrun byte-identity guard.
 TI5A="$(fresh_tree)"; SI5A="$(mktemp -d)"
-printf 'proji5\nansns\nansuser\ngpt-4o\nsk-i5\n9300\n9390\n' > /tmp/setup-dryrun.ansI5
+printf 'proji5\nansns\nansuser\ngpt-4o\n\nsk-i5\n9300\n9390\n' > /tmp/setup-dryrun.ansI5
 set +e
 (
   cd "${TI5A}"
@@ -3409,7 +3409,7 @@ rm -rf "${TI5A}" "${SI5A}" "${TI5B}" "${SI5B}"
 # I6b. (NI opt-in) SSL_CERT_FILE unreadable/missing + HONEY_STARTER_USE_CA=1 ->
 #      warn + skip (no enable, no die): no keys.
 TI6B="$(fresh_tree)"; SI6B="$(mktemp -d)"
-printf 'proji6b\nansns\nansuser\ngpt-4o\nsk-i6b\n9300\n9390\n' > /tmp/setup-dryrun.ansI6B
+printf 'proji6b\nansns\nansuser\ngpt-4o\n\nsk-i6b\n9300\n9390\n' > /tmp/setup-dryrun.ansI6B
 set +e
 (
   cd "${TI6B}"
@@ -3435,7 +3435,7 @@ rm -rf "${TI6B}" "${SI6B}"
 # I8. (hermetic NI) env WITHOUT SSL_CERT_FILE -> zero CA behavior/output: no
 #     prompt, no warn, no keys (byte-identical default path).
 TI8="$(fresh_tree)"; SI8="$(mktemp -d)"
-printf 'proji8\nansns\nansuser\ngpt-4o\nsk-i8\n9300\n9390\n' > /tmp/setup-dryrun.ansI8
+printf 'proji8\nansns\nansuser\ngpt-4o\n\nsk-i8\n9300\n9390\n' > /tmp/setup-dryrun.ansI8
 set +e
 (
   cd "${TI8}"
@@ -3461,7 +3461,7 @@ rm -rf "${TI8}" "${SI8}"
 # I9a. Round-trip disable: enable (opt-in) then not-enabled -> BOTH keys ABSENT
 #      on the 2nd run (no stale lines left behind).
 TI9A="$(fresh_tree)"; SI9A="$(mktemp -d)"
-printf 'proji9a\nansns\nansuser\ngpt-4o\nsk-i9a\n9300\n9390\n' > /tmp/setup-dryrun.ansI9A
+printf 'proji9a\nansns\nansuser\ngpt-4o\n\nsk-i9a\n9300\n9390\n' > /tmp/setup-dryrun.ansI9A
 set +e
 (
   cd "${TI9A}"
@@ -3496,7 +3496,7 @@ rm -rf "${TI9A}" "${SI9A}"
 # I9b. Round-trip stable: enable (opt-in) then enable again -> .env byte-identical
 #      with both keys present (idempotent).
 TI9B="$(fresh_tree)"; SI9B="$(mktemp -d)"
-printf 'proji9b\nansns\nansuser\ngpt-4o\nsk-i9b\n9300\n9390\n' > /tmp/setup-dryrun.ansI9B
+printf 'proji9b\nansns\nansuser\ngpt-4o\n\nsk-i9b\n9300\n9390\n' > /tmp/setup-dryrun.ansI9B
 set +e
 (
   cd "${TI9B}"
@@ -3533,7 +3533,7 @@ rm -rf "${TI9B}" "${SI9B}"
 # I10a. Dryrun byte-identity (enabled): the run adds EXACTLY the two HD_CA
 #       lines (no more, no fewer).
 TI10A="$(fresh_tree)"; SI10A="$(mktemp -d)"
-printf 'proji10a\nansns\nansuser\ngpt-4o\nsk-i10a\n9300\n9390\n' > /tmp/setup-dryrun.ansI10A
+printf 'proji10a\nansns\nansuser\ngpt-4o\n\nsk-i10a\n9300\n9390\n' > /tmp/setup-dryrun.ansI10A
 set +e
 (
   cd "${TI10A}"
@@ -3556,7 +3556,7 @@ rm -rf "${TI10A}" "${SI10A}"
 # I10b. Dryrun byte-identity (not-enabled): the run adds ZERO HD_CA lines
 #       (zero delta).
 TI10B="$(fresh_tree)"; SI10B="$(mktemp -d)"
-printf 'proji10b\nansns\nansuser\ngpt-4o\nsk-i10b\n9300\n9390\n' > /tmp/setup-dryrun.ansI10B
+printf 'proji10b\nansns\nansuser\ngpt-4o\n\nsk-i10b\n9300\n9390\n' > /tmp/setup-dryrun.ansI10B
 set +e
 (
   cd "${TI10B}"
@@ -3583,7 +3583,7 @@ mkdir -p "${SI11}"
 I11_CA="/tmp/setup-dryrun.ca dir with spaces/root bundle.pem"
 mkdir -p "$(dirname "${I11_CA}")"
 cp "${I_CA_FILE}" "${I11_CA}"
-printf 'proji11\nansns\nansuser\ngpt-4o\nsk-i11\n9300\n9390\n' > /tmp/setup-dryrun.ansI11
+printf 'proji11\nansns\nansuser\ngpt-4o\n\nsk-i11\n9300\n9390\n' > /tmp/setup-dryrun.ansI11
 set +e
 (
   cd "${TI11}"
@@ -3704,7 +3704,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC1}/scripts/setup.sh" "Compose project name" \
-        projc1 ansns ansuser \
+        projc1 ansns ansuser "" \
         --stage "hidden; Enter to skip" $'ab\x03' --no-submit -- --dry-run
   ) >/tmp/setup-dryrun.c1.out 2>&1
   RC_C1=$?
@@ -3733,13 +3733,12 @@ if command -v python3 >/dev/null 2>&1; then
       HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC2}/scripts/setup.sh" "Compose project name" \
-        projc2 ansns ansuser \
+        projc2 ansns ansuser "" \
         --stage "hidden; Enter to skip" $'abc\x7f\x7fd' \
         --stage "re-type to verify" "ad" \
         --canon "Daemon API host port" 9300 \
         --canon "UI host port" 9390 \
-        --canon "Daemon webhook host port" "" \
-        --canon "API base URL" "" -- --dry-run
+        --canon "Daemon webhook host port" "" -- --dry-run
   ) >/tmp/setup-dryrun.c2.out 2>&1
   RC_C2=$?
   set -e
@@ -3769,13 +3768,12 @@ if command -v python3 >/dev/null 2>&1; then
       HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC3}/scripts/setup.sh" "Compose project name" \
-        projc3 ansns ansuser \
+        projc3 ansns ansuser "" \
         --stage "hidden; Enter to skip" "sk-c3-secret" \
         --stage "re-type to verify" "sk-c3-secret" \
         --canon "Daemon API host port" 9300 \
         --canon "UI host port" 9390 \
-        --canon "Daemon webhook host port" "" \
-        --canon "API base URL" "" -- --dry-run
+        --canon "Daemon webhook host port" "" -- --dry-run
   ) >/tmp/setup-dryrun.c3.out 2>&1
   RC_C3=$?
   set -e
@@ -3807,13 +3805,12 @@ if command -v python3 >/dev/null 2>&1; then
       HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC4}/scripts/setup.sh" "Compose project name" \
-        projc4 ansns ansuser \
+        projc4 ansns ansuser "" \
         --stage "hidden; Enter to skip" "sk-c4-secret" \
         --stage "re-type to verify" "sk-c4-secret" \
         --canon "Daemon API host port" 9300 \
         --canon "UI host port" 9390 \
         --canon "Daemon webhook host port" "" \
-        --canon "API base URL" "" \
         --child-stdout /tmp/setup-dryrun.c4.log -- --dry-run
   ) >/tmp/setup-dryrun.c4.out 2>&1
   RC_C4=$?
@@ -3854,12 +3851,11 @@ CSTUBEOF
       HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC5}/scripts/setup.sh" "Compose project name" \
-        projc5 ansns ansuser \
+        projc5 ansns ansuser "" \
         --stage "hidden; Enter to skip" "sk-c5-secret" \
         --canon "Daemon API host port" 9300 \
         --canon "UI host port" 9390 \
-        --canon "Daemon webhook host port" "" \
-        --canon "API base URL" "" -- --dry-run
+        --canon "Daemon webhook host port" "" -- --dry-run
   ) >/tmp/setup-dryrun.c5.out 2>&1
   RC_C5=$?
   set -e
@@ -3889,15 +3885,14 @@ CSTUBEOF
       HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC6}/scripts/setup.sh" "Compose project name" \
-        projc6 ansns ansuser \
+        projc6 ansns ansuser "" \
         --stage "hidden; Enter to skip" "sk-c6" \
         --stage "re-type to verify" "WRONG" \
         --stage "hidden; Enter to skip" "sk-c6" \
         --stage "re-type to verify" "sk-c6" \
         --canon "Daemon API host port" 9300 \
         --canon "UI host port" 9390 \
-        --canon "Daemon webhook host port" "" \
-        --canon "API base URL" "" -- --dry-run
+        --canon "Daemon webhook host port" "" -- --dry-run
   ) >/tmp/setup-dryrun.c6.out 2>&1
   RC_C6=$?
   set -e
