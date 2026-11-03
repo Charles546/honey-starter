@@ -85,5 +85,13 @@ if [ -z "$(find "${T}/state/ca" -name '.proxy-bundle.*')" ]; then ok "no temp fi
 # 9. off uses the base compose file only
 if run ${P} off && grep -q 'force-recreate daemon' "${MOCK_LOG}" && ! grep -q proxy.override "${MOCK_LOG}"; then ok "off: base compose only"; else bad "off: base compose only"; fi
 
+# 10. flavor validation + charles default port
+if ! run ${P} on --flavor nope && grep -q 'unknown --flavor' "${T}/out"; then ok "rejects unknown flavor"; else bad "rejects unknown flavor"; fi
+if ! run ${P} on --flavor charles && grep -q 'localhost:8888' "${T}/out"; then ok "charles defaults to port 8888"; else bad "charles defaults to port 8888"; fi
+
+# 11. charles flavor: no GODEBUG
+if run ${P} on --flavor charles --port "${PORT}" --cert "${T}/ca.der" \
+  && grep -q '^HD_PROXY_GODEBUG=$' "${MOCK_LOG}"; then ok "charles: GODEBUG not set"; else bad "charles: GODEBUG not set"; fi
+
 echo "${PASS} passed, ${FAIL} failed"
 [ "${FAIL}" -eq 0 ]

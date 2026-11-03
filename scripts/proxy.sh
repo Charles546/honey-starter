@@ -2,8 +2,9 @@
 # proxy.sh — route the daemon's outbound traffic through an intercepting proxy
 # running on your host (ZAP, Charles, mitmproxy, ...) to capture it.
 #
-#   bash scripts/proxy.sh on  [--port N] [--host H] [--cert FILE]
-#                             [--api-key KEY] [--strict-certs]
+#   bash scripts/proxy.sh on  [--flavor zap|charles|mitmproxy|generic] [--port N]
+#                             [--host H] [--cert FILE] [--api-key KEY]
+#                             [--strict-certs]
 #   bash scripts/proxy.sh off
 #   bash scripts/proxy.sh status
 # (or: make proxy-on / make proxy-off / make proxy-status)
@@ -16,14 +17,21 @@
 # returns the daemon to the normal, un-proxied configuration.
 #
 # Options (env var in parentheses):
-#   --port N        proxy port on the host (HD_PROXY_PORT, default 8080 = ZAP's
-#                   default; Charles uses 8888, mitmproxy 8080)
+#   --flavor F      zap (default) | charles | mitmproxy | generic
+#                   (HD_PROXY_FLAVOR). Sets the default port, whether the ZAP
+#                   GODEBUG workaround applies and how the root CA is found:
+#                     zap       port 8080, root CA from ZAP's API, GODEBUG on
+#                     charles   port 8888, root CA via http://chls.pro/ssl
+#                     mitmproxy port 8080, ~/.mitmproxy/mitmproxy-ca-cert.pem
+#                               or http://mitm.it through the proxy
+#                     generic   port 8080, you must pass --cert
+#                   The auto-fetch needs the proxy running; --cert always wins.
+#   --port N        proxy port on the host (HD_PROXY_PORT, default per flavor)
 #   --host H        host name the container uses to reach your machine
 #                   (HD_PROXY_HOST, default host.docker.internal)
-#   --cert FILE     the proxy's root CA, PEM or DER (HD_PROXY_CERT). When omitted
-#                   and ZAP's API answers on localhost:<port>, the cert is
-#                   fetched from it (ZAP_API_KEY / --api-key if ZAP requires one).
-#   --strict-certs  do NOT set GODEBUG=x509negativeserial=1 (needed by ZAP).
+#   --cert FILE     the proxy's root CA, PEM or DER (HD_PROXY_CERT)
+#   --api-key KEY   ZAP API key if ZAP requires one (ZAP_API_KEY)
+#   --strict-certs  do NOT set GODEBUG=x509negativeserial=1 (zap flavor only).
 #
 # The proxy must listen on an address the container VM can reach (0.0.0.0, not
 # only 127.0.0.1) — be aware that exposes it to your network while it runs.
@@ -69,9 +77,9 @@ cmd_status() {
   fi
 }
 
-# Write the proxy root CA (PEM) to $1 from --cert, or ZAP's API.
+# Write the proxy root CA (PEM) to $1 from --cert, or the flavor's own endpoint.
 obtain_proxy_cert() {
-  local out="$1" port="$2" cert="$3" key="$4" url
+  local out="$1" port="$2" cert="$3" key="$4" flavor="$5" url=""
   if [ -n "${cert}" ]; then
     [ -r "${cert}" ] || die "cannot read proxy root CA: ${cert}"
     if openssl x509 -in "${cert}" -out "${out}" 2>/dev/null; then :
@@ -79,22 +87,38 @@ obtain_proxy_cert() {
     else die "${cert} is not a PEM or DER certificate"; fi
     return 0
   fi
-  url="http://localhost:${port}/OTHER/core/other/rootcert/"
-  [ -z "${key}" ] || url="${url}?apikey=${key}"
-  if curl -fsS --max-time 5 "${url}" -o "${out}.raw" 2>/dev/null \
-    && openssl x509 -in "${out}.raw" -out "${out}" 2>/dev/null; then
+  case "${flavor}" in
+    zap)
+      url="http://localhost:${port}/OTHER/core/other/rootcert/"
+      [ -z "${key}" ] || url="${url}?apikey=${key}"
+      curl -fsS --max-time 5 "${url}" -o "${out}.raw" 2>/dev/null || true ;;
+    charles)
+      url="http://chls.pro/ssl"
+      curl -fsS --max-time 5 -x "http://localhost:${port}" "${url}" -o "${out}.raw" 2>/dev/null || true ;;
+    mitmproxy)
+      url="http://mitm.it/cert/pem"
+      if [ -r "${HOME}/.mitmproxy/mitmproxy-ca-cert.pem" ]; then
+        cp "${HOME}/.mitmproxy/mitmproxy-ca-cert.pem" "${out}.raw"
+      else
+        curl -fsS --max-time 5 -x "http://localhost:${port}" "${url}" -o "${out}.raw" 2>/dev/null || true
+      fi ;;
+    *) url="" ;;
+  esac
+  if [ -s "${out}.raw" ] && { openssl x509 -in "${out}.raw" -out "${out}" 2>/dev/null \
+    || openssl x509 -inform der -in "${out}.raw" -out "${out}" 2>/dev/null; }; then
     rm -f "${out}.raw"
     return 0
   fi
   rm -f "${out}.raw"
-  die "no --cert given and could not fetch the root CA from ZAP at ${url}. Export your proxy's root certificate and pass --cert FILE (ZAP: Tools > Options > Network > Server Certificates > Save; Charles: Help > SSL Proxying > Save Charles Root Certificate)."
+  die "no --cert given and could not fetch the ${flavor} root CA${url:+ from ${url}}. Export the proxy's root certificate and pass --cert FILE (ZAP: Tools > Options > Network > Server Certificates > Save; Charles: Help > SSL Proxying > Save Charles Root Certificate; mitmproxy: ~/.mitmproxy/mitmproxy-ca-cert.pem). For Charles, also enable SSL Proxying for the hosts to decrypt."
 }
 
 cmd_on() {
-  local port="${HD_PROXY_PORT:-8080}" host="${HD_PROXY_HOST:-host.docker.internal}"
+  local port="${HD_PROXY_PORT:-}" flavor="${HD_PROXY_FLAVOR:-zap}" host="${HD_PROXY_HOST:-host.docker.internal}"
   local cert="${HD_PROXY_CERT:-}" key="${ZAP_API_KEY:-}" strict=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --flavor) flavor="${2:?--flavor needs a value}"; shift 2 ;;
       --port) port="${2:?--port needs a value}"; shift 2 ;;
       --host) host="${2:?--host needs a value}"; shift 2 ;;
       --cert) cert="${2:?--cert needs a file}"; shift 2 ;;
@@ -103,6 +127,11 @@ cmd_on() {
       *) die "unknown option: $1 (see: bash scripts/proxy.sh --help)" ;;
     esac
   done
+  case "${flavor}" in
+    zap|mitmproxy|generic) : "${port:=8080}" ;;
+    charles) : "${port:=8888}" ;;
+    *) die "unknown --flavor: ${flavor} (zap|charles|mitmproxy|generic)" ;;
+  esac
   case "${port}" in ''|*[!0-9]*) die "--port must be a number (got: ${port})" ;; esac
   require_cmd openssl
   require_cmd curl
@@ -130,7 +159,7 @@ cmd_on() {
       /etc/ssl/certs/ca-certificates.crt > "${tmp}" \
       || die "could not read system CA roots from the daemon image"
   fi
-  obtain_proxy_cert "${tmp}.cert" "${port}" "${cert}" "${key}"
+  obtain_proxy_cert "${tmp}.cert" "${port}" "${cert}" "${key}" "${flavor}"
   printf '\n' >> "${tmp}"
   cat "${tmp}.cert" >> "${tmp}"
   chmod 644 "${tmp}"
@@ -139,7 +168,7 @@ cmd_on() {
 
   export HD_PROXY_URL="http://${host}:${port}"
   export HD_PROXY_CA_FILE="${PROXY_BUNDLE}"
-  if [ "${strict}" -eq 1 ]; then export HD_PROXY_GODEBUG=""; else export HD_PROXY_GODEBUG="x509negativeserial=1"; fi
+  if [ "${strict}" -eq 1 ] || [ "${flavor}" != zap ]; then export HD_PROXY_GODEBUG=""; else export HD_PROXY_GODEBUG="x509negativeserial=1"; fi
 
   info "--- recreating the daemon with proxy ${HD_PROXY_URL}"
   proxy_compose up -d --force-recreate daemon
