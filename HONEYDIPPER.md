@@ -9,7 +9,7 @@ is the exact questionnaire contract.
 - In-tree: `make start` (`scripts/start.sh`); lifecycle `make stop | down | down-volumes | status | logs`.
 
 ## Non-interactive contract
-- `HONEY_STARTER_NONINTERACTIVE=1` + decision env vars (`HONEY_NS`, `HONEY_USER`, `HONEY_AI_PROVIDER`, `HD_AI_MODEL`, `HD_AI_BASE_URL`, ports, AI keys; `COMPOSE_PROJECT_NAME` for fresh installs).
+- `HONEY_STARTER_NONINTERACTIVE=1` + decision env vars (`HONEY_NS`, `HONEY_USER`, `HD_AI_MODEL`, `HD_AI_BASE_URL`, ports, AI keys; `COMPOSE_PROJECT_NAME` for fresh installs).
 - `HONEY_STARTER_ASSUME_YES=1` skips the final write-and-start confirm; `HONEY_STARTER_ANSWERS_FILE` replays the questionnaire line-by-line (schema: `setup.sh --help`). Missing vars exit 1 with a list — never silently defaults.
 
 ## Rich-output gotchas

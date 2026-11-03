@@ -98,7 +98,6 @@ export HD_CONFIG_CHECK_INTERVAL="${HD_CONFIG_CHECK_INTERVAL:-30m}"
 # Real-looking AI keys so the daemon's LOOKUPs resolve to non-empty strings
 # (the engine api_key fields are Vault LOOKUPs; any non-empty value resolves).
 export OPENAI_API_KEY="sk-e2e-openai"
-export OPENROUTER_API_KEY="sk-e2e-openrouter"
 
 # shellcheck source=../scripts/lib.sh
 source "${HERE}/scripts/lib.sh"

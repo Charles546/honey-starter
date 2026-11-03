@@ -18,12 +18,13 @@
 #     masked in the summary
 #   * byte-exact round-trip across a second run: seeded .env with comments +
 #     unmanaged keys + managed keys keeps unmanaged lines byte-identical while
-#     managed values are updated in place; mode stays 600; skip writes no
-#     HD_AI_MODEL line
+#     managed values are updated in place; mode stays 600; the model pin is
+#     always applied (there is no provider question)
 #   * shell-safe quoting of a value containing # and spaces (single-quoted)
 #   * secret replace-only-on-explicit-value (no downgrade, no loss on re-run)
 #   * validation failures (bad HONEY_NS, bad port, bad base URL, bad model) die
-#   * missing-required-var error path (custom provider without HD_AI_BASE_URL)
+#   * HD_AI_BASE_URL is never prompted or required; validated http(s):// only
+#     when given via env / .env
 #   * no-tty guidance message
 #   * the interactive branch via HONEY_STARTER_ANSWERS_FILE, incl. the Phase 5+6
 #     answers-file schema (leading COMPOSE_PROJECT_NAME line + the model line)
@@ -45,8 +46,8 @@
 #     - on-disk positional MERGES a pre-Phase-4 tree (layout present, no
 #       setup.sh): .env / .honey-starter sentinels preserved, the tree gains
 #       setup.sh, the invoking tree stays untouched
-#   * Phase 5 AI model matrix (three-way HD_AI_MODEL semantics, skip behavior,
-#     pin / no-pin, validation): an INVALID MODEL DIES via env AND answers
+#   * Phase 5 AI model matrix (three-way HD_AI_MODEL semantics, pin / no-pin,
+#     validation): an INVALID MODEL DIES via env AND answers
 #     file AND a typed answer (pty); a VALID model NEVER dies (cross-
 #     contamination guard: an invalid EARLIER prompt must not poison the model
 #     block's global flags)
@@ -106,6 +107,13 @@
 #     `claude-opus-4-8` no longer dies), charset-invalid input keeps the
 #     byte-identical invalid-HD_AI_MODEL die, and the __type_your_own__
 #     sentinel is never adopted (B7 guarantee holds even when typed raw).
+#   * persisted env keys (PK1-PK3: HONEYDIPPER_IMAGE / HD_UI_IMAGE / VAULT_IMAGE
+#     / VALKEY_IMAGE / HD_STATE_DIR written when set in the env, existing line
+#     kept when unset, absent when neither) and HONEY_USE_SUDO (SU1-SU3: opt-in
+#     via env, persisted; the stub sudo is never invoked without it)
+#   * I13 (real run, NI): the corporate CA bundle is COPIED to
+#     <state dir>/ca/ca-bundle.crt (byte-identical, mode 644, original untouched)
+#     and HD_CA_CERT_FILE names the copy
 #   * Phase C masked API-key input (secret prompts on a real tty): a raw-mode
 #     masked_read loop echoes one '*' per character, backspace/DEL pops and
 #     erases a star, Enter submits, and Ctrl-C restores the terminal and
@@ -205,6 +213,8 @@ SETUP_SRC="${HERE}/scripts/setup.sh"
 
 PASS=0
 FAIL=0
+# Host PATH captured before any subshell-scoped PATH override (lint: SC2030/31).
+HOST_PATH="${PATH}"
 
 ok()  { PASS=$((PASS + 1)); printf 'ok   - %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL - %s\n' "$1" >&2; }
@@ -338,7 +348,7 @@ set +e
   cd "${T1}"
   HONEY_STARTER_INSTALL_DIR="${T1}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   OPENAI_API_KEY="${KEY1}" \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR="${S1}" \
@@ -408,7 +418,7 @@ else
   bad "masked summary marker missing"
 fi
 # no prompts attempted under HONEY_STARTER_NONINTERACTIVE=1
-if grep -Eq '\(HONEY_NS\) \[|\(HONEY_USER\) \[|AI provider \(openai' /tmp/setup-dryrun.1.out; then
+if grep -Eq '\(HONEY_NS\) \[|\(HONEY_USER\) \[|\(HD_AI_MODEL\) \[' /tmp/setup-dryrun.1.out; then
   bad "prompts were attempted in non-interactive mode"
 else
   ok "no prompts attempted (non-interactive)"
@@ -434,7 +444,7 @@ set +e
   cd "${T1B}"
   HONEY_STARTER_INSTALL_DIR="${T1B}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   OPENAI_API_KEY=sk-uipub HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_UI_URL=https://env.example.com \
   HD_STATE_DIR="${S1B}" \
@@ -456,7 +466,7 @@ set +e
   cd "${T1B}"
   HONEY_STARTER_INSTALL_DIR="${T1B}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   OPENAI_API_KEY=sk-uipub2 HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR="${S1B}" \
   bash scripts/setup.sh --dry-run
@@ -494,15 +504,17 @@ HD_UI_HOST_PORT=8190
 # a trailing comment (preserved)
    # indented comment preserved too
 EOF
-# extract the exact unmanaged prefix lines (through HD_STATE_DIR=, line 9)
+# extract the exact unmanaged prefix lines (through HD_UI_IMAGE=, line 8)
 # for byte-exactness comparison; the managed lines below it are allowed to move.
-sed -n '1,9p' "${T2}/.env" > /tmp/setup-dryrun.prefix.orig
+# (HD_STATE_DIR= on line 9 is NOT in the prefix: it is a persisted key, so the
+# HD_STATE_DIR env this run sets is written into it.)
+sed -n '1,8p' "${T2}/.env" > /tmp/setup-dryrun.prefix.orig
 set +e
 (
   cd "${T2}"
   HONEY_STARTER_INSTALL_DIR="${T2}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=newns HONEY_USER=newadmin HONEY_AI_PROVIDER=skip \
+  HONEY_NS=newns HONEY_USER=newadmin \
   HD_API_HOST_PORT=9200 HD_UI_HOST_PORT=8290 \
   HD_STATE_DIR="${S2}" \
   bash scripts/setup.sh --dry-run
@@ -510,9 +522,9 @@ set +e
 RC2A=$?
 set -e
 [ "${RC2A}" -eq 0 ] || bad "round-trip run 1 exited ${RC2A}"
-sed -n '1,9p' "${T2}/.env" > /tmp/setup-dryrun.prefix.after
+sed -n '1,8p' "${T2}/.env" > /tmp/setup-dryrun.prefix.after
 if diff -q /tmp/setup-dryrun.prefix.orig /tmp/setup-dryrun.prefix.after >/dev/null 2>&1; then
-  ok "unmanaged lines (comments, HD_JWT_SIGNING_KEY, image pins, HD_STATE_DIR) byte-exact"
+  ok "unmanaged lines (comments, HD_JWT_SIGNING_KEY, image pins) byte-exact"
 else
   bad "unmanaged lines changed:"
   diff -u /tmp/setup-dryrun.prefix.orig /tmp/setup-dryrun.prefix.after >&2 || true
@@ -527,21 +539,22 @@ else
   bad "managed keys not updated in place:"
   sed 's/^/    | /' "${T2}/.env" >&2
 fi
-# skip provider -> no key/base lines added, old unmanaged content preserved
+# no key/base lines added without an env value; the model pin is always
+# applied (HD_AI_MODEL unset -> gpt-5.4-mini), old unmanaged content preserved
 if grep -q '^OPENAI_API_KEY=' "${T2}/.env"; then
-  bad "skip provider still wrote a key line"
+  bad "run without an API key still wrote a key line"
 else
-  ok "skip provider wrote no key/base lines"
+  ok "run without an API key wrote no key line"
 fi
 if grep -q '^HD_AI_BASE_URL=' "${T2}/.env"; then
-  bad "skip provider wrote HD_AI_BASE_URL"
+  bad "run without HD_AI_BASE_URL wrote HD_AI_BASE_URL"
 else
-  ok "skip provider wrote no HD_AI_BASE_URL"
+  ok "run without HD_AI_BASE_URL wrote no HD_AI_BASE_URL (never prompted, never required)"
 fi
-if grep -q '^HD_AI_MODEL=' "${T2}/.env"; then
-  bad "skip provider wrote an HD_AI_MODEL line (no model question for skip)"
+if grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${T2}/.env"; then
+  ok "run without HD_AI_MODEL still writes the model pin (model always applied)"
 else
-  ok "skip provider wrote no HD_AI_MODEL line (model only for openai/custom)"
+  bad "run without HD_AI_MODEL did not write the gpt-5.4-mini pin"
 fi
 MODE2="$(stat_mode "${T2}/.env")"
 if [ "${MODE2}" = "600" ]; then
@@ -556,7 +569,7 @@ set +e
   cd "${T2}"
   HONEY_STARTER_INSTALL_DIR="${T2}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=newns HONEY_USER=newadmin HONEY_AI_PROVIDER=skip \
+  HONEY_NS=newns HONEY_USER=newadmin \
   HD_API_HOST_PORT=9200 HD_UI_HOST_PORT=8290 \
   HD_STATE_DIR="${S2}" \
   bash scripts/setup.sh --dry-run
@@ -586,7 +599,7 @@ set +e
   cd "${T3}"
   HONEY_STARTER_INSTALL_DIR="${T3}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S3}" \
   bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.3.out 2>&1
@@ -614,7 +627,7 @@ set +e
   cd "${T3}"
   HONEY_STARTER_INSTALL_DIR="${T3}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   OPENAI_API_KEY='sk-new-explicit' \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S3}" \
   bash scripts/setup.sh --dry-run
@@ -639,7 +652,7 @@ set +e
   cd "${T4}"
   HONEY_STARTER_INSTALL_DIR="${T4}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=custom \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_AI_BASE_URL='https://my.endpoint.example/v1' HD_AI_MODEL='my-model-1' \
   OPENAI_API_KEY='sk-custom-key' \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S4}" \
@@ -672,7 +685,7 @@ set +e
   cd "${T5}"
   HONEY_STARTER_INSTALL_DIR="${T5}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_CONFIG_CHECK_INTERVAL=1m HD_STATE_DIR="${S5}" \
   bash scripts/setup.sh --dry-run
@@ -692,23 +705,24 @@ T6="$(fresh_tree)"
 S6="$(mktemp -d)"
 assert_rc "bad HONEY_NS (slash) rejected" 1 bash -c "
   cd '${T6}' && HONEY_STARTER_INSTALL_DIR='${T6}' HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS='bad/ns' HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS='bad/ns' HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR='${S6}' \
   bash scripts/setup.sh --dry-run"
 assert_rc "bad HD_API_HOST_PORT (non-integer) rejected" 1 bash -c "
   cd '${T6}' && HONEY_STARTER_INSTALL_DIR='${T6}' HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=notaport HD_UI_HOST_PORT=8090 HD_STATE_DIR='${S6}' \
   bash scripts/setup.sh --dry-run"
 assert_rc "bad HD_AI_BASE_URL (non-http) rejected" 1 bash -c "
   cd '${T6}' && HONEY_STARTER_INSTALL_DIR='${T6}' HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=custom \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_AI_BASE_URL='ftp://nope' HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR='${S6}' bash scripts/setup.sh --dry-run"
 rm -rf "${T6}" "${S6}"
 
 # ---------------------------------------------------------------------------
-# 7. missing-required-var error path (custom without HD_AI_BASE_URL)
+# 7. no HD_AI_BASE_URL needed: the endpoint defaults to the OpenAI API (never
+#    prompted, never required; the line stays absent)
 # ---------------------------------------------------------------------------
 T7="$(fresh_tree)"
 S7="$(mktemp -d)"
@@ -716,16 +730,16 @@ set +e
 (
   cd "${T7}"
   HONEY_STARTER_INSTALL_DIR="${T7}" HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=custom \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S7}" \
   bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.7.out 2>&1
 RC7=$?
 set -e
-if [ "${RC7}" -eq 1 ] && grep -q 'HD_AI_BASE_URL' /tmp/setup-dryrun.7.out; then
-  ok "missing required HD_AI_BASE_URL exits 1 and lists the variable"
+if [ "${RC7}" -eq 0 ] && ! grep -q '^HD_AI_BASE_URL=' "${T7}/.env"; then
+  ok "NI run without HD_AI_BASE_URL succeeds and leaves it unset (OpenAI default)"
 else
-  bad "missing-var error path (rc=${RC7}):"
+  bad "default base URL path (rc=${RC7}):"
   sed 's/^/    | /' /tmp/setup-dryrun.7.out >&2
 fi
 rm -rf "${T7}" "${S7}"
@@ -757,14 +771,14 @@ fi
 rm -rf "${T8}" "${S8}"
 
 # ---------------------------------------------------------------------------
-# 9. interactive branch via HONEY_STARTER_ANSWERS_FILE (fresh tree, custom)
+# 9. interactive branch via HONEY_STARTER_ANSWERS_FILE (fresh tree)
 # ---------------------------------------------------------------------------
 T9="$(fresh_tree)"
 S9="$(mktemp -d)"
-# Phase 5+6 answers-file schema: COMPOSE_PROJECT_NAME (empty = accept the
-# derived default), HONEY_NS, HONEY_USER, provider, MODEL, base URL (custom
-# only), API key (openai/custom), ports. NO install-dir line.
-printf 'ansproj9\nansns\nansuser\ncustom\nans-custom-model\nhttps://ans.example.com/v1\nsk-answers-key\n9300\n9390\n' \
+# Answers-file schema: COMPOSE_PROJECT_NAME (empty = accept the derived
+# default), HONEY_NS, HONEY_USER, MODEL, API key, ports, then the final Y/n
+# when asked. NO provider slot, NO base-URL slot, NO install-dir line.
+printf 'ansproj9\nansns\nansuser\nans-custom-model\nsk-answers-key\n9300\n9390\n' \
   > /tmp/setup-dryrun.answers
 set +e
 (
@@ -782,11 +796,11 @@ if [ "${RC9}" -eq 0 ] \
   && grep -q '^HONEY_NS=ansns$' "${T9}/.env" \
   && grep -q '^HONEY_USER=ansuser$' "${T9}/.env" \
   && grep -q '^HD_AI_MODEL=ans-custom-model$' "${T9}/.env" \
-  && grep -q '^HD_AI_BASE_URL=https://ans.example.com/v1$' "${T9}/.env" \
+  && ! grep -q '^HD_AI_BASE_URL=' "${T9}/.env" \
   && grep -Fq 'OPENAI_API_KEY=sk-answers-key' "${T9}/.env" \
   && grep -q '^HD_API_HOST_PORT=9300$' "${T9}/.env" \
   && grep -q '^HD_UI_HOST_PORT=9390$' "${T9}/.env"; then
-  ok "answers-file interactive branch produced the expected .env (custom model + base URL)"
+  ok "answers-file interactive branch produced the expected .env (model + key, no base URL slot)"
 else
   bad "answers-file branch (rc=${RC9}):"
   sed 's/^/    | /' /tmp/setup-dryrun.9.out >&2
@@ -814,7 +828,7 @@ set +e
   cd "${BT}"
   HOME="${SHOME}" \
   HONEY_STARTER_INSTALL_DIR="${TA}" HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S10}" \
   bash setup.sh "${TB}" --dry-run
 ) >/tmp/setup-dryrun.b1.out 2>&1
@@ -832,7 +846,7 @@ set +e
   cd "${BT}"
   HOME="${SHOME}" \
   HONEY_STARTER_INSTALL_DIR="${TA}" HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S10}" \
   bash setup.sh --dry-run
 ) >/tmp/setup-dryrun.b2.out 2>&1
@@ -859,7 +873,7 @@ set +e
 (
   cd "${T11}"
   HONEY_STARTER_INSTALL_DIR="${OTHER11}" HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S11}" \
   bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.b3.out 2>&1
@@ -883,7 +897,7 @@ set +e
 (
   cd "${T12}"
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S12}" \
   bash scripts/setup.sh . --dry-run
 ) >/tmp/setup-dryrun.b4.out 2>&1
@@ -911,7 +925,7 @@ set +e
 (
   cd "${EMPTY13}"
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${S13}" \
   bash "${TSRC13}/scripts/setup.sh" . --dry-run
 ) >/tmp/setup-dryrun.b5.out 2>&1
@@ -940,7 +954,7 @@ NOISE14="$(mktemp -d)"
 touch "${NOISE14}/random.txt"
 assert_rc "setup . outside a non-empty no-layout dir dies (never destructive)" 1 bash -c "
   cd '${NOISE14}' && HONEY_STARTER_NONINTERACTIVE=1 \\
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \\
+  HONEY_NS=starter HONEY_USER=admin \\
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR='${S14}' \\
   bash '${TSRC14}/scripts/setup.sh' . --dry-run"
 if [ -f "${NOISE14}/random.txt" ]; then
@@ -965,7 +979,7 @@ set +e
 (
   cd "${TSRC15}"
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_AI_PROVIDER=openai \
+  \
   HD_API_HOST_PORT=9400 HD_UI_HOST_PORT=9490 HD_STATE_DIR="${S15}" \
   bash scripts/setup.sh "${TDST15}" --dry-run
 ) >/tmp/setup-dryrun.b6.out 2>&1
@@ -999,7 +1013,7 @@ set +e
 (
   cd "${TSRC16}"
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=newns HONEY_USER=newuser HONEY_AI_PROVIDER=custom \
+  HONEY_NS=newns HONEY_USER=newuser \
   HD_AI_BASE_URL=https://new.example.com/v1 OPENAI_API_KEY=sk-new-inst \
   HD_API_HOST_PORT=9500 HD_UI_HOST_PORT=9590 HD_STATE_DIR="${S16}" \
   bash scripts/setup.sh "${NEW16}" --dry-run
@@ -1034,7 +1048,7 @@ set +e
 (
   cd "${TSRC16B}"
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_AI_PROVIDER=openai \
+  \
   HD_STATE_DIR="${S16B}" \
   bash scripts/setup.sh "${TPRE16B}" --dry-run
 ) >/tmp/setup-dryrun.16b.out 2>&1
@@ -1064,9 +1078,9 @@ rm -rf "${TSRC16B}" "${TPRE16B}" "${S16B}"
 # 17. Phase 5 AI model matrix (three-way HD_AI_MODEL semantics). All
 #     network-free, hermetic, --dry-run.
 # ---------------------------------------------------------------------------
-# 17a. answers-file openai writes the model answer
+# 17a. answers-file writes the model answer (no provider slot)
 T17A="$(fresh_tree)"; S17A="$(mktemp -d)"
-printf 'proj17a\nansns\nansuser\nopenai\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
+printf 'proj17a\nansns\nansuser\nft:gpt-4o:org:custom\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17a
 set +e
 (
   cd "${T17A}"
@@ -1078,7 +1092,7 @@ set +e
 RC17A=$?
 set -e
 if [ "${RC17A}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17a$' "${T17A}/.env" && grep -q '^HD_AI_MODEL=ft:gpt-4o:org:custom$' "${T17A}/.env"; then
-  ok "model matrix: answers-file openai model line written (ft:gpt-4o:org:custom)"
+  ok "model matrix: answers-file model line written (ft:gpt-4o:org:custom)"
 else
   bad "model matrix 17a rc=${RC17A}:"; tail -5 /tmp/setup-dryrun.17a.out >&2 || true
 fi
@@ -1086,7 +1100,7 @@ rm -rf "${T17A}" "${S17A}"
 
 # 17b. answers-file EMPTY model line = accept default -> pin written
 T17B="$(fresh_tree)"; S17B="$(mktemp -d)"
-printf 'proj17b\nansns\nansuser\nopenai\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17b
+printf 'proj17b\nansns\nansuser\n\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17b
 set +e
 (
   cd "${T17B}"
@@ -1104,9 +1118,10 @@ else
 fi
 rm -rf "${T17B}" "${S17B}"
 
-# 17c. skip consumes NO model line (and none is written)
+# 17c. answers-file: a blank API-key line (no key given) is accepted without
+# writing any key, and the model question still applies its pin default
 T17C="$(fresh_tree)"; S17C="$(mktemp -d)"
-printf 'proj17c\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17c
+printf 'proj17c\nansns\nansuser\n\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17c
 set +e
 (
   cd "${T17C}"
@@ -1117,17 +1132,18 @@ set +e
 ) >/tmp/setup-dryrun.17c.out 2>&1
 RC17C=$?
 set -e
-if [ "${RC17C}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17c$' "${T17C}/.env" && ! grep -q '^HD_AI_MODEL=' "${T17C}/.env"; then
-  ok "model matrix: skip consumes no model line; none written"
+if [ "${RC17C}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17c$' "${T17C}/.env" \
+  && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${T17C}/.env" && ! grep -q '^OPENAI_API_KEY=' "${T17C}/.env"; then
+  ok "model matrix: blank model + blank key answers -> pin written, no key line"
 else
   bad "model matrix 17c rc=${RC17C}:"; tail -5 /tmp/setup-dryrun.17c.out >&2 || true
 fi
 rm -rf "${T17C}" "${S17C}"
 
-# 17d. skip + non-empty HD_AI_MODEL env -> override written (passthrough wins)
+# 17d. non-empty HD_AI_MODEL env -> override written (passthrough wins)
 T17D="$(fresh_tree)"; S17D="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-override\n' > "${T17D}/.env"
-printf 'proj17d\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17d
+printf 'proj17d\nansns\nansuser\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17d
 set +e
 (
   cd "${T17D}"
@@ -1139,16 +1155,16 @@ set +e
 RC17D=$?
 set -e
 if [ "${RC17D}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17d$' "${T17D}/.env" && grep -q '^HD_AI_MODEL=custom-override$' "${T17D}/.env"; then
-  ok "model matrix: skip + non-empty HD_AI_MODEL -> override written (passthrough wins over all providers)"
+  ok "model matrix: non-empty HD_AI_MODEL env -> override written, model question skipped (passthrough wins)"
 else
   bad "model matrix 17d rc=${RC17D}:"; tail -5 /tmp/setup-dryrun.17d.out >&2 || true
 fi
 rm -rf "${T17D}" "${S17D}"
 
-# 17e. skip + HD_AI_MODEL= (explicit empty) + existing override -> line REMOVED
+# 17e. HD_AI_MODEL= (explicit empty) + existing override -> line REMOVED
 T17E="$(fresh_tree)"; S17E="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-override\n' > "${T17E}/.env"
-printf 'proj17e\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ans17e
+printf 'proj17e\nansns\nansuser\n\n9300\n9390\n' > /tmp/setup-dryrun.ans17e
 set +e
 (
   cd "${T17E}"
@@ -1160,17 +1176,17 @@ set +e
 RC17E=$?
 set -e
 if [ "${RC17E}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17e$' "${T17E}/.env" && ! grep -q '^HD_AI_MODEL=' "${T17E}/.env"; then
-  ok "model matrix: skip + HD_AI_MODEL= (explicit-empty) removes an existing override line"
+  ok "model matrix: HD_AI_MODEL= (explicit-empty) removes an existing override line"
 else
   bad "model matrix 17e rc=${RC17E}:"; tail -5 /tmp/setup-dryrun.17e.out >&2 || true
 fi
 rm -rf "${T17E}" "${S17E}"
 
-# 17f. HD_AI_MODEL= (explicit empty) + openai + existing override: the QUESTION
+# 17f. HD_AI_MODEL= (explicit empty) + existing override: the QUESTION
 #      is SKIPPED and the existing override is NOT kept (line removed)
 T17F="$(fresh_tree)"; S17F="$(mktemp -d)"
 printf 'HD_AI_MODEL=old-pin\n' > "${T17F}/.env"
-printf 'proj17f\nansns\nansuser\nopenai\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17f
+printf 'proj17f\nansns\nansuser\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17f
 set +e
 (
   cd "${T17F}"
@@ -1182,7 +1198,7 @@ set +e
 RC17F=$?
 set -e
 if [ "${RC17F}" -eq 0 ] && grep -q '^COMPOSE_PROJECT_NAME=proj17f$' "${T17F}/.env" && ! grep -q '^HD_AI_MODEL=' "${T17F}/.env"; then
-  ok "model matrix: HD_AI_MODEL= (explicit-empty) + openai skips the question and does NOT re-keep the override"
+  ok "model matrix: HD_AI_MODEL= (explicit-empty) skips the question and does NOT re-keep the override"
 else
   bad "model matrix 17f rc=${RC17F}:"; tail -5 /tmp/setup-dryrun.17f.out >&2 || true
 fi
@@ -1192,7 +1208,7 @@ rm -rf "${T17F}" "${S17F}"
 T17G="$(fresh_tree)"; S17G="$(mktemp -d)"
 assert_rc "model matrix: invalid env HD_AI_MODEL (NI) dies rc 1" 1 bash -c "
   cd '${T17G}' && HONEY_STARTER_INSTALL_DIR='${T17G}' HONEY_STARTER_NONINTERACTIVE=1 \\
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \\
+  HONEY_NS=starter HONEY_USER=admin \\
   HD_AI_MODEL='bad model' HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \\
   HD_STATE_DIR='${S17G}' bash scripts/setup.sh --dry-run"
 rm -rf "${T17G}" "${S17G}"
@@ -1202,7 +1218,7 @@ rm -rf "${T17G}" "${S17G}"
 # line (e.g. the port 9300, which would otherwise validate as a model string)
 # nor re-pin. The run exits 1 ON THE MODEL, before any .env write.
 T17H="$(fresh_tree)"; S17H="$(mktemp -d)"
-printf 'proj17h\nansns\nansuser\nopenai\nbad model\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
+printf 'proj17h\nansns\nansuser\nbad model\n9300\n9390\n' > /tmp/setup-dryrun.ans17h
 set +e
 (
   cd "${T17H}" && env -i HOME="${HOME}" PATH="${PATH}" \
@@ -1228,7 +1244,7 @@ set +e
 (
   cd "${T17I}"
   HONEY_STARTER_INSTALL_DIR="${T17I}" HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=custom \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_AI_BASE_URL=https://nb.example/v1 HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR="${S17I}" bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.17i.out 2>&1
@@ -1248,7 +1264,7 @@ set +e
 (
   cd "${T17J}"
   HONEY_STARTER_INSTALL_DIR="${T17J}" HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR="${S17J}" bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.17j.out 2>&1
@@ -1273,7 +1289,7 @@ if command -v python3 >/dev/null 2>&1; then
     cd "${T17K}" && HD_STATE_DIR="${S17K}" TERM=dumb \
     python3 "${HERE}/test/pty-helper.py" --on-disk \
       "${T17K}/scripts/setup.sh" "Compose project name" \
-      projname ansns ansuser openai "bad model" 9300 9390 -- --dry-run
+      projname ansns ansuser "bad model" 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.17k.out 2>&1
   RC17K=$?
   set -e
@@ -1300,7 +1316,7 @@ fi
 # provider openai + the VALID model gpt-valid. Without the reset this rc was 1
 # dying on the model; with it the run completes and writes HD_AI_MODEL=gpt-valid.
 T17L="$(fresh_tree)"; S17L="$(mktemp -d)"
-printf 'proj17l\nbad ns one\nbad ns two\nbad ns three\nbad user one\nbad user two\nbad user three\nopenai\ngpt-valid\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17l
+printf 'proj17l\nbad ns one\nbad ns two\nbad ns three\nbad user one\nbad user two\nbad user three\ngpt-valid\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.ans17l
 set +e
 (
   cd "${T17L}"
@@ -1366,7 +1382,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${PH19A}" TERM=dumb HD_STATE_DIR="${S19A}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "" projname19a ansns ansuser openai gpt-4o sk-key-pty sk-key-pty 9300 9390 -- --dry-run \
+        "" projname19a ansns ansuser gpt-4o sk-key-pty sk-key-pty 9300 9390 -- --dry-run \
   ) >/tmp/setup-dryrun.19a.out 2>&1
   RC19A=$?
   set -e
@@ -1396,7 +1412,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${TH19B}" TERM=dumb HD_STATE_DIR="${S19B}" \
       python3 "${HERE}/test/pty-helper.py" --standalone \
         "${HERE}/scripts/setup.sh" "Install directory [" \
-        "~" projname19b ansns ansuser openai gpt-4o sk-key-pty2 sk-key-pty2 9301 9391 -- --dry-run \
+        "~" projname19b ansns ansuser gpt-4o sk-key-pty2 sk-key-pty2 9301 9391 -- --dry-run \
   ) >/tmp/setup-dryrun.19b.out 2>&1
   RC19B=$?
   set -e
@@ -1427,7 +1443,7 @@ CWD20="$(mktemp -d)"
 set +e
 (
   cd "${CWD20}" && HOME="${TH20}" HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_AI_PROVIDER=openai HD_STATE_DIR="${S20}" \
+  HD_STATE_DIR="${S20}" \
   bash "${T20}/scripts/setup.sh" '~' --dry-run
 ) >/tmp/setup-dryrun.20.out 2>&1
 RC20=$?
@@ -1518,7 +1534,7 @@ set +e
     DOCKER_STUB_LOG=/tmp/setup-dryrun.f3a.log \
     HONEY_STARTER_INSTALL_DIR="${TF3A}" HONEY_STARTER_NONINTERACTIVE=1 \
     COMPOSE_PROJECT_NAME=honey-starter \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3A}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.f3a.out 2>&1
@@ -1552,7 +1568,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3b.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.f3b.log \
     HONEY_STARTER_INSTALL_DIR="${TF3B}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3B}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.f3b.out 2>&1
@@ -1582,7 +1598,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3c.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.f3c.log \
     HONEY_STARTER_INSTALL_DIR="${TF3C}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3C}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.f3c.out 2>&1
@@ -1618,7 +1634,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.f3d1.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.f3d1.log \
     HONEY_STARTER_INSTALL_DIR="${TF3D1}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SF3D1}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.f3d1.out 2>&1
@@ -1647,7 +1663,7 @@ set +e
     DOCKER_STUB_LOG=/tmp/setup-dryrun.f3d2.log \
     COMPOSE_PROJECT_NAME=myotherproject \
     HONEY_STARTER_INSTALL_DIR="${TF3D2}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9100 HD_UI_HOST_PORT=8190 HD_STATE_DIR="${SF3D2}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.f3d2.out 2>&1
@@ -1684,7 +1700,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p1.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p1.log \
     HONEY_STARTER_INSTALL_DIR="${TP1}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP1}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p1a.out 2>&1
@@ -1698,7 +1714,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p1.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p1.log \
     HONEY_STARTER_INSTALL_DIR="${TP1}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP1}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p1b.out 2>&1
@@ -1727,7 +1743,7 @@ set +e
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p2.log \
     HONEY_STARTER_INSTALL_DIR="${TP2}" HONEY_STARTER_NONINTERACTIVE=1 \
     COMPOSE_PROJECT_NAME=myproj \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP2}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p2.out 2>&1
@@ -1745,7 +1761,7 @@ rm -rf "${TP2}" "${SP2}"
 # P3. fresh answers-file leading line ansproj -> written (post-guard re-probe
 #     proves the answered name was probed).
 TP3="$(fresh_tree)"; SP3="$(mktemp -d)"
-printf 'ansproj\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p3.answers
+printf 'ansproj\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p3.answers
 : > /tmp/setup-dryrun.p3.log; printf '' > /tmp/setup-dryrun.p3.state
 set +e
 (
@@ -1770,7 +1786,7 @@ rm -rf "${TP3}" "${SP3}"
 
 # P4. fresh answers-file EMPTY leading line -> the derived default is written.
 TP4="$(fresh_tree)"; SP4="$(mktemp -d)"
-printf '\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p4.answers
+printf '\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p4.answers
 : > /tmp/setup-dryrun.p4.log; printf '' > /tmp/setup-dryrun.p4.state
 DERIVED4="$(derived_proj "${TP4}")"
 set +e
@@ -1801,7 +1817,7 @@ set +e
 (
   cd "${TP5}" && HONEY_STARTER_INSTALL_DIR="${TP5}" HONEY_STARTER_NONINTERACTIVE=1 \
   COMPOSE_PROJECT_NAME='Bad.Name' \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP5}" \
   bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p5.out 2>&1
@@ -1819,7 +1835,7 @@ rm -rf "${TP5}" "${SP5}"
 # P6. fresh answers-file INVALID leading line -> dies on the project (the
 #     charset message), no .env.
 TP6="$(fresh_tree)"; SP6="$(mktemp -d)"
-printf 'BadProj!\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p6.answers
+printf 'BadProj!\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p6.answers
 set +e
 (
   cd "${TP6}"
@@ -1853,7 +1869,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p7.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p7.log \
     HONEY_STARTER_INSTALL_DIR="${TP7}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP7}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p7.out 2>&1
@@ -1881,7 +1897,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p8.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p8.log \
     HONEY_STARTER_INSTALL_DIR="${TP8}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP8}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p8.out 2>&1
@@ -1911,7 +1927,7 @@ set +e
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p9.log \
     HONEY_STARTER_INSTALL_DIR="${TP9}" HONEY_STARTER_NONINTERACTIVE=1 \
     COMPOSE_PROJECT_NAME=hs-copy2 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9100 HD_UI_HOST_PORT=8190 HD_STATE_DIR="${SP9}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p9.out 2>&1
@@ -1941,7 +1957,7 @@ set +e
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p10.log \
     HONEY_STARTER_INSTALL_DIR="${TP10}" HONEY_STARTER_NONINTERACTIVE=1 \
     COMPOSE_PROJECT_NAME=envbar \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP10}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p10.out 2>&1
@@ -1978,7 +1994,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/tmp/setup-dryrun.p11.state \
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p11.log \
     HONEY_STARTER_INSTALL_DIR="${TP11}" HONEY_STARTER_NONINTERACTIVE=1 \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9300 HD_UI_HOST_PORT=9390 HD_STATE_DIR="${SP11}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p11.out 2>&1
@@ -2026,7 +2042,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP12}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP12}/scripts/setup.sh" "Continue with the change?" \
-        n ansns ansuser openai gpt-4o sk-pty-key sk-pty-key 9300 9390 -- --dry-run
+        n ansns ansuser gpt-4o sk-pty-key sk-pty-key 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.p12.out 2>&1
   RC12=$?
   set -e
@@ -2066,7 +2082,7 @@ if command -v python3 >/dev/null 2>&1; then
       HD_STATE_DIR="${SP13}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TP13}/scripts/setup.sh" "Continue with the change?" \
-        y ansns ansuser openai gpt-4o sk-pty-key sk-pty-key 9300 9390 -- --dry-run
+        y ansns ansuser gpt-4o sk-pty-key sk-pty-key 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.p13.out 2>&1
   RC13=$?
   set -e
@@ -2099,7 +2115,7 @@ set +e
     DOCKER_STUB_LOG=/tmp/setup-dryrun.p14.log \
     HONEY_STARTER_INSTALL_DIR="${TP14}" HONEY_STARTER_NONINTERACTIVE=1 \
     COMPOSE_PROJECT_NAME=myproj \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP14}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p14.out 2>&1
@@ -2130,7 +2146,7 @@ set +e
     DOCKER_STUB_STATE_FILE=/dev/null DOCKER_STUB_LOG=/tmp/setup-dryrun.p15.log \
     HONEY_STARTER_INSTALL_DIR="${TP15}" HONEY_STARTER_NONINTERACTIVE=1 \
     HONEY_STARTER_UPDATE_IN_PROGRESS=1 COMPOSE_PROJECT_NAME=bar \
-    HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+    HONEY_NS=starter HONEY_USER=admin \
     HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SP15}" \
     bash scripts/setup.sh --dry-run
 ) >/tmp/setup-dryrun.p15.out 2>&1
@@ -2153,7 +2169,7 @@ rm -rf "${TP15}" "${SP15}"
 #      proceeds and writes it (-p typedname in the log), and when typedname is
 #      RUNNING it dies pre-write, no .env.
 TP16="$(fresh_tree)"; SP16="$(mktemp -d)"
-printf 'typedname\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16.answers
+printf 'typedname\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16.answers
 DERIVED16="$(derived_proj "${TP16}")"
 # Scenario 1: nothing running -> rc 0, .env typedname, log has -p typedname
 : > /tmp/setup-dryrun.p16a.log; printf '' > /tmp/setup-dryrun.p16a.state
@@ -2172,7 +2188,7 @@ cp "${TP16}/.env" /tmp/setup-dryrun.p16a.env 2>/dev/null || true
 set -e
 # Scenario 2: typedname RUNNING -> die pre-write, no .env
 TP16B="$(fresh_tree)"; SP16B="$(mktemp -d)"
-printf 'typedname\nansns\nansuser\nopenai\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16b.answers
+printf 'typedname\nansns\nansuser\ngpt-4o\nsk-ans-key\n9300\n9390\n' > /tmp/setup-dryrun.p16b.answers
 : > /tmp/setup-dryrun.p16b.log; printf 'RUNNING typedname\n' > /tmp/setup-dryrun.p16b.state
 set +e
 (
@@ -2225,7 +2241,7 @@ set +e
   cd "${TA1}"
   HONEY_STARTER_INSTALL_DIR="${TA1}" \
   HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   OPENAI_API_KEY=sk-a1key \
   HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR="${SA1}" \
@@ -2258,7 +2274,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA2}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a2.out 2>&1
   RC_A2=$?
   set -e
@@ -2290,7 +2306,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SA3}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA3}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a3.out 2>&1
   RC_A3=$?
   set -e
@@ -2323,7 +2339,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR=1 HOME="${HOME}" HD_STATE_DIR="${SA4A}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4A}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a4a.out 2>&1
   RC_A4A=$?
   set -e
@@ -2345,7 +2361,7 @@ if command -v python3 >/dev/null 2>&1; then
       NO_COLOR= HOME="${HOME}" HD_STATE_DIR="${SA4B}" TERM=xterm-256color \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TA4B}/scripts/setup.sh" "Compose project name" \
-        projname ansns ansuser openai gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
+        projname ansns ansuser gpt-4o sk-key-test sk-key-test 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.a4b.out 2>&1
   RC_A4B=$?
   set -e
@@ -2363,10 +2379,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # B. Phase B select-from-list menus (pty + answers-file regression): on a real
-#    TTY with NO answers file the AI-provider and AI-model questions become
-#    number-driven menus (B1 select by number, B2 Enter accepts the default,
-#    B3 typed exact value), B4 invalid provider input (out-of-range number ->
-#    warn + retry -> valid selection succeeds), B5 an out-of-range MODEL
+#    TTY with NO answers file the AI-model question becomes a number-driven menus
+#    (B1 select by number, B2 Enter accepts the default, B3 typed exact value),
+#    B4 invalid model-menu input (out-of-range number -> warn + retry -> valid
+#    selection succeeds), B5 an out-of-range MODEL
 #    integer (99) is warned + retried and NEVER written (valid_model would
 #    otherwise accept '99' — the exact trap Phase B closes), and B6 the
 #    answers-file raw-value regression: with an answers file the flat
@@ -2380,7 +2396,7 @@ fi
 #    explicitly (Phase A approved addendum).
 #    python3-gated; skipped cleanly when python3 is unavailable.
 if command -v python3 >/dev/null 2>&1; then
-  # B1. select provider by number (2=custom) and model by number (3=gpt-4o).
+  # B1. select model by number (3=gpt-4o); no provider menu, no base-URL prompt.
   TB1="$(fresh_tree)"; SB1="$(mktemp -d)"
   set +e
   (
@@ -2391,23 +2407,22 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB1}/scripts/setup.sh" "Compose project name" \
-        projb1 ansns ansuser 2 3 https://b1.example/v1 sk-b1 sk-b1 9300 9390 -- --dry-run
+        projb1 ansns ansuser 3 sk-b1 sk-b1 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b1.out 2>&1
   RC_B1=$?
   set -e
   if [ "${RC_B1}" -eq 0 ] \
-    && grep -q 'AI provider:   custom' /tmp/setup-dryrun.b1.out \
+    && ! grep -q 'AI provider' /tmp/setup-dryrun.b1.out \
     && grep -q '^HD_AI_MODEL=gpt-4o$' "${TB1}/.env" \
-    && grep -q '^HD_AI_BASE_URL=https://b1.example/v1$' "${TB1}/.env"; then
-    ok "B1: provider by number 2=custom + model by number 3=gpt-4o (HD_AI_MODEL=gpt-4o, HD_AI_BASE_URL written)"
+    && ! grep -q '^HD_AI_BASE_URL=' "${TB1}/.env"; then
+    ok "B1: model by number 3=gpt-4o written; no provider menu, no base-URL line"
   else
-    bad "B1 rc=${RC_B1} (want custom + gpt-4o + base URL):"
+    bad "B1 rc=${RC_B1} (want gpt-4o, no provider menu, no base URL):"
     sed 's/^/    | /' /tmp/setup-dryrun.b1.out >&2 || true
   fi
   rm -rf "${TB1}" "${SB1}"
 
-  # B2. Enter accepts the default at BOTH menus: provider -> inferred openai,
-  #     model -> the gpt-5.4-mini pin.
+  # B2. Enter accepts the default at the model menu -> the gpt-5.4-mini pin.
   TB2="$(fresh_tree)"; SB2="$(mktemp -d)"
   set +e
   (
@@ -2418,21 +2433,20 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB2}/scripts/setup.sh" "Compose project name" \
-        projb2 ansns ansuser "" "" sk-b2 sk-b2 9300 9390 -- --dry-run
+        projb2 ansns ansuser "" sk-b2 sk-b2 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b2.out 2>&1
   RC_B2=$?
   set -e
   if [ "${RC_B2}" -eq 0 ] \
-    && grep -q 'AI provider:   openai' /tmp/setup-dryrun.b2.out \
     && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${TB2}/.env"; then
-    ok "B2: Enter accepts the default at both menus (provider=openai, model=gpt-5.4-mini pin)"
+    ok "B2: Enter accepts the default at the model menu (model=gpt-5.4-mini pin)"
   else
-    bad "B2 rc=${RC_B2} (want openai + gpt-5.4-mini pin):"
+    bad "B2 rc=${RC_B2} (want gpt-5.4-mini pin):"
     sed 's/^/    | /' /tmp/setup-dryrun.b2.out >&2 || true
   fi
   rm -rf "${TB2}" "${SB2}"
 
-  # B3. typed exact value at both menus (openai / gpt-4o) is accepted.
+  # B3. typed exact value at the model menu (gpt-4o) is accepted.
   TB3="$(fresh_tree)"; SB3="$(mktemp -d)"
   set +e
   (
@@ -2443,22 +2457,21 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB3}/scripts/setup.sh" "Compose project name" \
-        projb3 ansns ansuser openai gpt-4o sk-b3 sk-b3 9300 9390 -- --dry-run
+        projb3 ansns ansuser gpt-4o sk-b3 sk-b3 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b3.out 2>&1
   RC_B3=$?
   set -e
   if [ "${RC_B3}" -eq 0 ] \
-    && grep -q 'AI provider:   openai' /tmp/setup-dryrun.b3.out \
     && grep -q '^HD_AI_MODEL=gpt-4o$' "${TB3}/.env"; then
-    ok "B3: typed exact value at both menus (openai / gpt-4o) accepted"
+    ok "B3: typed exact value at the model menu (gpt-4o) accepted"
   else
-    bad "B3 rc=${RC_B3} (want typed openai + gpt-4o):"
+    bad "B3 rc=${RC_B3} (want typed gpt-4o):"
     sed 's/^/    | /' /tmp/setup-dryrun.b3.out >&2 || true
   fi
   rm -rf "${TB3}" "${SB3}"
 
-  # B4. invalid provider input (out-of-range number 9) -> warn + retry ->
-  #     valid selection (2=custom) succeeds; loop terminates.
+  # B4. invalid model-menu input (out-of-range number 9) -> warn + retry ->
+  #     valid selection (2=gpt-5.4-mini) succeeds; loop terminates.
   TB4="$(fresh_tree)"; SB4="$(mktemp -d)"
   set +e
   (
@@ -2469,17 +2482,16 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB4}/scripts/setup.sh" "Compose project name" \
-        projb4 ansns ansuser 9 2 3 https://b4.example/v1 sk-b4 sk-b4 9300 9390 -- --dry-run
+        projb4 ansns ansuser 9 2 sk-b4 sk-b4 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b4.out 2>&1
   RC_B4=$?
   set -e
   if [ "${RC_B4}" -eq 0 ] \
-    && grep -q "invalid selection '9': enter a number 1-3" /tmp/setup-dryrun.b4.out \
-    && grep -q 'AI provider:   custom' /tmp/setup-dryrun.b4.out \
-    && grep -q '^HD_AI_MODEL=gpt-4o$' "${TB4}/.env"; then
-    ok "B4: invalid provider input 9 -> warn + retry -> 2=custom succeeds (loop terminates)"
+    && grep -q "invalid selection '9': enter a number 1-7" /tmp/setup-dryrun.b4.out \
+    && grep -q '^HD_AI_MODEL=gpt-5.4-mini$' "${TB4}/.env"; then
+    ok "B4: invalid model input 9 -> warn + retry -> 2=gpt-5.4-mini succeeds (loop terminates)"
   else
-    bad "B4 rc=${RC_B4} (want 9 warned/retried, then custom):"
+    bad "B4 rc=${RC_B4} (want 9 warned/retried, then gpt-5.4-mini):"
     sed 's/^/    | /' /tmp/setup-dryrun.b4.out >&2 || true
   fi
   rm -rf "${TB4}" "${SB4}"
@@ -2496,7 +2508,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB5}/scripts/setup.sh" "Compose project name" \
-        projb5 ansns ansuser openai 99 3 sk-b5 sk-b5 9300 9390 -- --dry-run
+        projb5 ansns ansuser 99 3 sk-b5 sk-b5 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b5.out 2>&1
   RC_B5=$?
   set -e
@@ -2525,7 +2537,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SB7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TB7}/scripts/setup.sh" "Compose project name" \
-        projb7 ansns ansuser openai 7 "bad model" my-custom-model sk-b7 sk-b7 9300 9390 -- --dry-run
+        projb7 ansns ansuser 7 "bad model" my-custom-model sk-b7 sk-b7 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.b7.out 2>&1
   RC_B7=$?
   set -e
@@ -2550,7 +2562,7 @@ fi
 #     unlisted-but-valid model stays as typed; interactively it would need the
 #     "type your own" option). No ESC bytes (rich disabled by redirection).
 TB6="$(fresh_tree)"; SB6="$(mktemp -d)"
-printf 'projb6\nansns\nansuser\nopenai\ngpt-raw6\nsk-b6\n9300\n9390\n' > /tmp/setup-dryrun.ansB6
+printf 'projb6\nansns\nansuser\ngpt-raw6\nsk-b6\n9300\n9390\n' > /tmp/setup-dryrun.ansB6
 set +e
 (
   cd "${TB6}"
@@ -2563,7 +2575,7 @@ RC_B6=$?
 set -e
 if [ "${RC_B6}" -eq 0 ] \
   && grep -q '^HD_AI_MODEL=gpt-raw6$' "${TB6}/.env" \
-  && ! grep -q '1) openai' /tmp/setup-dryrun.b6.out \
+  && ! grep -q 'AI provider' /tmp/setup-dryrun.b6.out \
   && ! grep -q '1) gpt-5.4' /tmp/setup-dryrun.b6.out \
   && ! grep -q 'select a number' /tmp/setup-dryrun.b6.out \
   && ! grep -q 'type your own' /tmp/setup-dryrun.b6.out \
@@ -2614,7 +2626,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG1}/scripts/setup.sh" "Compose project name" \
-        projg1 ansns ansuser openai claude-opus-4-8 sk-f1 sk-f1 9300 9390 -- --dry-run
+        projg1 ansns ansuser claude-opus-4-8 sk-f1 sk-f1 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g1.out 2>&1
   RC_G1=$?
   set -e
@@ -2638,7 +2650,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG2}/scripts/setup.sh" "Compose project name" \
-        projg2 ansns ansuser openai my-custom-model-2 sk-f2 sk-f2 9300 9390 -- --dry-run
+        projg2 ansns ansuser my-custom-model-2 sk-f2 sk-f2 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g2.out 2>&1
   RC_G2=$?
   set -e
@@ -2663,7 +2675,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG3}/scripts/setup.sh" "Compose project name" \
-        projg3 ansns ansuser openai "bad model" 9300 9390 -- --dry-run
+        projg3 ansns ansuser "bad model" 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g3.out 2>&1
   RC_G3=$?
   set -e
@@ -2689,7 +2701,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG4}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG4}/scripts/setup.sh" "Compose project name" \
-        projg4 ansns ansuser openai 99 3 sk-f4 sk-f4 9300 9390 -- --dry-run
+        projg4 ansns ansuser 99 3 sk-f4 sk-f4 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g4.out 2>&1
   RC_G4=$?
   set -e
@@ -2716,7 +2728,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG5}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG5}/scripts/setup.sh" "Compose project name" \
-        projg5 ansns ansuser openai gpt-4o sk-f5 sk-f5 9300 9390 -- --dry-run
+        projg5 ansns ansuser gpt-4o sk-f5 sk-f5 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g5.out 2>&1
   RC_G5=$?
   set -e
@@ -2742,7 +2754,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG6}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG6}/scripts/setup.sh" "Compose project name" \
-        projg6 ansns ansuser openai "type your own" my-custom-f6 sk-f6 sk-f6 9300 9390 -- --dry-run
+        projg6 ansns ansuser "type your own" my-custom-f6 sk-f6 sk-f6 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g6.out 2>&1
   RC_G6=$?
   set -e
@@ -2768,7 +2780,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG7}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG7}/scripts/setup.sh" "Compose project name" \
-        projg7 ansns ansuser openai gpt-5.4 sk-f7 sk-f7 9300 9390 -- --dry-run
+        projg7 ansns ansuser gpt-5.4 sk-f7 sk-f7 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g7.out 2>&1
   RC_G7=$?
   set -e
@@ -2797,7 +2809,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SG10}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TG10}/scripts/setup.sh" "Compose project name" \
-        projg10 ansns ansuser openai __type_your_own__ my-custom-g10 sk-g10 sk-g10 9300 9390 -- --dry-run
+        projg10 ansns ansuser __type_your_own__ my-custom-g10 sk-g10 sk-g10 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.g10.out 2>&1
   RC_G10=$?
   set -e
@@ -2818,7 +2830,7 @@ fi
 #     .env as pre-change: the raw-value answers-file path is untouched
 #     (byte-identity guard) - no menu is rendered.
 TG8="$(fresh_tree)"; SG8="$(mktemp -d)"
-printf 'projg8\nansns\nansuser\nopenai\nmy-custom-model-f8\nsk-f8\n9300\n9390\n' > /tmp/setup-dryrun.ansG8
+printf 'projg8\nansns\nansuser\nmy-custom-model-f8\nsk-f8\n9300\n9390\n' > /tmp/setup-dryrun.ansG8
 set +e
 (
   cd "${TG8}"
@@ -2842,7 +2854,7 @@ rm -rf "${TG8}" "${SG8}"
 # G9. (NI) HD_AI_MODEL env passthrough (G9a, 17d guard) + invalid-env die
 #     (G9b, 17g guard) - both still rc-0/rc-1 as pre-change.
 TG9A="$(fresh_tree)"; SG9A="$(mktemp -d)"
-printf 'projg9a\nansns\nansuser\nskip\n9300\n9390\n' > /tmp/setup-dryrun.ansG9A
+printf 'projg9a\nansns\nansuser\n\n9300\n9390\n' > /tmp/setup-dryrun.ansG9A
 set +e
 (
   cd "${TG9A}"
@@ -2863,7 +2875,7 @@ rm -rf "${TG9A}" "${SG9A}"
 TG9B="$(fresh_tree)"; SG9B="$(mktemp -d)"
 assert_rc "G9b: invalid HD_AI_MODEL env (NI) still dies rc 1 (17g regression guard)" 1 bash -c "
   cd '${TG9B}' && HONEY_STARTER_INSTALL_DIR='${TG9B}' HONEY_STARTER_NONINTERACTIVE=1 \
-  HONEY_NS=starter HONEY_USER=admin HONEY_AI_PROVIDER=openai \
+  HONEY_NS=starter HONEY_USER=admin \
   HD_AI_MODEL='bad model' HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
   HD_STATE_DIR='${SG9B}' bash scripts/setup.sh --dry-run"
 rm -rf "${TG9B}" "${SG9B}"
@@ -2888,7 +2900,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SH1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TH1}/scripts/setup.sh" "Compose project name" \
-        projh1 ansns ansuser openai 3 sk-h1 sk-h1 9300 9390 -- --dry-run
+        projh1 ansns ansuser 3 sk-h1 sk-h1 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.h1.out 2>&1
   RC_H1=$?
   set -e
@@ -2909,7 +2921,7 @@ fi
 #     answers-file / non-interactive path — no menu, no hint, raw values pass
 #     through unchanged (dryrun byte-identical guard).
 TH2="$(fresh_tree)"; SH2="$(mktemp -d)"
-printf 'projh2\nansns\nansuser\nopenai\ngpt-hint2\nsk-h2\n9300\n9390\n' > /tmp/setup-dryrun.ansH2
+printf 'projh2\nansns\nansuser\ngpt-hint2\nsk-h2\n9300\n9390\n' > /tmp/setup-dryrun.ansH2
 set +e
 (
   cd "${TH2}"
@@ -3193,12 +3205,12 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI1}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI1}/scripts/setup.sh" "Compose project name" \
-        proji1 ansns ansuser openai gpt-4o sk-i1 sk-i1 9300 9390 y -- --dry-run
+        proji1 ansns ansuser gpt-4o sk-i1 sk-i1 9300 9390 y -- --dry-run
   ) >/tmp/setup-dryrun.i1.out 2>&1
   RC_I1=$?
   set -e
   if [ "${RC_I1}" -eq 0 ] \
-    && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI1}/.env" \
+    && grep -q "^HD_CA_CERT_FILE=${SI1}/ca/ca-bundle.crt$" "${TI1}/.env" \
     && grep -q '^HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt$' "${TI1}/.env" \
     && grep -q "Detected SSL_CERT_FILE=${I_CA_FILE}" /tmp/setup-dryrun.i1.out; then
     ok "I1: SSL_CERT_FILE interactive prompt shown with path; y -> both HD_CA keys written"
@@ -3220,7 +3232,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI2}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI2}/scripts/setup.sh" "Compose project name" \
-        proji2 ansns ansuser openai gpt-4o sk-i2 sk-i2 9300 9390 n -- --dry-run
+        proji2 ansns ansuser gpt-4o sk-i2 sk-i2 9300 9390 n -- --dry-run
   ) >/tmp/setup-dryrun.i2.out 2>&1
   RC_I2=$?
   set -e
@@ -3246,12 +3258,12 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI3}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI3}/scripts/setup.sh" "Compose project name" \
-        proji3 ansns ansuser openai gpt-4o sk-i3 sk-i3 9300 9390 "" -- --dry-run
+        proji3 ansns ansuser gpt-4o sk-i3 sk-i3 9300 9390 "" -- --dry-run
   ) >/tmp/setup-dryrun.i3.out 2>&1
   RC_I3=$?
   set -e
   if [ "${RC_I3}" -eq 0 ] \
-    && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI3}/.env" \
+    && grep -q "^HD_CA_CERT_FILE=${SI3}/ca/ca-bundle.crt$" "${TI3}/.env" \
     && grep -q '^HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt$' "${TI3}/.env"; then
     ok "I3: SSL_CERT_FILE prompt Enter (default-yes) -> enabled (both HD_CA keys)"
   else
@@ -3274,7 +3286,7 @@ if command -v python3 >/dev/null 2>&1; then
       HOME="${HOME}" HD_STATE_DIR="${SI6A}" TERM=dumb \
       python3 "${HERE}/test/pty-helper.py" --on-disk \
         "${TI6A}/scripts/setup.sh" "Compose project name" \
-        proji6a ansns ansuser openai gpt-4o sk-i6a sk-i6a 9300 9390 -- --dry-run
+        proji6a ansns ansuser gpt-4o sk-i6a sk-i6a 9300 9390 -- --dry-run
   ) >/tmp/setup-dryrun.i6a.out 2>&1
   RC_I6A=$?
   set -e
@@ -3296,7 +3308,7 @@ fi
 # I4. (NI opt-in) SSL_CERT_FILE set + HONEY_STARTER_USE_CA=1 -> enabled: BOTH
 #     HD_CA keys written (prompt never fires on the answers-file path).
 TI4="$(fresh_tree)"; SI4="$(mktemp -d)"
-printf 'proji4\nansns\nansuser\nopenai\ngpt-4o\nsk-i4\n9300\n9390\n' > /tmp/setup-dryrun.ansI4
+printf 'proji4\nansns\nansuser\ngpt-4o\nsk-i4\n9300\n9390\n' > /tmp/setup-dryrun.ansI4
 set +e
 (
   cd "${TI4}"
@@ -3309,7 +3321,7 @@ set +e
 RC_I4=$?
 set -e
 if [ "${RC_I4}" -eq 0 ] \
-  && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI4}/.env" \
+  && grep -q "^HD_CA_CERT_FILE=${SI4}/ca/ca-bundle.crt$" "${TI4}/.env" \
   && grep -q '^HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt$' "${TI4}/.env" \
   && ! grep -q "Detected SSL_CERT_FILE=" /tmp/setup-dryrun.i4.out; then
   ok "I4: NI + HONEY_STARTER_USE_CA=1 + valid SSL_CERT_FILE -> both HD_CA keys (opt-in, no prompt)"
@@ -3322,7 +3334,7 @@ rm -rf "${TI4}" "${SI4}"
 # I5. (NI) SSL_CERT_FILE set + NO opt-in -> NEITHER key; .env byte-identical to
 #     a run without SSL_CERT_FILE (zero delta) - the dryrun byte-identity guard.
 TI5A="$(fresh_tree)"; SI5A="$(mktemp -d)"
-printf 'proji5\nansns\nansuser\nopenai\ngpt-4o\nsk-i5\n9300\n9390\n' > /tmp/setup-dryrun.ansI5
+printf 'proji5\nansns\nansuser\ngpt-4o\nsk-i5\n9300\n9390\n' > /tmp/setup-dryrun.ansI5
 set +e
 (
   cd "${TI5A}"
@@ -3334,7 +3346,7 @@ set +e
 ) >/tmp/setup-dryrun.i5a.out 2>&1
 RC_I5A=$?
 set -e
-cp "${TI5A}/.env" /tmp/setup-dryrun.i5.env
+grep -v '^HD_STATE_DIR=' "${TI5A}/.env" > /tmp/setup-dryrun.i5.env
 TI5B="$(fresh_tree)"; SI5B="$(mktemp -d)"
 set +e
 (
@@ -3349,7 +3361,7 @@ set -e
 if [ "${RC_I5A}" -eq 0 ] && [ "${RC_I5B}" -eq 0 ] \
   && ! grep -q '^HD_CA_CERT_FILE=' "${TI5A}/.env" \
   && ! grep -q '^HD_CA_BUNDLE=' "${TI5A}/.env" \
-  && diff -q /tmp/setup-dryrun.i5.env "${TI5B}/.env" >/dev/null 2>&1; then
+  && grep -v '^HD_STATE_DIR=' "${TI5B}/.env" | diff -q /tmp/setup-dryrun.i5.env - >/dev/null 2>&1; then
   ok "I5: SSL_CERT_FILE set + no opt-in (NI) -> neither HD_CA key; .env byte-identical (zero delta)"
 else
   bad "I5 rcA=${RC_I5A} rcB=${RC_I5B} (want no keys + byte-identical .env):"
@@ -3360,7 +3372,7 @@ rm -rf "${TI5A}" "${SI5A}" "${TI5B}" "${SI5B}"
 # I6b. (NI opt-in) SSL_CERT_FILE unreadable/missing + HONEY_STARTER_USE_CA=1 ->
 #      warn + skip (no enable, no die): no keys.
 TI6B="$(fresh_tree)"; SI6B="$(mktemp -d)"
-printf 'proji6b\nansns\nansuser\nopenai\ngpt-4o\nsk-i6b\n9300\n9390\n' > /tmp/setup-dryrun.ansI6B
+printf 'proji6b\nansns\nansuser\ngpt-4o\nsk-i6b\n9300\n9390\n' > /tmp/setup-dryrun.ansI6B
 set +e
 (
   cd "${TI6B}"
@@ -3386,7 +3398,7 @@ rm -rf "${TI6B}" "${SI6B}"
 # I8. (hermetic NI) env WITHOUT SSL_CERT_FILE -> zero CA behavior/output: no
 #     prompt, no warn, no keys (byte-identical default path).
 TI8="$(fresh_tree)"; SI8="$(mktemp -d)"
-printf 'proji8\nansns\nansuser\nopenai\ngpt-4o\nsk-i8\n9300\n9390\n' > /tmp/setup-dryrun.ansI8
+printf 'proji8\nansns\nansuser\ngpt-4o\nsk-i8\n9300\n9390\n' > /tmp/setup-dryrun.ansI8
 set +e
 (
   cd "${TI8}"
@@ -3412,7 +3424,7 @@ rm -rf "${TI8}" "${SI8}"
 # I9a. Round-trip disable: enable (opt-in) then not-enabled -> BOTH keys ABSENT
 #      on the 2nd run (no stale lines left behind).
 TI9A="$(fresh_tree)"; SI9A="$(mktemp -d)"
-printf 'proji9a\nansns\nansuser\nopenai\ngpt-4o\nsk-i9a\n9300\n9390\n' > /tmp/setup-dryrun.ansI9A
+printf 'proji9a\nansns\nansuser\ngpt-4o\nsk-i9a\n9300\n9390\n' > /tmp/setup-dryrun.ansI9A
 set +e
 (
   cd "${TI9A}"
@@ -3447,7 +3459,7 @@ rm -rf "${TI9A}" "${SI9A}"
 # I9b. Round-trip stable: enable (opt-in) then enable again -> .env byte-identical
 #      with both keys present (idempotent).
 TI9B="$(fresh_tree)"; SI9B="$(mktemp -d)"
-printf 'proji9b\nansns\nansuser\nopenai\ngpt-4o\nsk-i9b\n9300\n9390\n' > /tmp/setup-dryrun.ansI9B
+printf 'proji9b\nansns\nansuser\ngpt-4o\nsk-i9b\n9300\n9390\n' > /tmp/setup-dryrun.ansI9B
 set +e
 (
   cd "${TI9B}"
@@ -3472,7 +3484,7 @@ set +e
 RC_I9B2=$?
 set -e
 if [ "${RC_I9B1}" -eq 0 ] && [ "${RC_I9B2}" -eq 0 ] \
-  && grep -q "^HD_CA_CERT_FILE=${I_CA_FILE}$" "${TI9B}/.env" \
+  && grep -q "^HD_CA_CERT_FILE=${SI9B}/ca/ca-bundle.crt$" "${TI9B}/.env" \
   && diff -q /tmp/setup-dryrun.i9b.env1 "${TI9B}/.env" >/dev/null 2>&1; then
   ok "I9b: enabled-then-enabled -> .env byte-identical (stable, both keys)"
 else
@@ -3484,7 +3496,7 @@ rm -rf "${TI9B}" "${SI9B}"
 # I10a. Dryrun byte-identity (enabled): the run adds EXACTLY the two HD_CA
 #       lines (no more, no fewer).
 TI10A="$(fresh_tree)"; SI10A="$(mktemp -d)"
-printf 'proji10a\nansns\nansuser\nopenai\ngpt-4o\nsk-i10a\n9300\n9390\n' > /tmp/setup-dryrun.ansI10A
+printf 'proji10a\nansns\nansuser\ngpt-4o\nsk-i10a\n9300\n9390\n' > /tmp/setup-dryrun.ansI10A
 set +e
 (
   cd "${TI10A}"
@@ -3507,7 +3519,7 @@ rm -rf "${TI10A}" "${SI10A}"
 # I10b. Dryrun byte-identity (not-enabled): the run adds ZERO HD_CA lines
 #       (zero delta).
 TI10B="$(fresh_tree)"; SI10B="$(mktemp -d)"
-printf 'proji10b\nansns\nansuser\nopenai\ngpt-4o\nsk-i10b\n9300\n9390\n' > /tmp/setup-dryrun.ansI10B
+printf 'proji10b\nansns\nansuser\ngpt-4o\nsk-i10b\n9300\n9390\n' > /tmp/setup-dryrun.ansI10B
 set +e
 (
   cd "${TI10B}"
@@ -3529,11 +3541,12 @@ rm -rf "${TI10B}" "${SI10B}"
 
 # I11. A single SSL_CERT_FILE whose path contains spaces -> stored/emitted as
 #      ONE single-quoted string (shell_quote) and handled correctly.
-TI11="$(fresh_tree)"; SI11="$(mktemp -d)"
+TI11="$(fresh_tree)"; SI11="/tmp/setup-dryrun.state dir with spaces/11"
+mkdir -p "${SI11}"
 I11_CA="/tmp/setup-dryrun.ca dir with spaces/root bundle.pem"
 mkdir -p "$(dirname "${I11_CA}")"
 cp "${I_CA_FILE}" "${I11_CA}"
-printf 'proji11\nansns\nansuser\nopenai\ngpt-4o\nsk-i11\n9300\n9390\n' > /tmp/setup-dryrun.ansI11
+printf 'proji11\nansns\nansuser\ngpt-4o\nsk-i11\n9300\n9390\n' > /tmp/setup-dryrun.ansI11
 set +e
 (
   cd "${TI11}"
@@ -3546,14 +3559,51 @@ set +e
 RC_I11=$?
 set -e
 if [ "${RC_I11}" -eq 0 ] \
-  && grep -q "^HD_CA_CERT_FILE='${I11_CA}'$" "${TI11}/.env"; then
-  ok "I11: SSL_CERT_FILE path with spaces stored/emitted as one single-quoted string"
+  && grep -q "^HD_CA_CERT_FILE='${SI11}/ca/ca-bundle.crt'$" "${TI11}/.env"; then
+  ok "I11: state dir with spaces -> HD_CA_CERT_FILE copy path stored as one single-quoted string"
 else
-  bad "I11 rc=${RC_I11} (want single-quoted HD_CA_CERT_FILE):"
+  bad "I11 rc=${RC_I11} (want single-quoted HD_CA_CERT_FILE copy path):"
   sed 's/^/    | /' /tmp/setup-dryrun.i11.out >&2 || true
   grep 'HD_CA' "${TI11}/.env" >&2 || true
 fi
 rm -rf "${TI11}" "${SI11}"
+
+# I13. (NI, REAL run - not --dry-run) the corporate CA COPY: with the opt-in,
+#      setup.sh writes .env and then COPIES SSL_CERT_FILE to
+#      <state dir>/ca/ca-bundle.crt (byte-identical, mode 644) while the host
+#      original stays untouched; HD_CA_CERT_FILE names the copy. --dry-run
+#      never copies (install_ca_bundle runs only on a real run). A real run
+#      delegates to scripts/start.sh, so the tree copy's start.sh is stubbed
+#      (exit 0) and the F3 docker stub satisfies the preflight.
+TI13="$(fresh_tree)"; SI13="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${TI13}/scripts/start.sh"
+cp "${I_CA_FILE}" /tmp/setup-dryrun.ca.before
+set +e
+(
+  cd "${TI13}"
+  env -i HOME="${HOME}" PATH="${F3_STUB_DIR}:${PATH}" \
+    SSL_CERT_FILE="${I_CA_FILE}" HONEY_STARTER_USE_CA=1 \
+    HONEY_STARTER_INSTALL_DIR="${TI13}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_STARTER_ASSUME_YES=1 HONEY_NS=starter HONEY_USER=admin \
+    OPENAI_API_KEY=sk-i13 \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SI13}" \
+    bash scripts/setup.sh
+) >/tmp/setup-dryrun.i13.out 2>&1
+RC_I13=$?
+set -e
+COPY13="${SI13}/ca/ca-bundle.crt"
+if [ "${RC_I13}" -eq 0 ] && [ -f "${COPY13}" ] \
+  && cmp -s "${COPY13}" "${I_CA_FILE}" \
+  && [ "$(stat_mode "${COPY13}")" = "644" ] \
+  && cmp -s "${I_CA_FILE}" /tmp/setup-dryrun.ca.before \
+  && grep -q "^HD_CA_CERT_FILE=${COPY13}$" "${TI13}/.env" \
+  && grep -q '^HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt$' "${TI13}/.env"; then
+  ok "I13: NI real run copies SSL_CERT_FILE to <state>/ca/ca-bundle.crt (byte-identical, mode 644); original untouched; HD_CA_CERT_FILE names the copy"
+else
+  bad "I13 rc=${RC_I13} (want copy: exists, byte-identical, mode 644; original untouched; HD_CA_CERT_FILE=copy):"
+  sed 's/^/    | /' /tmp/setup-dryrun.i13.out >&2 || true
+fi
+rm -rf "${TI13}" "${SI13}"
 
 # I12a-I12f. Phase 6b corporate root CA compose wiring (static KEEP-IN-SYNC-style
 # assertions, mirroring the D-series guards): the daemon service in
@@ -3614,7 +3664,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
       -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC1}" TERM=dumb \
-      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC1}/scripts/setup.sh" "Compose project name" \
         projc1 ansns ansuser \
@@ -3643,7 +3693,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
       -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC2}" TERM=dumb \
-      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC2}/scripts/setup.sh" "Compose project name" \
         projc2 ansns ansuser \
@@ -3677,7 +3727,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
       -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC3}" TERM=dumb \
-      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC3}/scripts/setup.sh" "Compose project name" \
         projc3 ansns ansuser \
@@ -3713,7 +3763,7 @@ if command -v python3 >/dev/null 2>&1; then
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
       -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC4}" TERM=dumb \
-      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC4}/scripts/setup.sh" "Compose project name" \
         projc4 ansns ansuser \
@@ -3758,7 +3808,7 @@ CSTUBEOF
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
       -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC5}" TERM=dumb PATH="${CSTUB}:${PATH}" \
-      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC5}/scripts/setup.sh" "Compose project name" \
         projc5 ansns ansuser \
@@ -3791,7 +3841,7 @@ CSTUBEOF
       -u HONEY_STARTER_ANSWERS_FILE -u HONEY_STARTER_INSTALL_DIR \
       -u SSL_CERT_FILE -u HONEY_STARTER_USE_CA \
       HOME="${HOME}" HD_STATE_DIR="${SC6}" TERM=dumb \
-      HONEY_AI_PROVIDER=openai HD_AI_MODEL=gpt-4o \
+      HD_AI_MODEL=gpt-4o \
       python3 "${HERE}/test/pty-mask-helper.py" --on-disk \
         "${TC6}/scripts/setup.sh" "Compose project name" \
         projc6 ansns ansuser \
@@ -4828,6 +4878,182 @@ else
   bad "BS4: realpath_portable BSD fallback: ${BS4_OUT}"
 fi
 rm -rf "${BS4_DIRPATH}"
+
+# ---------------------------------------------------------------------------
+# PK. Persisted env keys (HONEYDIPPER_IMAGE, HD_UI_IMAGE, VAULT_IMAGE,
+#     VALKEY_IMAGE, HD_STATE_DIR): written to .env when set in the env, an
+#     existing line kept when the env is unset, absent when neither exists.
+#     env -i keeps the host shell's image pins out of the run.
+# ---------------------------------------------------------------------------
+PK1_T="$(fresh_tree)"; PK1_S="$(mktemp -d)"
+set +e
+(
+  cd "${PK1_T}"
+  env -i HOME="${HOME}" PATH="${HOST_PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${PK1_T}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin \
+    HONEYDIPPER_IMAGE=foo/bar:1 HD_UI_IMAGE=foo/ui:1 \
+    VAULT_IMAGE=hashicorp/vault:9.9 VALKEY_IMAGE=valkey/valkey:9.9 \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${PK1_S}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.pk1.out 2>&1
+RC_PK1=$?
+set -e
+if [ "${RC_PK1}" -eq 0 ] \
+  && grep -qx 'HONEYDIPPER_IMAGE=foo/bar:1' "${PK1_T}/.env" \
+  && grep -qx 'HD_UI_IMAGE=foo/ui:1' "${PK1_T}/.env" \
+  && grep -qx 'VAULT_IMAGE=hashicorp/vault:9.9' "${PK1_T}/.env" \
+  && grep -qx 'VALKEY_IMAGE=valkey/valkey:9.9' "${PK1_T}/.env" \
+  && grep -qx "HD_STATE_DIR=${PK1_S}" "${PK1_T}/.env"; then
+  ok "PK1: image pins + HD_STATE_DIR set in the env are persisted to .env"
+else
+  bad "PK1 rc=${RC_PK1} (want the five persisted keys written from env):"
+  grep -E '^(HONEYDIPPER_IMAGE|HD_UI_IMAGE|VAULT_IMAGE|VALKEY_IMAGE|HD_STATE_DIR)=' "${PK1_T}/.env" 2>/dev/null | sed 's/^/    | /' >&2 || true
+  sed 's/^/    | /' /tmp/setup-dryrun.pk1.out >&2 || true
+fi
+rm -rf "${PK1_T}" "${PK1_S}"
+
+# PK2. Existing .env image pins + env UNSET -> the existing lines are kept.
+PK2_T="$(fresh_tree)"; PK2_S="$(mktemp -d)"
+printf 'HONEYDIPPER_IMAGE=keep/me:2\nVALKEY_IMAGE=keep/valkey:2\n' > "${PK2_T}/.env"
+set +e
+(
+  cd "${PK2_T}"
+  env -i HOME="${HOME}" PATH="${HOST_PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${PK2_T}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${PK2_S}" \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.pk2.out 2>&1
+RC_PK2=$?
+set -e
+if [ "${RC_PK2}" -eq 0 ] \
+  && grep -qx 'HONEYDIPPER_IMAGE=keep/me:2' "${PK2_T}/.env" \
+  && grep -qx 'VALKEY_IMAGE=keep/valkey:2' "${PK2_T}/.env"; then
+  ok "PK2: existing .env image pins kept when the env is unset"
+else
+  bad "PK2 rc=${RC_PK2} (want existing image pins preserved):"
+  sed 's/^/    | /' "${PK2_T}/.env" >&2 || true
+fi
+rm -rf "${PK2_T}" "${PK2_S}"
+
+# PK3. Neither env nor .env supplies them -> the lines are ABSENT (HD_STATE_DIR
+#      unset too: the default state dir lives inside the throwaway tree).
+PK3_T="$(fresh_tree)"
+set +e
+(
+  cd "${PK3_T}"
+  env -i HOME="${HOME}" PATH="${HOST_PATH}" \
+    HONEY_STARTER_INSTALL_DIR="${PK3_T}" HONEY_STARTER_NONINTERACTIVE=1 \
+    HONEY_NS=starter HONEY_USER=admin \
+    HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 \
+    bash scripts/setup.sh --dry-run
+) >/tmp/setup-dryrun.pk3.out 2>&1
+RC_PK3=$?
+set -e
+if [ "${RC_PK3}" -eq 0 ] \
+  && ! grep -Eq '^(HONEYDIPPER_IMAGE|HD_UI_IMAGE|VAULT_IMAGE|VALKEY_IMAGE|HD_STATE_DIR)=' "${PK3_T}/.env"; then
+  ok "PK3: image pins + HD_STATE_DIR absent when neither env nor .env supplies them"
+else
+  bad "PK3 rc=${RC_PK3} (want none of the persisted keys written):"
+  grep -E '^(HONEYDIPPER_IMAGE|HD_UI_IMAGE|VAULT_IMAGE|VALKEY_IMAGE|HD_STATE_DIR)=' "${PK3_T}/.env" 2>/dev/null | sed 's/^/    | /' >&2 || true
+fi
+rm -rf "${PK3_T}"
+
+# ---------------------------------------------------------------------------
+# SU. HONEY_USE_SUDO (sudo is opt-in). A stub `sudo` on a temp PATH dir logs
+#     every call and exits 0, so decide_sudo sees sudo as available (it only
+#     records the choice when sudo is on PATH and the user is not root). On a
+#     root host the choice is never recorded, so these skip there.
+# ---------------------------------------------------------------------------
+SU_STUB_DIR="$(portable_mktemp -d /tmp/setup-dryrun.sudo)"
+cat > "${SU_STUB_DIR}/sudo" <<'SUSTUB'
+#!/usr/bin/env bash
+# Fake sudo: records every invocation to $SUDO_STUB_LOG and succeeds.
+printf '%s\n' "$*" >> "${SUDO_STUB_LOG:-/dev/null}"
+exit 0
+SUSTUB
+chmod +x "${SU_STUB_DIR}/sudo"
+
+if [ "$(id -u)" -eq 0 ]; then
+  ok "SU1-SU3: HONEY_USE_SUDO checks SKIPPED (root host: sudo is never recorded)"
+else
+  # SU1. NI + HONEY_USE_SUDO=1 with sudo on PATH -> .env records HONEY_USE_SUDO=1.
+  SU1_T="$(fresh_tree)"; SU1_S="$(mktemp -d)"
+  : > /tmp/setup-dryrun.su1.log
+  set +e
+  (
+    cd "${SU1_T}"
+    env -i HOME="${HOME}" PATH="${SU_STUB_DIR}:${HOST_PATH}" \
+      SUDO_STUB_LOG=/tmp/setup-dryrun.su1.log HONEY_USE_SUDO=1 \
+      HONEY_STARTER_INSTALL_DIR="${SU1_T}" HONEY_STARTER_NONINTERACTIVE=1 \
+      HONEY_NS=starter HONEY_USER=admin \
+      HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SU1_S}" \
+      bash scripts/setup.sh --dry-run
+  ) >/tmp/setup-dryrun.su1.out 2>&1
+  RC_SU1=$?
+  set -e
+  if [ "${RC_SU1}" -eq 0 ] && grep -qx 'HONEY_USE_SUDO=1' "${SU1_T}/.env"; then
+    ok "SU1: NI + HONEY_USE_SUDO=1 (sudo on PATH) -> .env has HONEY_USE_SUDO=1"
+  else
+    bad "SU1 rc=${RC_SU1} (want HONEY_USE_SUDO=1 persisted):"
+    sed 's/^/    | /' /tmp/setup-dryrun.su1.out >&2 || true
+  fi
+  rm -rf "${SU1_T}" "${SU1_S}"
+
+  # SU2. NI without HONEY_USE_SUDO -> no HONEY_USE_SUDO line, and the stub
+  #      sudo is NEVER invoked (no probe, no prompt, no sudo -n / sudo -v).
+  SU2_T="$(fresh_tree)"; SU2_S="$(mktemp -d)"
+  : > /tmp/setup-dryrun.su2.log
+  set +e
+  (
+    cd "${SU2_T}"
+    env -i HOME="${HOME}" PATH="${SU_STUB_DIR}:${HOST_PATH}" \
+      SUDO_STUB_LOG=/tmp/setup-dryrun.su2.log \
+      HONEY_STARTER_INSTALL_DIR="${SU2_T}" HONEY_STARTER_NONINTERACTIVE=1 \
+      HONEY_NS=starter HONEY_USER=admin \
+      HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SU2_S}" \
+      bash scripts/setup.sh --dry-run
+  ) >/tmp/setup-dryrun.su2.out 2>&1
+  RC_SU2=$?
+  set -e
+  if [ "${RC_SU2}" -eq 0 ] \
+    && ! grep -q '^HONEY_USE_SUDO=' "${SU2_T}/.env" \
+    && [ ! -s /tmp/setup-dryrun.su2.log ]; then
+    ok "SU2: NI without HONEY_USE_SUDO -> no HONEY_USE_SUDO line; stub sudo never invoked"
+  else
+    bad "SU2 rc=${RC_SU2} (want no HONEY_USE_SUDO line and an empty sudo log):"
+    sed 's/^/    | /' /tmp/setup-dryrun.su2.log >&2 || true
+    sed 's/^/    | /' /tmp/setup-dryrun.su2.out >&2 || true
+  fi
+  rm -rf "${SU2_T}" "${SU2_S}"
+
+  # SU3. Existing .env HONEY_USE_SUDO=1 + env unset -> the recorded choice is
+  #      kept across a re-run (no prompt, no sudo call needed to keep it).
+  SU3_T="$(fresh_tree)"; SU3_S="$(mktemp -d)"
+  printf 'HONEY_USE_SUDO=1\n' > "${SU3_T}/.env"
+  : > /tmp/setup-dryrun.su3.log
+  set +e
+  (
+    cd "${SU3_T}"
+    env -i HOME="${HOME}" PATH="${SU_STUB_DIR}:${HOST_PATH}" \
+      SUDO_STUB_LOG=/tmp/setup-dryrun.su3.log \
+      HONEY_STARTER_INSTALL_DIR="${SU3_T}" HONEY_STARTER_NONINTERACTIVE=1 \
+      HONEY_NS=starter HONEY_USER=admin \
+      HD_API_HOST_PORT=9000 HD_UI_HOST_PORT=8090 HD_STATE_DIR="${SU3_S}" \
+      bash scripts/setup.sh --dry-run
+  ) >/tmp/setup-dryrun.su3.out 2>&1
+  RC_SU3=$?
+  set -e
+  if [ "${RC_SU3}" -eq 0 ] && grep -qx 'HONEY_USE_SUDO=1' "${SU3_T}/.env"; then
+    ok "SU3: existing .env HONEY_USE_SUDO=1 kept when the env is unset"
+  else
+    bad "SU3 rc=${RC_SU3} (want existing HONEY_USE_SUDO=1 kept):"
+    sed 's/^/    | /' /tmp/setup-dryrun.su3.out >&2 || true
+  fi
+  rm -rf "${SU3_T}" "${SU3_S}"
+fi
+rm -rf "${SU_STUB_DIR}"
 
 rm -rf "${E_PREFLIGHT}" "${E1_DIR}" "${E2_PAYLOAD}" "${E2S_DIR}" "${E2O_DIR}" "${E3_DIR}" "${E4_DIR}" \
   "${BS1_DIR}" "${BS2_DIR}" "${BS3_DIR}" "${BS4_DIR}"

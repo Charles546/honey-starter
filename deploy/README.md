@@ -8,7 +8,7 @@ deployment. The compose file provisions four services on a Linux or macOS docker
 |------------|-------------------------------------------------|--------------------------------------------------|
 | `valkey`   | `valkey/valkey:8.1.0`                           | Redis-compatible event bus, locks, cache, scheduler |
 | `vault`    | `hashicorp/vault:1.21.1`                        | Secrets store (file backend, non-dev)            |
-| `daemon`   | `honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74` | Honeydipper engine/receiver/operator/api/agent   |
+| `daemon`   | `honeydipper/honeydipper:stable` | Honeydipper engine/receiver/operator/api/agent   |
 | `ui`       | `honeydipper/hd-ui:0.1.0-alpha2-54-g611fe54`    | Web UI (nginx)                                   |
 
 ## Topology and network model
@@ -171,37 +171,30 @@ only ever copied, never moved). If a newer invoked setup.sh manages an older
 target tree, the read-modify-write `.env` writer preserves unknown keys and the
 target's own `start.sh` runs — safe.
 
-**Questionnaire scope.** The interactive AI provider prompt offers **openai**
-(default) | **custom** (an OpenAI-compatible endpoint) | **skip** only:
+**Questionnaire scope.** The AI endpoint is never prompted: the engine
+defaults to the OpenAI API (`https://api.openai.com/v1`). setup.sh asks for the
+model (default `gpt-5.4-mini`, the pin) and the API key (Enter = add later;
+`start.sh` seeds a placeholder). To use another OpenAI-compatible endpoint
+(OpenRouter, a local gateway, ...) set `HD_AI_BASE_URL` in the environment or
+`.env` and set `HD_AI_MODEL` to a model that exists there.
 
-* `openai` → writes `OPENAI_API_KEY` + an `HD_AI_MODEL` pin; leaves
-  `HD_AI_BASE_URL` unset unless supplied (the engine falls back to
-  `https://api.openai.com/v1` / `gpt-5.4-mini`).
-* `custom` → writes a required, validated `HD_AI_BASE_URL` (http(s)://) plus
-  `OPENAI_API_KEY` + an `HD_AI_MODEL` pin; it never silently defaults the base
-  URL (the default `gpt-5.4-mini` may not exist on your endpoint — choose
-  *type your own* at the model menu and type the model).
-* `skip` → no key/base lines; `start.sh` seeds placeholders; add the key to
-  `.env` and re-run later.
-* On a real TTY with no answers file the provider and model questions
-  render as **numbered select-from-list menus** (pick by number, type the
-  exact value, or Enter for the default). The model menu adds a trailing
-  *type your own* option for any other model; an **out-of-range number**
-  (e.g. provider `9` or model `99`) is warned about and re-asked — it is
-  **never adopted** as a value. Answers-file / non-interactive runs never
-  render the menus; they consume the raw values exactly as before.
-* `openrouter` is **never prompted**. The openrouter *engine* exists in
-  `bootstrap/engines.yaml` (`base_url` fixed to `https://openrouter.ai/api/v1`,
-  Vault key field `openrouter_api_key`) but no shipped agent references it —
-  the starter agent is hard-bound to `engine: default` (openai). To use
-  OpenRouter, edit the **source of truth** `bootstrap/agents.yaml` to
-  `engine: openrouter`. With the automatic config reload watcher running
-  (`make reload-watch`), that bootstrap edit is auto-rendered into
-  `.honey-starter/config` and applied live — otherwise run `make render-config`
-  (render-only) followed by `docker compose restart daemon`, or simply
-  `make start`. `OPENROUTER_API_KEY` is still accepted in the non-interactive
-  env contract; `start.sh` seeds it into Vault harmlessly until the rendered
-  agent config points at openrouter.
+* On a real TTY with no answers file the model question renders as a
+  **numbered select-from-list menu** (pick by number, type the exact value, or
+  Enter for the default) with a trailing *type your own* option; an
+  **out-of-range number** (e.g. `99`) is warned about and re-asked — it is
+  **never adopted**. Answers-file / non-interactive runs consume raw values.
+
+**Persisted overrides.** `HONEYDIPPER_IMAGE`, `HD_UI_IMAGE`, `VAULT_IMAGE`,
+`VALKEY_IMAGE` and `HD_STATE_DIR`, when set in the environment during setup, are
+written to `.env`, so a later `make start` uses the same values instead of the
+compose defaults. With no env value an existing `.env` line is kept.
+
+**sudo is opt-in.** setup.sh never runs sudo unless you agree. On Linux, as a
+non-root user with sudo installed, it asks once (default **No**) and records
+`HONEY_USE_SUDO=1|0` in `.env`; `start.sh` only honors that value and never
+prompts. Non-interactive runs never ask — set `HONEY_USE_SUDO=1` to opt in.
+Declined: identity files are written `0644` as your user and missing tools must
+be installed manually.
 
 **Answers-file schema (`HONEY_STARTER_ANSWERS_FILE` — leading line
 added).** Exact order, one per line:
@@ -210,13 +203,11 @@ added).** Exact order, one per line:
 1  COMPOSE_PROJECT_NAME    (lowercase; empty = accept the derived default)
 2  HONEY_NS
 3  HONEY_USER
-4  HONEY_AI_PROVIDER
-5  HD_AI_MODEL             (openai/custom only; empty = pin default)
-6  HD_AI_BASE_URL          (custom only)
-7  API key                 (openai/custom; empty = keep/add-later)
-8  HD_API_HOST_PORT
-9  HD_UI_HOST_PORT
-10 final Y/n                (full non-dry runs only)
+4  HD_AI_MODEL             (empty = pin default)
+5  API key                 (empty = keep/add-later)
+6  HD_API_HOST_PORT
+7  HD_UI_HOST_PORT
+8  final Y/n                (full non-dry runs only)
 ```
 
 A fresh (never-provisioned) install consumes the leading project-name line
@@ -226,21 +217,18 @@ exhausted file never pushes the slot to the missing list). Existing answer
 files MUST gain the leading line (same breakage class as the model
 line).
 
-**`HD_AI_MODEL` (the AI model question).** For openai/custom,
-setup.sh asks *AI model* with a default of `gpt-5.4-mini` (the pin). Three-way
+**`HD_AI_MODEL` (the AI model question).** setup.sh asks *AI model* with a default of `gpt-5.4-mini` (the pin). Three-way
 env semantics:
 
 * `HD_AI_MODEL=<value>` (non-empty) — override written, wins
-  (passthrough, all providers).
+  (passthrough).
 * `HD_AI_MODEL=` (explicitly empty) — definitive **no-pin**: the existing
   override is not kept, the line is removed, and the question is skipped.
-* `HD_AI_MODEL` unset + openai/custom — the question is asked; Enter / an
+* `HD_AI_MODEL` unset — the question is asked; Enter / an
   empty answers-file line / a non-interactive run all accept the default and
   WRITE `gpt-5.4-mini`. On a real TTY with no answers file the question is a
   numbered menu of common models plus *type your own*; an out-of-range
   integer (e.g. `99`) is warned about and re-asked, never adopted.
-* provider `skip` — no question; an existing line is kept when env is unset,
-  removed when explicitly empty, replaced when non-empty.
 
 An **invalid** model (whitespace/control, or characters outside
 `[A-Za-z0-9._:/@+-]`) **dies** regardless of the input source — environment,
@@ -248,15 +236,12 @@ answers file, or a typed answer at the prompt. It is never silently replaced
 by the pin nor by a later line (e.g. a port), so a typo'd model never
 silently becomes `gpt-5.4-mini`.
 
-**Upgrade churn note:** on the first post-upgrade re-run, a fresh openai/custom
+**Upgrade churn note:** on the first post-upgrade re-run, a fresh
 install gains an explicit `HD_AI_MODEL=gpt-5.4-mini` line. This is
 **runtime-identical** — the compose file already injects `HD_AI_MODEL` when
 `.env` leaves it unset. To reach the bare "engine default / no pin", run once
 with `HD_AI_MODEL=` (removes the line) or delete the line by hand; no-pin is not
-sticky — a later run with the env unset re-pins. Quirk (doc only):
-`.env.AI_MODEL` is shared by the openai default engine and the openrouter
-engine (`qwen/qwen3.5-9b` default); in compose `HD_AI_MODEL` is always set, so
-openrouter's own default is already dead.
+sticky — a later run with the env unset re-pins.
 
 **Security note.** The AI key exists in `.env` (chmod 600) *only* as a
 provisioning input: on a real tty `setup.sh` shows `*` feedback per typed
@@ -308,7 +293,7 @@ What it does, in order:
    identity pair into `${HD_STATE_DIR}/identity/`.
 6. **Seed secrets** — `secrets/<ns>/daemon` is seeded (without clobbering on
    re-run) with `admin_token_hash` (htpasswd bcrypt of the admin token),
-   `openai_api_key` and `openrouter_api_key` (see AI provider below).
+   `openai_api_key` (see AI provider below).
 7. **Application** — `docker compose up -d daemon ui` (compose `depends_on`
    already waits for vault healthy == unsealed); wait for `/healthz` 200 with
    good timeout diagnostics (status + tailed logs on failure).
@@ -888,7 +873,11 @@ in the environment. `SSL_CERT_FILE` must be a single readable host path to one
 bundled PEM CA file; an unreadable/invalid file is skipped (warn, never enable,
 never die). When enabled, `setup.sh` writes **both** keys to `.env` together:
 
-* `HD_CA_CERT_FILE=<host path of SSL_CERT_FILE>` — the compose bind-mount source.
+* `HD_CA_CERT_FILE=<state dir>/ca/ca-bundle.crt` — the compose bind-mount
+  source: setup.sh **copies** `SSL_CERT_FILE` there (mode 0644) instead of
+  mounting the original, because Docker/Rancher Desktop VMs share only your home
+  directory (a source elsewhere, e.g. `/usr/local/etc/openssl`, mounts as an
+  empty directory). Re-run setup.sh to refresh the copy after the bundle changes.
 * `HD_CA_BUNDLE=/etc/honeydipper/ca/ca-bundle.crt` — the container path fed to the
   trust env vars below.
 
@@ -990,7 +979,6 @@ host before merge.
 | `HONEY_VAULT_KEY_SHARES` | `1` | Vault unseal key shares used on first init (see "Single-command bring-up") |
 | `HONEY_VAULT_KEY_THRESHOLD` | `1` | Vault unseal key threshold used on first init |
 | `OPENAI_API_KEY` | unset | AI key seeded into Vault on first run (placeholder stored when unset; replace by exporting + re-running `make start`) |
-| `OPENROUTER_API_KEY` | unset | AI key seeded into Vault on first run (placeholder stored when unset) |
 | `HD_API_HOST_PORT` | `9000` | host port for daemon API |
 | `HD_UI_HOST_PORT` | `8090` | host port for UI |
 | `HD_API_PORT` | `9000` | daemon API container port (also feeds listener template) |
@@ -1004,9 +992,9 @@ host before merge.
 | `HD_RELOAD_POLL_INTERVAL` | `2` | reload-watch polling fallback interval (used only when neither inotifywait nor fswatch is installed) |
 | `HD_RELOAD_WATCHER` | auto | reload-watch watcher: `inotifywait` \| `fswatch` \| `poll` (auto-detect in that order) |
 | `HD_JWT_SIGNING_KEY` | empty | API session-token signing key (optional; prefer `hd-lookup:` Vault form) |
-| `HD_CA_CERT_FILE` | unset | host path to a bundled PEM root-CA file; compose bind-mount source (see \"Corporate root CA\"; empty/unset = inert, falls back to `/dev/null`) |
+| `HD_CA_CERT_FILE` | unset | path of the copied PEM root-CA bundle (`<state dir>/ca/ca-bundle.crt`); compose bind-mount source (see \"Corporate root CA\"; empty/unset = inert, falls back to `/dev/null`) |
 | `HD_CA_BUNDLE` | unset | container path fed to the daemon trust env vars `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `CURL_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` (empty/unset = inert) |
-| `HONEYDIPPER_IMAGE` | pinned build | daemon image tag |
+| `HONEYDIPPER_IMAGE` | `honeydipper/honeydipper:stable` | daemon image (set a version tag to pin) |
 | `VALKEY_IMAGE` | `valkey/valkey:8.1.0` | valkey image tag |
 | `VAULT_IMAGE` | `hashicorp/vault:1.21.1` | vault image tag |
 | `HD_UI_IMAGE` | pinned build | UI image tag |

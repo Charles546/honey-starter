@@ -18,7 +18,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 BOOTSTRAP="${HERE}/bootstrap"
 
 # Docker image tag — overridable via HONEYDIPPER_IMAGE env var
-: "${HONEYDIPPER_IMAGE:=honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74}"
+: "${HONEYDIPPER_IMAGE:=honeydipper/honeydipper:stable}"
 
 if ! command -v docker &>/dev/null; then
   echo "SKIP: docker not found"
