@@ -588,12 +588,13 @@ runs NEVER ask it:
                       the current key (existing install) or add later
                       (placeholder flow: start.sh seeds a placeholder and you
                       add the real key to .env and re-run).
-  5. ports            HD_API_HOST_PORT (default 9000) and HD_UI_HOST_PORT
-                      (default 8090), integers 1-65535, confirmed together.
-
-  The AI endpoint is never prompted: it defaults to the OpenAI API
-  (https://api.openai.com/v1). To use another OpenAI-compatible endpoint, set
-  HD_AI_BASE_URL (env or .env).
+  5. ports            HD_API_HOST_PORT (default 9000), HD_UI_HOST_PORT
+                      (default 8090) and HD_WEBHOOK_PORT (default 18080),
+                      integers 1-65535. Use distinct values per instance.
+  6. AI endpoint      ONE question: HD_AI_BASE_URL, Enter keeps the current
+                      URL or the OpenAI default (https://api.openai.com/v1);
+                      any other OpenAI-compatible URL is persisted. Skipped
+                      when HD_AI_BASE_URL is set in the environment.
   HONEY_STARTER_ANSWERS_FILE (when set) supplies the answers first,
   newline-delimited, in exactly the order above: the leading
   COMPOSE_PROJECT_NAME line (lowercase; empty = accept the derived default;
@@ -628,10 +629,9 @@ HD_AI_MODEL semantics (three-way; the model is a non-secret pin):
 
 AI settings (what setup.sh writes to .env):
   OPENAI_API_KEY=<key> when provided, plus the HD_AI_MODEL pin. HD_AI_BASE_URL
-  stays unset unless supplied via env or an existing .env line (the engine
-  falls back to https://api.openai.com/v1); any OpenAI-compatible endpoint
-  works, but the default gpt-5.4-mini may not exist there - set HD_AI_MODEL.
-  Remove HD_AI_BASE_URL from .env to revert to the default.
+  is written only when it differs from the OpenAI default (the engine falls
+  back to https://api.openai.com/v1); any OpenAI-compatible endpoint works,
+  but the default gpt-5.4-mini may not exist there - set HD_AI_MODEL.
 
 Persisted overrides:
   HONEYDIPPER_IMAGE, HD_UI_IMAGE, VAULT_IMAGE, VALKEY_IMAGE and HD_STATE_DIR
@@ -663,7 +663,8 @@ Non-interactive mode:
   * Unmanaged lines (comments, blanks, HD_JWT_SIGNING_KEY, image pins, ...)
     are preserved byte-exact.
   * Managed keys (HONEY_NS, HONEY_USER, HD_AI_BASE_URL, HD_AI_MODEL,
-    HD_API_HOST_PORT, HD_UI_HOST_PORT) are rewritten in place each run.
+    HD_API_HOST_PORT, HD_UI_HOST_PORT, HD_WEBHOOK_PORT) are rewritten in
+    place each run.
     HD_UI_URL (the public UI base URL) is PRESERVED when set via env or an
     existing .env line, and only derived as http://localhost:<UI port> when
     nothing is set. HD_CONFIG_CHECK_INTERVAL is written only when explicitly
@@ -681,7 +682,7 @@ Compose project (COMPOSE_PROJECT_NAME) - per-instance, persisted in .env:
   from the resolved install dir; Enter accepts it, or type/env your own);
   EXISTING instances are never auto-renamed - manage reads the persisted name
   silently. Runtime precedence is .env > exported env > honey-starter.
-  Distinct HD_API_HOST_PORT / HD_UI_HOST_PORT remain mandatory for
+  Distinct HD_API_HOST_PORT / HD_UI_HOST_PORT / HD_WEBHOOK_PORT remain mandatory for
   SIMULTANEOUS instances (distinct ports are not auto-detected).
   Changing a PROVISIONED instance's project re-initializes Vault: it builds a
   NEW <new>_vault-file volume and OVERWRITES root_token/unseal_key in
@@ -733,6 +734,7 @@ Environment variables (all optional):
   HD_AI_BASE_URL               OpenAI-compatible base URL (default OpenAI)
   HD_API_HOST_PORT             published daemon API port (default 9000)
   HD_UI_HOST_PORT              published UI port (default 8090)
+  HD_WEBHOOK_PORT              loopback webhook port (default 18080)
   HD_UI_URL                    public UI base URL (OAuth/SAML redirects);
                                preserved when set, else derived from
                                HD_UI_HOST_PORT
@@ -1644,6 +1646,34 @@ close_input_sources() {
   cleanup_tmp
 }
 
+# prompt_optional VARNAME LABEL DEFAULT VALID_FN
+#   Like prompt_setting, but an exhausted answers file (or no input source)
+#   quietly accepts DEFAULT instead of failing, so answers files written before
+#   the question existed keep working. REPLY holds the value.
+prompt_optional() {
+  local varname="$1" label="$2" default="$3" valid="$4" ans tries=0 line
+  REPLY="${default}"
+  [ "${NONINTERACTIVE}" -eq 0 ] || return 0
+  while :; do
+    if [ "${HAVE_ANSWERS}" -eq 1 ] && IFS= read -r -u "${ANSWERS_FD}" line; then
+      ans="${line}"
+    elif [ "${HAVE_TTY}" -eq 1 ]; then
+      msg_input "${label} [${default}] " >&2
+      IFS= read -r -u "${TTY_FD}" ans || ans=""
+    else
+      return 0
+    fi
+    [ -n "${ans}" ] || ans="${default}"
+    if "${valid}" "${ans}"; then
+      REPLY="${ans}"
+      return 0
+    fi
+    warn "invalid ${varname}: '${ans}'"
+    tries=$((tries + 1))
+    [ "${tries}" -lt 3 ] || { REPLY="${default}"; return 0; }
+  done
+}
+
 # all_answers_supplied: every decision variable that the questionnaire would
 # prompt for (when unset) is already set in the environment, so no input source
 # is needed. OPENAI_API_KEY is not included: empty = add-later is a valid
@@ -2054,6 +2084,8 @@ EFFECTIVE_BASE_URL=""
 EFFECTIVE_MODEL=""
 EFFECTIVE_API_PORT=""
 EFFECTIVE_UI_PORT=""
+EFFECTIVE_WEBHOOK_PORT=""
+OPENAI_DEFAULT_BASE_URL="https://api.openai.com/v1"
 EFFECTIVE_UI_URL=""
 EFFECTIVE_CONFIG_INTERVAL=""
 EFFECTIVE_CA_ENABLED=0
@@ -2421,16 +2453,6 @@ run_questionnaire() {
       || die "HD_AI_MODEL must be non-empty with no whitespace/control and only [A-Za-z0-9._:/@+-] (got: ${EFFECTIVE_MODEL})"
   fi
 
-  # --- base URL: never prompted. The engine defaults to the OpenAI API URL
-  # (bootstrap/engines.yaml); an env-supplied or existing HD_AI_BASE_URL (any
-  # OpenAI-compatible endpoint) is kept and validated, otherwise the line is
-  # simply absent.
-  EFFECTIVE_BASE_URL="$(first_nonempty "${HD_AI_BASE_URL:-}" "$(cur_value HD_AI_BASE_URL)")"
-  if [ -n "${EFFECTIVE_BASE_URL}" ]; then
-    valid_base_url "${EFFECTIVE_BASE_URL}" \
-      || die "HD_AI_BASE_URL must be an http(s):// URL (got: ${EFFECTIVE_BASE_URL})"
-  fi
-
   # --- AI key (hidden; empty = keep/add-later) ----------------
   if :; then
     if [ -z "${EXPLICIT_OPENAI_KEY}" ]; then
@@ -2481,6 +2503,32 @@ run_questionnaire() {
     fi
   else
     EFFECTIVE_UI_PORT="${HD_UI_HOST_PORT}"
+  fi
+  # --- daemon webhook host port: per-instance so several instances on one
+  # host do not collide on the loopback publish (compose default 18080).
+  if [ -z "${HD_WEBHOOK_PORT:-}" ]; then
+    prompt_optional HD_WEBHOOK_PORT "Daemon webhook host port (HD_WEBHOOK_PORT)" \
+      "$(first_nonempty "$(cur_value HD_WEBHOOK_PORT)" 18080)" valid_port
+    EFFECTIVE_WEBHOOK_PORT="${REPLY}"
+  else
+    EFFECTIVE_WEBHOOK_PORT="${HD_WEBHOOK_PORT}"
+  fi
+  # --- AI endpoint: ONE question; Enter keeps the current URL or the OpenAI
+  # default. Answering the OpenAI default stores nothing (the engine falls back
+  # to it); any other OpenAI-compatible URL is persisted as HD_AI_BASE_URL.
+  if [ -n "${HD_AI_BASE_URL:-}" ]; then
+    EFFECTIVE_BASE_URL="${HD_AI_BASE_URL}"
+  else
+    prompt_optional HD_AI_BASE_URL "OpenAI-compatible API base URL (HD_AI_BASE_URL; Enter for the default)" \
+      "$(first_nonempty "$(cur_value HD_AI_BASE_URL)" "${OPENAI_DEFAULT_BASE_URL}")" valid_base_url
+    EFFECTIVE_BASE_URL="${REPLY}"
+  fi
+  if [ "${EFFECTIVE_BASE_URL}" = "${OPENAI_DEFAULT_BASE_URL}" ]; then
+    EFFECTIVE_BASE_URL=""
+  fi
+  if [ -n "${EFFECTIVE_BASE_URL}" ]; then
+    valid_base_url "${EFFECTIVE_BASE_URL}" \
+      || die "HD_AI_BASE_URL must be an http(s):// URL (got: ${EFFECTIVE_BASE_URL})"
   fi
   # HD_UI_URL is the documented public UI base URL (OAuth/SAML redirect
   # building; compose defaults ${HD_UI_URL:-http://localhost:8090}). Derive
@@ -2536,6 +2584,7 @@ run_questionnaire() {
   # --- final validation of effective values -----------------------------------
   valid_port "${EFFECTIVE_API_PORT}" || die "HD_API_HOST_PORT must be an integer 1-65535 (got: ${EFFECTIVE_API_PORT})"
   valid_port "${EFFECTIVE_UI_PORT}" || die "HD_UI_HOST_PORT must be an integer 1-65535 (got: ${EFFECTIVE_UI_PORT})"
+  valid_port "${EFFECTIVE_WEBHOOK_PORT}" || die "HD_WEBHOOK_PORT must be an integer 1-65535 (got: ${EFFECTIVE_WEBHOOK_PORT})"
   valid_ns "${EFFECTIVE_NS}" || die "HONEY_NS must be a single Vault path segment ([A-Za-z0-9._-]+), got: ${EFFECTIVE_NS}"
   valid_user "${EFFECTIVE_USER}" || die "HONEY_USER must be a plain subject token ([A-Za-z0-9@._-]+), got: ${EFFECTIVE_USER}"
 
@@ -2619,6 +2668,7 @@ build_env_content() {
   fi
   set_action HD_API_HOST_PORT set "${EFFECTIVE_API_PORT}"
   set_action HD_UI_HOST_PORT set "${EFFECTIVE_UI_PORT}"
+  set_action HD_WEBHOOK_PORT set "${EFFECTIVE_WEBHOOK_PORT}"
   set_action HD_UI_URL set "${EFFECTIVE_UI_URL}"
   if [ -n "${EFFECTIVE_CONFIG_INTERVAL}" ]; then
     set_action HD_CONFIG_CHECK_INTERVAL set "${EFFECTIVE_CONFIG_INTERVAL}"
@@ -2850,7 +2900,7 @@ guard_project_state_consistency() {
         "Proceeding would re-attach that deployment's initialized Vault volume (it comes back SEALED) while this fresh instance has NO unseal key - start.sh would fail mid-start with 'vault is sealed but ${STATE_DIR}/unseal_key is missing/empty'." \
         "Nothing was started, written, or stopped by this run." \
         "Remedy: choose a distinct COMPOSE_PROJECT_NAME, or stop the other deployment first (docker compose -f <its-deploy>/docker-compose.yaml -p ${compose_p} down), then re-run." \
-        "Run this instance with distinct ports too: export HD_API_HOST_PORT=<port>; export HD_UI_HOST_PORT=<port>." \
+        "Run this instance with distinct ports too: export HD_API_HOST_PORT=<port>; export HD_UI_HOST_PORT=<port>; export HD_WEBHOOK_PORT=<port>." \
       )"
     fi
   fi

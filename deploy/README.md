@@ -171,12 +171,16 @@ only ever copied, never moved). If a newer invoked setup.sh manages an older
 target tree, the read-modify-write `.env` writer preserves unknown keys and the
 target's own `start.sh` runs — safe.
 
-**Questionnaire scope.** The AI endpoint is never prompted: the engine
-defaults to the OpenAI API (`https://api.openai.com/v1`). setup.sh asks for the
-model (default `gpt-5.4-mini`, the pin) and the API key (Enter = add later;
-`start.sh` seeds a placeholder). To use another OpenAI-compatible endpoint
-(OpenRouter, a local gateway, ...) set `HD_AI_BASE_URL` in the environment or
-`.env` and set `HD_AI_MODEL` to a model that exists there.
+**Questionnaire scope.** setup.sh asks for the model (default `gpt-5.4-mini`,
+the pin), the API key (Enter = add later; `start.sh` seeds a placeholder), the
+three host ports (API, UI, and the loopback webhook `HD_WEBHOOK_PORT`, default
+18080 - give each instance its own so they do not collide) and **one** question
+for the AI endpoint: `HD_AI_BASE_URL`, where Enter keeps the current URL or the
+OpenAI default (`https://api.openai.com/v1`). Answering the default stores
+nothing; any other OpenAI-compatible endpoint (OpenRouter, a local gateway,
+...) is written to `.env`, so also set `HD_AI_MODEL` to a model that exists
+there. The question is skipped when `HD_AI_BASE_URL` is already in the
+environment.
 
 * On a real TTY with no answers file the model question renders as a
   **numbered select-from-list menu** (pick by number, type the exact value, or
