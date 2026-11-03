@@ -88,7 +88,7 @@ services:
       start_period: 10s
 
   daemon:
-    image: ${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74}
+    image: ${HONEYDIPPER_IMAGE:-honeydipper/honeydipper:stable}
     restart: unless-stopped
     depends_on:
       valkey:

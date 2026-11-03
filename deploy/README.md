@@ -8,7 +8,7 @@ deployment. The compose file provisions four services on a Linux or macOS docker
 |------------|-------------------------------------------------|--------------------------------------------------|
 | `valkey`   | `valkey/valkey:8.1.0`                           | Redis-compatible event bus, locks, cache, scheduler |
 | `vault`    | `hashicorp/vault:1.21.1`                        | Secrets store (file backend, non-dev)            |
-| `daemon`   | `honeydipper/honeydipper:4.0.0-alpha4-57-ge029f74` | Honeydipper engine/receiver/operator/api/agent   |
+| `daemon`   | `honeydipper/honeydipper:stable` | Honeydipper engine/receiver/operator/api/agent   |
 | `ui`       | `honeydipper/hd-ui:0.1.0-alpha2-54-g611fe54`    | Web UI (nginx)                                   |
 
 ## Topology and network model
@@ -994,7 +994,7 @@ host before merge.
 | `HD_JWT_SIGNING_KEY` | empty | API session-token signing key (optional; prefer `hd-lookup:` Vault form) |
 | `HD_CA_CERT_FILE` | unset | path of the copied PEM root-CA bundle (`<state dir>/ca/ca-bundle.crt`); compose bind-mount source (see \"Corporate root CA\"; empty/unset = inert, falls back to `/dev/null`) |
 | `HD_CA_BUNDLE` | unset | container path fed to the daemon trust env vars `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `CURL_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` (empty/unset = inert) |
-| `HONEYDIPPER_IMAGE` | pinned build | daemon image tag |
+| `HONEYDIPPER_IMAGE` | `honeydipper/honeydipper:stable` | daemon image (set a version tag to pin) |
 | `VALKEY_IMAGE` | `valkey/valkey:8.1.0` | valkey image tag |
 | `VAULT_IMAGE` | `hashicorp/vault:1.21.1` | vault image tag |
 | `HD_UI_IMAGE` | pinned build | UI image tag |
